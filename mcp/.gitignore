@@ -1,0 +1,6 @@
+/epistula-mcp
+# go build ./... names the binary after the module path, not BINARY.
+/golang-epistula-mcp
+/build/
+# Never commit a real config — it holds the epistula-api bearer token.
+epistula-mcp.toml
