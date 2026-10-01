@@ -1,0 +1,90 @@
+name: Epistula release
+
+on:
+  push:
+    tags: ['v[0-9]*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  security:
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+
+  release:
+    needs: [verify, security]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify release inputs
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          test -s LICENSE
+          test -s THIRD_PARTY_NOTICES.md
+          test -s packaging/release-signing-key.asc
+          grep -qx 'MIT License' LICENSE
+          printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          test -s "docs/release-notes/$RELEASE_TAG.md"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache-dependency-path: '**/go.sum'
+      - name: Stage and verify the release signing key
+        env:
+          RELEASE_GPG_KEY: ${{ secrets.RELEASE_GPG_KEY }}
+          NFPM_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
+        run: sh scripts/load-release-key.sh
+      - name: Build and sign a draft release
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        with:
+          version: v2.18.1
+          args: release --clean --release-notes=docs/release-notes/${{ github.ref_name }}.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NFPM_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
+      - name: Verify signatures and dependency notices
+        run: |
+          sh scripts/verify-signatures.sh packaging/release-signing-key.asc
+          make check-notices
+      - name: Verify signed package lifecycles
+        run: sh scripts/test-packages.sh packaging/release-signing-key.asc
+      - name: Attest release assets
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/checksums.txt
+            dist/checksums.txt.sig
+      - name: Publish the verified release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release edit "$RELEASE_TAG" --draft=false
+      - name: Remove the staged signing key
+        if: always()
+        run: |
+          gpgconf --homedir "$RUNNER_TEMP/release-signing/gnupg" --kill all || true
+          rm -rf "$RUNNER_TEMP/release-signing"
