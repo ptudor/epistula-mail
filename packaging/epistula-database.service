@@ -1,0 +1,33 @@
+[Unit]
+Description=Epistula delivery, administration, and mail storage
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=epistula-database
+Group=epistula-database
+SupplementaryGroups=epistula
+ExecStart=/usr/bin/epistula-database serve -config /etc/epistula/epistula-database.toml
+Restart=on-failure
+RestartSec=15s
+RestartPreventExitStatus=64 78
+TimeoutStopSec=60s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+UMask=0007
+ReadWritePaths=/var/spool/epistula-database
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
