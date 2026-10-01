@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Persistent epistula-mcp connector as a macOS LaunchDaemon.
+
+  This runs the Streamable HTTP transport (stdio can't be daemonised — it talks to
+  one client over a pipe). Bind to localhost only: the transport has no auth of its
+  own and acts with the epistula-api token's full (scoped) privileges. Prefer the stdio
+  path (a client-launched subprocess — see .mcp.json in CLAUDE.md) for local
+  Claude Code / Desktop use; this daemon is for when a persistent HTTP endpoint is
+  wanted. base_url in the config should point at the Apache-fronted https:// epistula-api
+  (the token then rides inside TLS), or at http://127.0.0.1:8784 if run on the
+  epistula-api host itself.
+
+  Install:
+    make build && sudo cp epistula-mcp /usr/local/bin/
+    sudo install -d -m 755 /usr/local/etc/epistula
+    sudo cp epistula-mcp.toml.example /usr/local/etc/epistula/epistula-mcp.toml
+    sudo chmod 600 /usr/local/etc/epistula/epistula-mcp.toml   # set base_url + token
+    sudo cp deploy/launchd/net.ptudor.epistula-mcp.plist /Library/LaunchDaemons/
+    sudo launchctl bootstrap system /Library/LaunchDaemons/net.ptudor.epistula-mcp.plist
+
+  Reload after edits:
+    sudo launchctl bootout   system /Library/LaunchDaemons/net.ptudor.epistula-mcp.plist
+    sudo launchctl bootstrap system /Library/LaunchDaemons/net.ptudor.epistula-mcp.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>net.ptudor.epistula-mcp</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/epistula-mcp</string>
+        <string>-config</string>
+        <string>/usr/local/etc/epistula/epistula-mcp.toml</string>
+        <string>-http</string>
+        <string>127.0.0.1:8786</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/usr/local/var/log/epistula-mcp.log</string>
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/epistula-mcp.log</string>
+</dict>
+</plist>
