@@ -1,0 +1,7 @@
+epistula-llm-worker
+build/
+golang-epistula-llm-worker
+*.test
+*.out
+coverage.out
+.DS_Store
