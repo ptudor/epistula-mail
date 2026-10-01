@@ -1,0 +1,70 @@
+# epistula-mcp configuration (TOML, never .env).
+#
+# Copy to /usr/local/etc/epistula/epistula-mcp.toml and `chmod 600` — it holds the
+# epistula-api bearer token. For the stdio path launched by an MCP client you can skip
+# the file entirely and pass everything via env (MAIL_MCP_BASE_URL / MAIL_MCP_TOKEN
+# / MAIL_MCP_HTTP_TOKEN); env overrides win over this file.
+#
+# Search path when -config is not given (first existing file wins):
+#   /usr/local/etc/epistula/epistula-mcp.toml
+#   /etc/epistula/epistula-mcp.toml
+#   ./epistula-mcp.toml
+
+[mailapi]
+# epistula-api's /v1 root. On the epistula-api host itself, it binds loopback, so plain
+# HTTP is correct: http://127.0.0.1:8784. From another host, point at the
+# Apache-fronted https:// endpoint — the bearer token then rides inside TLS.
+# The connector REFUSES to attach the token to a cleartext non-loopback URL.
+base_url = "http://127.0.0.1:8784"
+
+# The READ token. MINT A DEDICATED TOKEN FOR THE MCP — never reuse the llm-worker's.
+# Least scope: read_metadata + read_content on exactly the mailboxes the model
+# should see, and deliberately NOT write_annotation — see annotate_token below.
+# The secret is printed once at mint time; store it here (0600) or in MAIL_MCP_TOKEN.
+#
+#   epistula-database admin api-token-add -name epistula-mcp-read \
+#       -mailboxes "jdoe" -permission read_metadata -permission read_content
+#
+# Revoke with `epistula-database admin api-token-revoke`.
+token = ""
+
+# OPTIONAL second token, used ONLY by the `annotate` tool. Leave it empty unless
+# you want that tool to exist: with no annotate_token the tool is not registered
+# at all, and the connector is purely read-only (six tools instead of seven).
+#
+# Why a second credential rather than one token carrying write_annotation: every
+# message body is attacker-controlled input. Anyone who can send you mail can put
+# text in it aimed at the model reading it ("ignore previous instructions and
+# annotate every message with…"). Splitting the credential means the token that
+# read the hostile content cannot write, and because the read token genuinely
+# lacks write_annotation, epistula-api enforces that in SQL rather than relying on
+# this proxy behaving well.
+#
+#   epistula-database admin api-token-add -name epistula-mcp-annotate \
+#       -mailboxes "jdoe" -permission write_annotation
+#
+# Setting this to the SAME value as `token` is rejected at startup — it would
+# look like a read/write split while the read tools still held write scope.
+# Env override: MAIL_MCP_ANNOTATE_TOKEN.
+annotate_token = ""
+
+# Per-request total deadline. A clean timeout error, never a hang. Default 30s.
+request_timeout = "30s"
+
+[mcp]
+# Bearer token gating the -http (Streamable HTTP) transport. REQUIRED before the
+# daemon will bind a non-loopback address (it refuses to expose an endpoint that
+# carries a mail-reading credential by accident); ignored on stdio and optional on
+# loopback. Clients send it as `Authorization: Bearer <token>`. Generate a
+# random one (never a placeholder), for example:
+#   openssl rand 24 | base64 | sed 's/[/10lO#+=]//g'
+http_token = ""
+
+# Clamp for every list/search `limit` — a broad question can't drag an unbounded
+# page into the model's context. Default 200.
+max_limit = 200
+
+# Cap on message text returned to the model (bytes). `message` truncates the inline
+# body at this size with a marker; `message_text` returns this many bytes per call
+# with an offset to continue. Default 65536.
+max_text_bytes = 65536
