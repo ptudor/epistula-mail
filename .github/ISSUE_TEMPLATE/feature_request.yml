@@ -1,0 +1,15 @@
+name: Feature request
+description: Describe a concrete operational need.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe your deployment, the limitation, and what a successful result would look like.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and tradeoffs
+      description: Include workarounds you tried and any compatibility requirements.
