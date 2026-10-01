@@ -6,11 +6,13 @@ this week?", "find the invoice from the hosting company", "summarize this thread
 "which messages did the classifier tag `receipts`?". It is a **thin proxy over
 `epistula-api`** and speaks slimmed JSON the model can reason about.
 
-**Status: implemented and verified end-to-end against a live epistula-api with a
-minted token.** All seven tools, both transports, config, and deploy artifacts
-are in place; `go test -race ./...` passes (unit + httptest-mock integration
-round trips for every tool) and the stdio `make smoke` handshake lists the seven
-tools. This document is the contract the implementation is held to;
+**Status: implemented with unit and mock API integration coverage.** Both
+transports, configuration, and deployment artifacts are in place. Six read tools
+are registered by default; a distinct annotation token enables the seventh tool.
+`go test -race ./...` exercises round trips against an HTTP test server, and
+`make smoke` prints a stdio handshake and tool list. Acceptance against an
+operator's live API and scoped tokens remains a deployment check. This document
+is the contract the implementation is held to;
 `ROADMAP.md` records what v1 covers and what is deliberately left for later.
 
 ## Why a proxy over epistula-api, not a fourth schema reader

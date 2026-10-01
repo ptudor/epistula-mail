@@ -61,22 +61,38 @@ archives:
     files:
       - README.md
       - CHANGELOG.md
+      - CONTRIBUTING.md
+      - CLAUDE.md
+      - .go-version
       - LICENSE
       - THIRD_PARTY_NOTICES.md
       - SECURITY.md
       - ARCHIVE_SORTING.md
       - docs/*.md
+      - docs/release-notes/*.md
+      - scripts/verify-signatures.sh
       - packaging/*.toml
+      - packaging/*.service
       - packaging/release-signing-key.asc
       - database/*.toml.example
+      - database/*.md
+      - database/schema.sql
+      - database/deploy/*.md
       - database/deploy/**/*
       - imap/*.toml.example
+      - imap/*.md
+      - imap/deploy/*.md
       - imap/deploy/**/*
       - api/*.toml.example
+      - api/*.md
+      - api/deploy/*.md
       - api/deploy/**/*
       - llm-worker/*.toml.example
+      - llm-worker/*.md
       - llm-worker/deploy/**/*
       - mcp/*.toml.example
+      - mcp/*.md
+      - mcp/deploy/*.md
       - mcp/deploy/**/*
 nfpms:
   - id: database

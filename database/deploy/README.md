@@ -18,8 +18,8 @@ Two long-running surfaces and one synchronous transport:
 
 ## What's NOT in `deploy/`
 
-- A systemd unit. Add `linux/epistula-database.service` when there's a deployment that needs it.
-- A `reverse proxy/` snippet. Apache is the documented front end; any reverse proxy works.
+- Linux systemd units and package scripts live in the repository's `packaging/`
+  directory; see [the Linux package guide](../../docs/linux-packages.md).
 - The TOML config. See `../epistula-database.toml.example` at the project root.
 - The schema. See `../schema.sql` for bootstrap; `epistula-database migrate up` for incremental.
 
@@ -28,7 +28,7 @@ Two long-running surfaces and one synchronous transport:
 For a fresh deployment:
 
 ```sh
-psql -U epistula-database -d epistula_database -f schema.sql
+epistula-database migrate up -config /etc/epistula/epistula-database.toml
 ```
 
 For an existing deployment:
@@ -38,7 +38,10 @@ epistula-database migrate status    # see what's pending
 epistula-database migrate up        # apply
 ```
 
-`schema.sql` is kept in sync with migrations 001+, so either path lands the same shape.
+On FreeBSD, use `/usr/local/etc/epistula/epistula-database.toml`. The
+[FreeBSD quick start](../QUICKSTART-FREEBSD.md) covers creating the database and
+the `epistula_database` PostgreSQL role. `schema.sql` is kept in sync with the
+migrations and is an alternative bootstrap for operators using the source tree.
 
 ### Maintenance failure queues
 

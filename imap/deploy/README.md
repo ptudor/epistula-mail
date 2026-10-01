@@ -6,7 +6,10 @@ One long-running surface: the IMAP4 server itself (implicit TLS on :993) plus a 
 |---------|--------------|-------------------------------------------------------|
 | `serve` | long-running | `:993` IMAP4 over TLS + `127.0.0.1:8783` metrics/health |
 
-No `deliver`, no `import`, no `gc`, no `admin` — those live in [epistula-database](../../database/deploy/README.md). This daemon's only write path is `APPEND`, which calls the shared ingest package.
+Delivery, imports, blob garbage collection, and administration live in
+[epistula-database](../../database/deploy/README.md). IMAP owns folder and
+message-state mutations, archive sorting, and optional Trash retention.
+`APPEND` adds message content through the shared ingest package.
 
 ## Files
 
@@ -15,10 +18,10 @@ No `deliver`, no `import`, no `gc`, no `admin` — those live in [epistula-datab
 
 ## What's NOT in `deploy/`
 
-- A systemd unit. Add `linux/epistula-imap.service` when there's a deployment that needs it.
-- A `reverse proxy/` snippet. Apache is the documented front end; any reverse proxy works.
+- Linux systemd units and package scripts live in the repository's `packaging/`
+  directory; see [the Linux package guide](../../docs/linux-packages.md).
 - The TOML config. See `../epistula-imap.toml.example` at the project root.
-- The schema. epistula-database owns it; this daemon only reads (and APPENDs through the shared ingest pkg).
+- The schema. epistula-database owns it; IMAP uses it for reads and mailbox mutations.
 
 ## TLS Certificates
 

@@ -17,7 +17,7 @@ signatures, and generates GitHub build attestations before publication.
 [docs/releases.md](docs/releases.md) describes verification and setup.
 
 CI retains the complete module advisory report and gates on vulnerabilities in
-imported packages and reachable code, for Linux and FreeBSD. This distinguishes
-unused packages in a module from code shipped in Epistula. CI also scans source
+imported packages and reachable code, for Linux, FreeBSD, and macOS. This
+distinguishes unused packages in a module from code shipped in Epistula. CI also scans source
 history. Tests, signatures, and build provenance
 provide different evidence; they do not establish independent protocol certification.
