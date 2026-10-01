@@ -1,0 +1,105 @@
+#!/bin/sh
+
+# PROVIDE: epistula_imap
+# REQUIRE: LOGIN postgresql
+# KEYWORD: shutdown
+
+# Add the following lines to /etc/rc.conf to enable epistula_imap:
+#
+# epistula_imap_enable="YES"
+#
+# Optional (defaults shown):
+# epistula_imap_user="epistula-imap"
+# epistula_imap_config="/usr/local/etc/epistula/epistula-imap.toml"
+# epistula_imap_pidfile="/var/run/epistula-imap/epistula_imap.pid"
+# epistula_imap_logfile="/var/log/epistula_imap.log"
+#
+# The pidfiles live under /var/run/epistula-imap/ (a user-owned dir the
+# prestart creates), NOT directly in /var/run: daemon(8) drops to
+# ${epistula_imap_user} via -u *before* it opens the pidfiles and the -o
+# logfile, so their parent directory must be writable by that account.
+#
+# Notes:
+# - The daemon binds an implicit-TLS listener on port 993 (no STARTTLS).
+#   The TLS cert+key paths come from the TOML, NOT from the rc.conf knobs.
+# - The admin/metrics listener binds 127.0.0.1:8783 by default (loopback
+#   only — see deploy/apache/epistula-imap-include.conf to expose those
+#   endpoints behind a reverse proxy).
+# - TLS cert reload: send SIGHUP after renewing the keypair and the
+#   daemon swaps it in without dropping connections:
+#     deploy_hook="service epistula_imap reload"
+#   A failed reload keeps the previous cert and logs at ERROR.
+# - This rc.d script runs the daemon as epistula_imap_user. If you need
+#   public :993 and the unprivileged user cannot bind low ports, put a
+#   small TLS TCP proxy / packet redirect in front or grant the service
+#   user that OS capability explicitly. Do not run this daemon as root
+#   just to bind the low port.
+
+. /etc/rc.subr
+
+name="epistula_imap"
+rcvar="${name}_enable"
+
+load_rc_config $name
+
+: ${epistula_imap_enable:="NO"}
+: ${epistula_imap_user:="epistula-imap"}
+: ${epistula_imap_group:="epistula-imap"}
+: ${epistula_imap_config:="/usr/local/etc/epistula/epistula-imap.toml"}
+: ${epistula_imap_pidfile:="/var/run/epistula-imap/${name}.pid"}
+: ${epistula_imap_logfile:="/var/log/${name}.log"}
+
+# Privilege drop is rc.subr's job here, via ${name}_user / ${name}_group
+# (epistula_imap_user / epistula_imap_group above) -- NOT daemon(8)'s -u.
+# Because command/command_args use rc.subr's default execution, rc.subr already
+# wraps the command in `su -m ${epistula_imap_user}`; a redundant `daemon -u`
+# would then run as the already-unprivileged user and setusercontext() fails
+# ("daemon: failed to set user environment"). So daemon must NOT also carry -u.
+#
+# Signals (stop's SIGTERM for the graceful drain, reload's SIGHUP for the TLS
+# cert swap) reach the Go process because -p writes the CHILD pid to ${pidfile},
+# which rc.subr targets for stop/reload. No -r, so no restart-on-stop hazard;
+# syslog (-S/-T) is unnecessary (the app logs via slog to ${logfile}).
+pidfile="${epistula_imap_pidfile}"
+procname="/usr/local/bin/epistula-imap"
+command="/usr/sbin/daemon"
+# -f detaches daemon(8)'s own inherited stdio. Without it `service epistula_imap start`
+# over ssh never returns — the supervisor holds the pipe until the process exits.
+# It does not replace -o/-S below: those route the child's output, -f the parent's.
+command_args="-c -f -p ${pidfile} \
+              -o ${epistula_imap_logfile} \
+              ${procname} serve -config ${epistula_imap_config}"
+
+start_precmd="${name}_prestart"
+stop_postcmd="${name}_poststop"
+extra_commands="reload"
+sig_reload="HUP"
+
+epistula_imap_prestart()
+{
+    if [ ! -f "${epistula_imap_config}" ]; then
+        echo "${name}: config not found: ${epistula_imap_config}" >&2
+        return 1
+    fi
+    if ! /usr/local/bin/epistula-imap check-config -config "${epistula_imap_config}" >/dev/null 2>&1; then
+        echo "${name}: check-config failed; not starting" >&2
+        /usr/local/bin/epistula-imap check-config -config "${epistula_imap_config}" >&2
+        return 1
+    fi
+    # rc.subr drops to ${epistula_imap_user} before running daemon(8), so the
+    # pidfiles and -o logfile must live somewhere that account can write.
+    # /var/run is cleared at boot, so (re)create it on every start.
+    install -d -o "${epistula_imap_user}" -g "${epistula_imap_group}" -m 750 \
+        /var/run/epistula-imap 2>/dev/null || true
+    if [ ! -f "${epistula_imap_logfile}" ]; then
+        install -o "${epistula_imap_user}" -g "${epistula_imap_group}" -m 640 \
+            /dev/null "${epistula_imap_logfile}" 2>/dev/null || true
+    fi
+}
+
+epistula_imap_poststop()
+{
+    rm -f "${pidfile}" "${pidfile}.supervisor"
+}
+
+run_rc_command "$1"
