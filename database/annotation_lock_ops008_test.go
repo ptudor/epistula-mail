@@ -22,6 +22,10 @@ import (
 // it to the roles that can insert annotations, which on a deployed store is
 // the epistula_api role that existed when the migration ran.
 func TestAnnotationLockGrantFollowsAnnotationWriters(t *testing.T) {
+	bootstrap := os.Getenv("MAIL_DATABASE_TEST_PG")
+	if bootstrap == "" {
+		t.Skip("set MAIL_DATABASE_TEST_PG to run integration tests")
+	}
 	var suffix [4]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		t.Fatal(err)
@@ -33,7 +37,7 @@ func TestAnnotationLockGrantFollowsAnnotationWriters(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		conn, err := pgx.Connect(ctx, os.Getenv("MAIL_DATABASE_TEST_PG"))
+		conn, err := pgx.Connect(ctx, bootstrap)
 		if err != nil {
 			t.Errorf("drop test roles: %v", err)
 			return

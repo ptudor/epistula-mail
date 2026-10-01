@@ -23,6 +23,10 @@ import (
 // writer also gets the move journal, and a role that can do neither — the
 // reader, say — gets nothing.
 func TestArchiveMigrationGrants(t *testing.T) {
+	bootstrap := os.Getenv("MAIL_DATABASE_TEST_PG")
+	if bootstrap == "" {
+		t.Skip("set MAIL_DATABASE_TEST_PG to run integration tests")
+	}
 	var suffix [4]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		t.Fatal(err)
@@ -33,7 +37,7 @@ func TestArchiveMigrationGrants(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		conn, err := pgx.Connect(ctx, os.Getenv("MAIL_DATABASE_TEST_PG"))
+		conn, err := pgx.Connect(ctx, bootstrap)
 		if err != nil {
 			t.Errorf("drop test roles: %v", err)
 			return

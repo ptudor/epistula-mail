@@ -15,7 +15,14 @@ func (r pacedExportReader) Read(p []byte) (int, error) {
 	if len(p) > 64*1024 {
 		p = p[:64*1024]
 	}
-	n, err := r.Reader.Read(p)
+	// Pace complete byte windows, not individual network reads: HTTP chunking
+	// and TCP buffering can split a window into many short reads on Linux.
+	// Sleeping after each short read unintentionally reduces throughput until
+	// a healthy reader takes longer than the write budget to drain the socket.
+	n, err := io.ReadFull(r.Reader, p)
+	if err == io.ErrUnexpectedEOF {
+		err = io.EOF
+	}
 	if n > 0 {
 		time.Sleep(8 * time.Millisecond)
 	}

@@ -71,12 +71,15 @@ type deployedRole struct {
 // holds its grants.
 func newDeployedRole(t *testing.T) *deployedRole {
 	t.Helper()
+	bootstrap := os.Getenv("MAIL_DATABASE_TEST_PG")
+	if bootstrap == "" {
+		t.Skip("set MAIL_DATABASE_TEST_PG to run integration tests")
+	}
 	var suffix [4]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		t.Fatal(err)
 	}
 	r := &deployedRole{name: "ops008_api_" + hex.EncodeToString(suffix[:])}
-	bootstrap := os.Getenv("MAIL_DATABASE_TEST_PG")
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
