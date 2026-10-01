@@ -1,0 +1,7 @@
+epistula-imap
+build/
+golang-epistula-imap
+*.test
+*.out
+coverage.out
+.DS_Store
