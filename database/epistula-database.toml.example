@@ -1,0 +1,83 @@
+# epistula-database.toml.example
+# Copy to /usr/local/etc/epistula/epistula-database.toml and edit.
+#
+# All durations are Go duration strings: "30s", "1h", "100ms", etc.
+
+# Set to true in production to enable strict-mode startup checks
+# (require sslmode=verify-full and stronger password-hash parameters).
+production = false
+
+[postgres]
+# libpq-style DSN. In production, sslmode=verify-full and sslrootcert=... are
+# required. Local development can use sslmode=disable.
+# password: openssl rand 24 | base64 | sed 's/[/10lO#+=]//g'
+dsn = "postgres://epistula_database:<generated>@127.0.0.1:5432/epistula_database?sslmode=disable"
+statement_timeout = "30s"
+max_open_conns = 20
+max_idle_conns = 5
+conn_max_lifetime = "1h"
+
+[storage]
+# Base directory of the blob store: one subtree per mailbox, each holding
+# raw/ (original messages) and att/ (extracted attachments), both partitioned
+# by yyyy/mm/dd, plus tmp/ for write staging.
+root = "/var/spool/epistula-database"
+# group_writable: set true for a shared-group deployment where epistula-imap
+# (in the storage group) writes blobs on IMAP APPEND. It makes the store create
+# setgid group-writable dirs (2770) and files (0660). Both epistula-database AND
+# epistula-imap must agree. Leave false for a single-daemon (owner-only
+# 0750/0640) deployment.
+group_writable = true
+
+[delivery]
+# Hard wall-clock for a single `deliver` invocation. Postfix retries on EX_TEMPFAIL.
+timeout = "60s"
+# Folder new mail lands in by default.
+default_folder = "INBOX"
+# Optional post-delivery hook. If set, exec'd AFTER the message is durably
+# committed to Postgres. Failures are logged, never propagated — the
+# message will not be re-delivered just because the hook failed. The first
+# element MUST be an absolute path (Postfix's pipe PATH is minimal). The
+# hook receives the delivery facts via MAIL_DB_* environment variables;
+# see hooks.go for the full list.
+#
+# Suggested uses: archive indexing, statistics, operator notifications.
+# Spam filtering belongs upstream in Postfix, not here.
+#
+# post_hook_command = ["/usr/local/libexec/epistula-database-archive-index"]
+# post_hook_timeout = "10s"
+
+[limits]
+max_message_bytes        = 52428800   # 50 MiB
+max_mime_depth           = 10
+max_mime_parts           = 200
+max_header_bytes         = 16384
+max_header_section_bytes = 262144
+max_transfer_expansion   = 10         # reject if base64/qp decodes to >10x
+
+[logging]
+level  = "info"   # debug | info | warn | error
+format = "text"   # text | json
+
+[http]
+listen_addr               = "127.0.0.1:8782"
+read_timeout_seconds      = 5
+write_timeout_seconds     = 10
+shutdown_timeout_seconds  = 30
+expose_metrics            = true
+
+[argon2]
+memory_kib  = 65536   # 64 MiB
+iterations  = 3
+parallelism = 4
+key_len     = 32
+salt_len    = 16
+
+[admin]
+# Enforced by `mailbox-add` and `mailbox-passwd` for both interactive and
+# -password-stdin input. Argon2id is resistant to brute-force but a short
+# password is still a short password. Floor is 8.
+min_password_length = 12
+# Bound stdin reads so a runaway pipe cannot allocate unbounded memory
+# before the length check fires. Well above any human password.
+max_password_length = 1024
