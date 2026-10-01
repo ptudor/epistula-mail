@@ -1,0 +1,23 @@
+-- RA6X-051: remove gc_candidates rows left unscoped by migration 007.
+--
+-- Migration 007 added gc_candidates.tenant with a transient DEFAULT '' so it
+-- could run whether or not the table held rows. Its comment assumed the table
+-- is rebuilt by every `gc mark` pass — but mark UPSERTS tenant-qualified rows,
+-- it does not truncate. So any candidate present at 007 acquired tenant '' and
+-- stayed there.
+--
+-- Those rows are permanently invalid to the sweeper: blob.ParseTenant("")
+-- fails, so sweep SKIPS them rather than removing them, and every sweep
+-- reports the same invalid candidates forever — noise that hides an actual
+-- cleanup failure.
+--
+-- Deleting them loses nothing. gc_candidates is bookkeeping, not content: a
+-- candidate is a note saying "this blob looked unreferenced during a mark
+-- pass". The next mark pass rediscovers any genuinely orphaned blob under its
+-- correct tenant, and the grace/reconfirmation clock simply restarts for it —
+-- which is the conservative direction. No mail and no blob is touched.
+--
+-- Version 007 is deliberately left as it was: databases that already applied
+-- it must not see it change.
+
+DELETE FROM gc_candidates WHERE tenant = '';
