@@ -1,0 +1,49 @@
+# Postfix master.cf fragment for epistula-database delivery
+#
+# Append this transport definition to /usr/local/etc/postfix/master.cf
+# (FreeBSD) or /etc/postfix/master.cf (Linux). Restart Postfix afterward
+# with `postfix reload`.
+#
+# This declares a pipe(8) transport called `epistula-database` that Postfix
+# will use whenever transport_maps routes mail to it (see transport.example).
+#
+# Flags:
+#   D    - prepend a Delivered-To: header (drops loops between aliases; also
+#          makes each recipient's raw bytes unique, which the deliver-side
+#          dedup relies on — see deliver.go). Requires recipient_limit = 1.
+#   R    - prepend a Return-Path: header
+#   X    - tell Postfix this transport performs *final* delivery, so success
+#          DSNs read "delivered" rather than "relayed". (The recipient env is
+#          passed to the LDA via the ${recipient} argv word below, not by X.)
+#
+# user=epistula-database is the unprivileged account the LDA runs as. The
+# account must be able to read the TOML config, write to ${storage.root},
+# and connect to Postgres.
+#
+# null=epistula-database tells Postfix to use the same user for any null
+# domain bounces — keeps the privilege model tight.
+#
+# argv= is the actual command. ${recipient} and ${sender} are Postfix
+# expansion variables, evaluated per-message before the LDA is exec'd.
+# The -config flag points at the same TOML the serve daemon reads, so
+# both modes share one source of truth.
+#
+# REQUIRED main.cf setting (NOT settable here in master.cf):
+#
+#     epistula-database_destination_recipient_limit = 1
+#
+# ${recipient} expands to ONE argv word per recipient. Postfix's default
+# default_destination_recipient_limit is 50, so without the per-transport
+# override above a message to N local recipients would exec the LDA once
+# with N -recipient-less trailing addresses; the flags=D setting instead
+# makes Postfix DEFER such a batch (flag D requires recipient_limit = 1),
+# so multi-recipient local mail never delivers until this is set. The LDA
+# also guards defensively (see deliver.go: leftover argv => EX_TEMPFAIL),
+# but the recipient limit is the real fix — set it in main.cf.
+
+epistula-database  unix  -       n       n       -       -       pipe
+  flags=DRX user=epistula-database:epistula-database
+  argv=/usr/local/bin/epistula-database deliver
+       -config=/usr/local/etc/epistula/epistula-database.toml
+       -recipient=${recipient}
+       -sender=${sender}
