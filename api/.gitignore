@@ -1,0 +1,7 @@
+epistula-api
+build/
+golang-epistula-api
+*.test
+*.out
+coverage.out
+.DS_Store
