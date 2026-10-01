@@ -1,0 +1,121 @@
+# Epistula package configuration: configure credentials and paths before enabling.
+# epistula-llm-worker configuration (TOML).
+# Installed as /etc/epistula/epistula-llm-worker.toml; edit in place.
+
+production = true
+
+[mail_api]
+# Use the HTTPS Apache front door for remote GPU hosts. The token needs
+# read_content + write_annotation, scoped to the mailbox set this worker may read,
+# plus write_classification when [classify] is enabled.
+base_url = "https://epistula-api.example.invalid"
+token    = ""
+
+# Optional export filters. Leave blank for every message visible to the token.
+mailbox  = ""
+folder   = ""
+since    = ""
+before   = ""
+query    = ""
+tag      = ""
+category = ""
+
+request_timeout_seconds = 300
+
+[lmstudio]
+# Usually local to the GPU workstation. If you bind LM Studio on the LAN,
+# enable LM Studio API authentication and set api_token. In production mode
+# (production = true), an off-box (non-loopback) LM Studio base_url must be
+# https AND carry api_token — LM Studio has no native TLS, so front it with a
+# tunnel/reverse proxy that terminates https. Loopback http stays allowed.
+base_url  = "http://127.0.0.1:1234/v1"
+api_token = ""
+model     = "qwen/qwen3.6-35b-a3b"
+
+temperature             = 0.1
+max_tokens              = 900
+request_timeout_seconds = 300
+# Sent as the request's reasoning_effort when set. "none" turns a hybrid
+# reasoning model's thinking off (Qwen3 in LM Studio honours it), so the answer
+# comes back as content and cannot run out of max_tokens while thinking.
+# Leave empty for the model's default.
+reasoning_effort        = ""
+
+[worker]
+# serve mode interval; run-once ignores this. Must be non-negative. Set to 0
+# and `serve` runs exactly one pass then exits cleanly (equivalent to run-once)
+# rather than sitting idle forever — use a positive value for a periodic daemon.
+interval_seconds = 900
+
+# Most rounds are fast rounds: they read only the messages epistula-database queued
+# for the pipeline (migration 022), so a round with nothing to do costs next to
+# nothing and interval_seconds can be short. Every this-many seconds, and on
+# start, a round is instead a complete sweep for this model's unannotated and
+# unclassified mail, which catches what no insert queues (a new annotation
+# model, a retired archive category, older mail). 0 = every round complete.
+complete_round_interval_seconds = 21600
+
+# v1 intentionally serializes requests. A single RTX 3090 generally has one
+# useful generation lane; parallel requests raise latency and VRAM pressure.
+concurrency = 1
+
+# 0 = no cap. Useful for first dry runs: set batch_limit = 25.
+batch_limit = 0
+
+skip_annotated         = true
+# annotation_model is the per-model annotation key (message_annotations.model).
+# Leave it commented out to derive it automatically as "lmstudio:<lmstudio.model>"
+# — so editing only lmstudio.model above keeps the key in sync. Set it
+# explicitly ONLY to pin a key that differs from the model (an explicit value
+# always wins over the derivation and over MAIL_LLM_MODEL).
+# annotation_model     = "lmstudio:qwen/qwen3.6-35b-a3b"
+# A prompt that does not fit the model's context window is retried with half
+# as much of the body, down to 2,000 characters (mail_llm_worker_context_overflows_total).
+max_body_chars         = 24000
+max_summary_chars      = 1400
+max_tags               = 8
+retry_attempts         = 2
+retry_backoff          = "2s"
+dry_run                = false
+exit_on_message_failure = false
+
+categories = [
+  "action",
+  "waiting",
+  "reference",
+  "receipt",
+  "newsletter",
+  "personal",
+  "finance",
+  "travel",
+  "security",
+  "spam",
+  "other",
+]
+
+# Empty means free-form normalized tags. Fill this if you want a controlled
+# taxonomy, for example ["tax", "banking", "family", "medical"].
+allowed_tags = []
+
+[classify]
+# Archive sorting (ARCHIVE_SORTING.md). For a mailbox whose archive categories
+# are set up in epistula-database (`admin archive-category-import`), every
+# annotation also picks one of them, in the same model request, and a second
+# pass classifies messages this model annotated before this was on.
+# epistula-imap files a message by its category once its owner archives it.
+# A mailbox with no categories is annotated exactly as before.
+enabled        = false
+# Body characters sent when only the category is asked for (a message already
+# annotated). A combined request uses worker.max_body_chars.
+max_body_chars = 6000
+
+[admin]
+listen_addr              = "127.0.0.1:8790"
+expose_metrics           = true
+read_timeout_seconds     = 5
+write_timeout_seconds    = 10
+shutdown_timeout_seconds = 30
+
+[logging]
+level  = "info"
+format = "text"
