@@ -1,0 +1,28 @@
+# Postfix transport_maps fragment for epistula-database
+#
+# Route the domains you've configured in epistula-database to the LDA. Each
+# line is "match → transport:nexthop"; for a pipe transport the nexthop
+# is empty (Postfix only uses it for relayed mail).
+#
+# Install as /usr/local/etc/postfix/transport (FreeBSD) or
+# /etc/postfix/transport (Linux), compile with `postmap transport`,
+# then add to main.cf:
+#
+#   transport_maps = hash:/usr/local/etc/postfix/transport
+#   virtual_mailbox_domains = hash:/usr/local/etc/postfix/transport
+#
+# (virtual_mailbox_domains makes Postfix accept these as local-ish even
+#  though it doesn't write to a Maildir itself — the LDA does.)
+#
+# After every edit:
+#   postmap /usr/local/etc/postfix/transport
+#   postfix reload
+
+# Exact domains
+example.invalid      epistula-database:
+
+# Wildcard domain — every subdomain matches.
+.example.invalid     epistula-database:
+
+# An entire user's address (overrides domain-level routing).
+postmaster@example.invalid   epistula-database:
