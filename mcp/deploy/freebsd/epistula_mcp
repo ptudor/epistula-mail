@@ -1,0 +1,79 @@
+#!/bin/sh
+#
+# FreeBSD rc.d service for epistula-mcp — the mail store exposed over MCP. Runs the
+# Streamable HTTP transport on loopback (127.0.0.1:8786 by default) so a
+# persistent / remote MCP host (e.g. a hosted chat, fronted by an authenticating
+# TLS proxy) can reach it. The config carries a least-scope READ token
+# (read_metadata + read_content, and NOT write_annotation). The annotate tool is
+# registered only when a SEPARATE annotate_token is also configured; leave it
+# empty for a read-only connector, which is the default and the safe posture
+# when a model is reading attacker-supplied message bodies.
+#
+# Install as /usr/local/etc/rc.d/epistula_mcp (chmod 555), then:
+#   sysrc epistula_mcp_enable=YES
+#   service epistula_mcp start
+#
+# Loopback bind means http_token is optional; the moment you point epistula_mcp_addr
+# at a non-loopback interface the binary REFUSES to start without http_token set
+# in the config (it would otherwise expose a mail-reading credential). Front any
+# public endpoint with Apache/TLS, as everywhere else in this stack.
+#
+# PROVIDE: epistula_mcp
+# REQUIRE: LOGIN NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="epistula_mcp"
+rcvar="${name}_enable"
+
+load_rc_config $name
+
+: ${epistula_mcp_enable:="NO"}
+: ${epistula_mcp_config:="/usr/local/etc/epistula/epistula-mcp.toml"}
+: ${epistula_mcp_addr:="127.0.0.1:8786"}
+: ${epistula_mcp_user:="epistula-mcp"}
+: ${epistula_mcp_logfile:="/var/log/epistula-mcp.log"}
+: ${epistula_mcp_rundir:="/var/run/epistula-mcp"}
+
+epistula_mcp_program="/usr/local/bin/epistula-mcp"
+
+# daemon(8) supervises (-r) and restarts on unexpected exit, dropping to the
+# service user. status/stop target the CHILD via its pidfile; stop signals the
+# supervisor so its restart loop ends, then it forwards SIGTERM to the child.
+command="/usr/sbin/daemon"
+procname="${epistula_mcp_program}"
+pidfile="${epistula_mcp_rundir}/${name}.pid"
+supervisor_pidfile="${epistula_mcp_rundir}/supervisor.pid"
+
+start_cmd="${name}_start"
+stop_cmd="${name}_stop"
+
+epistula_mcp_start() {
+	if [ ! -f "${epistula_mcp_config}" ]; then
+		echo "epistula-mcp: config not found: ${epistula_mcp_config}" >&2
+		return 1
+	fi
+	if [ -f "${pidfile}" ] && pgrep -F "${pidfile}" "epistula-mcp" >/dev/null 2>&1; then
+		echo "epistula-mcp already running? (pid=$(cat ${pidfile}))."
+		return 1
+	fi
+	install -d -o "${epistula_mcp_user}" -g "${epistula_mcp_user}" -m 0755 "${epistula_mcp_rundir}"
+	echo "Starting epistula-mcp."
+	/usr/sbin/daemon -f -r -R 5 \
+		-P "${supervisor_pidfile}" -p "${pidfile}" \
+		-u "${epistula_mcp_user}" -o "${epistula_mcp_logfile}" \
+		"${epistula_mcp_program}" -config "${epistula_mcp_config}" -http "${epistula_mcp_addr}"
+}
+
+epistula_mcp_stop() {
+	if [ ! -f "${supervisor_pidfile}" ]; then
+		echo "epistula-mcp not running."
+		return 0
+	fi
+	echo "Stopping epistula-mcp."
+	kill -TERM "$(cat ${supervisor_pidfile})" 2>/dev/null
+	wait_for_pids "$(cat ${pidfile} 2>/dev/null)"
+}
+
+run_rc_command "$1"
