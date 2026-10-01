@@ -1,0 +1,33 @@
+[Unit]
+Description=Epistula HTTP API
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=epistula-api
+Group=epistula-api
+SupplementaryGroups=epistula
+ExecStart=/usr/bin/epistula-api serve -config /etc/epistula/epistula-api.toml
+Restart=on-failure
+RestartSec=15s
+RestartPreventExitStatus=64 78
+TimeoutStopSec=60s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+UMask=0007
+ReadOnlyPaths=/var/spool/epistula-database
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
