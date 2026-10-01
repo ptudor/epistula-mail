@@ -1,0 +1,18 @@
+title = "Epistula secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Literal archive category keys in examples and fixtures"
+condition = "AND"
+paths = ['^ARCHIVE_SORTING\.md$', '^database/archive/suggest_integration_test\.go$']
+regexTarget = "secret"
+regexes = ['^finance/banking/other$', '^shopping/stores/(other|existing)$']
+
+[[allowlists]]
+description = "Deliberately malformed token in parser rejection test"
+condition = "AND"
+paths = ['^database/auth/token_test\.go$']
+regexTarget = "secret"
+regexes = ['^mapi_(abc|-3)_secret$']
