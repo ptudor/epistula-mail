@@ -1,0 +1,31 @@
+[Unit]
+Description=Epistula model annotation worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=epistula-llm-worker
+Group=epistula-llm-worker
+ExecStart=/usr/bin/epistula-llm-worker serve -config /etc/epistula/epistula-llm-worker.toml
+Restart=on-failure
+RestartSec=15s
+RestartPreventExitStatus=64 78
+TimeoutStopSec=60s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+UMask=0007
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
