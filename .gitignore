@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build artifacts at root level
+build/
+
+# Release output, local credentials, and generated executables
+/dist/
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+*signing-key*.asc
+!packaging/release-signing-key.asc
+/database/epistula-database.toml
+/imap/epistula-imap.toml
+/api/epistula-api.toml
+/llm-worker/epistula-llm-worker.toml
+/mcp/epistula-mcp.toml
