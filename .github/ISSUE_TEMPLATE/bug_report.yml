@@ -1,0 +1,25 @@
+name: Bug report
+description: Report an installation, behavior, or interoperability problem.
+body:
+  - type: markdown
+    attributes:
+      value: For a potential vulnerability, use the private reporting route in SECURITY.md. Remove credentials and private keys from all examples.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Version and environment
+      description: Release version or commit, operating system, architecture, and install method.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Minimal configuration and steps, expected result, and actual result.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs and diagnostics
+      description: Redacted logs, command output, or packet details that explain the failure.
