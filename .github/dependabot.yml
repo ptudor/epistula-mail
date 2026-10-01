@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+  - package-ecosystem: gomod
+    directories: [/database, /imap, /api, /llm-worker, /mcp]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 1
+    groups:
+      go-dependencies:
+        patterns: ['*']
