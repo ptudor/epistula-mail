@@ -1,0 +1,42 @@
+[Unit]
+Description=Epistula LM Studio annotation worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=epistula-llm-worker
+Group=epistula-llm-worker
+ExecStart=/usr/local/bin/epistula-llm-worker serve -config /etc/epistula/epistula-llm-worker.toml
+Restart=on-failure
+RestartSec=15s
+# A config/usage error (EX_USAGE=64, EX_CONFIG=78) is permanent — restarting
+# every 15s never trips StartLimitBurst and would loop forever. Keep those
+# exits down; transient failures (EX_UNAVAILABLE=69, EX_OSERR=71: epistula-api/LM
+# Studio unreachable) still restart under on-failure.
+#
+# Deliberately no ExecStartPre check-config: RestartPreventExitStatus= matches
+# only the MAIN process exit, so a failing ExecStartPre would re-enter the
+# on-failure restart loop this directive exists to stop. serve performs the
+# identical validation at startup and exits 78 as the main process, which the
+# directive catches. Run check-config by hand when editing the TOML.
+RestartPreventExitStatus=64 78
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+ReadOnlyPaths=/usr/local/bin/epistula-llm-worker /etc/epistula/epistula-llm-worker.toml
+
+[Install]
+WantedBy=multi-user.target
