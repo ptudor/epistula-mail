@@ -1,0 +1,55 @@
+# Epistula package configuration: configure credentials and paths before enabling.
+# epistula-api configuration (TOML).
+# Installed as /etc/epistula/epistula-api.toml; edit in place.
+
+production = true
+
+[server]
+# JSON API listener. Plain HTTP; Apache terminates TLS (and optional mTLS)
+# in front. Loopback only — enforced when production = true.
+listen_addr              = "127.0.0.1:8784"
+read_timeout_seconds     = 30
+# 0 = unlimited: /v1/export streams are legitimately long-lived. Apache
+# fronts this listener and owns client-liveness enforcement.
+write_timeout_seconds    = 0
+idle_timeout_seconds     = 120
+shutdown_timeout_seconds = 30
+
+[admin]
+# Plaintext HTTP for /metrics, /health, /healthz. Loopback only.
+listen_addr              = "127.0.0.1:8785"
+expose_metrics           = true
+read_timeout_seconds     = 5
+write_timeout_seconds    = 10
+shutdown_timeout_seconds = 30
+
+[postgres]
+# Same database as epistula-database. Recommended: a dedicated least-privilege
+# role — SELECT on the read tables + api_tokens (plus UPDATE(last_used_at)),
+# SELECT/INSERT/UPDATE on message_annotations, nothing else.
+dsn = "" # Configure the PostgreSQL role and database before starting.
+statement_timeout = "10s"
+max_open_conns    = 20
+max_idle_conns    = 5     # connections kept warm (maps to pgx MinConns)
+conn_max_lifetime = "5m"
+
+[storage]
+# Must match epistula-database's storage.root. Daemon needs group-read on raw/.
+root = "/var/spool/epistula-database"
+
+[limits]
+default_page_size    = 50
+max_page_size        = 500
+max_export_streams   = 2
+export_page_size     = 500      # internal batch size for /v1/export
+auth_fail_limit      = 10       # failed authentications per IP per window
+auth_fail_window     = "60s"
+auth_fail_delay      = "250ms"  # fixed delay on a failed verification
+auth_cache_ttl       = "60s"    # verified-token cache; bounds revocation lag
+max_annotation_bytes = 262144   # 256 KiB cap on the annotation PUT body
+per_token_rate       = 0        # per-token request rate (req/s); 0 disables. Set well above a worker's rate, e.g. 50.
+per_token_burst      = 100      # token-bucket capacity when per_token_rate > 0
+
+[logging]
+level  = "info"   # debug | info | warn | error
+format = "text"   # text | json
