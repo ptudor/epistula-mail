@@ -1,0 +1,109 @@
+#!/bin/sh
+
+# PROVIDE: epistula_database
+# REQUIRE: LOGIN postgresql
+# KEYWORD: shutdown
+
+# Add the following lines to /etc/rc.conf to enable epistula_database:
+#
+# epistula_database_enable="YES"
+#
+# Optional (defaults shown):
+# epistula_database_user="epistula-database"
+# epistula_database_config="/usr/local/etc/epistula/epistula-database.toml"
+# epistula_database_pidfile="/var/run/epistula-database/epistula_database.pid"
+# epistula_database_logfile="/var/log/epistula_database.log"
+#
+# The pidfiles live under /var/run/epistula-database/ (a user-owned dir the
+# prestart creates), NOT directly in /var/run: daemon(8) drops to
+# ${epistula_database_user} via -u *before* it opens the pidfiles, so their
+# parent directory must be writable by that account.
+#
+# Notes:
+# - This unit runs the `serve` subcommand, which exposes Prometheus
+#   /metrics + /health on a loopback admin listener. It is NOT the
+#   delivery agent. Postfix invokes `epistula-database deliver` directly
+#   via its pipe(8) transport — see deploy/postfix/master.cf for the
+#   transport definition.
+# - `epistula-database admin ...` is a separate one-shot CLI; rc.d only
+#   manages the long-running serve process.
+
+. /etc/rc.subr
+
+name="epistula_database"
+rcvar="${name}_enable"
+
+load_rc_config $name
+
+: ${epistula_database_enable:="NO"}
+: ${epistula_database_user:="epistula-database"}
+: ${epistula_database_group:="epistula-database"}
+: ${epistula_database_config:="/usr/local/etc/epistula/epistula-database.toml"}
+: ${epistula_database_pidfile:="/var/run/epistula-database/${name}.pid"}
+: ${epistula_database_logfile:="/var/log/${name}.log"}
+
+# Privilege drop is rc.subr's job here, via ${name}_user / ${name}_group
+# (epistula_database_user / epistula_database_group above) -- NOT daemon(8)'s -u.
+# Using both fails on FreeBSD 15: because command/command_args
+# use rc.subr's default execution, rc.subr wraps the whole command in
+# `su -m ${epistula_database_user}` first, so a subsequent `daemon -u` would then
+# run as the already-unprivileged user and setusercontext() fails with
+# "daemon: failed to set user environment". rc.subr's su -m runs as root and
+# drops correctly, so daemon itself must NOT also carry -u. (The other Epistula
+# rc.d scripts here avoid the clash by using a custom start_cmd that runs daemon
+# as root with -u; we take the simpler rc.subr-native route.)
+#
+# -c chdir(/); -p writes the CHILD pid to ${pidfile} so rc.subr's check_pidfile
+# matches it against procname for status/stop; -o appends to ${logfile}. No -r,
+# so there is no restart-on-stop hazard; syslog (-S/-T) is unnecessary (the app
+# logs via slog to ${logfile}).
+pidfile="${epistula_database_pidfile}"
+procname="/usr/local/bin/epistula-database"
+command="/usr/sbin/daemon"
+# -f detaches daemon(8)'s own inherited stdio. Without it `service epistula_database start`
+# over ssh never returns — the supervisor holds the pipe until the process exits.
+# It does not replace -o/-S below: those route the child's output, -f the parent's.
+command_args="-c -f -p ${pidfile} \
+              -o ${epistula_database_logfile} \
+              ${procname} serve -config ${epistula_database_config}"
+
+start_precmd="${name}_prestart"
+stop_postcmd="${name}_poststop"
+
+epistula_database_prestart()
+{
+    if [ ! -f "${epistula_database_config}" ]; then
+        echo "${name}: config not found: ${epistula_database_config}" >&2
+        return 1
+    fi
+    # Validate config before spawning the daemon — surface TOML errors
+    # at start time rather than after the daemon backgrounds.
+    if ! /usr/local/bin/epistula-database check-config -config "${epistula_database_config}" >/dev/null 2>&1; then
+        echo "${name}: check-config failed; not starting" >&2
+        /usr/local/bin/epistula-database check-config -config "${epistula_database_config}" >&2
+        return 1
+    fi
+    # rc.subr drops to ${epistula_database_user} before running daemon(8), so the
+    # pidfiles and the -o logfile must live somewhere that account can write.
+    # /var/run is cleared at boot, so (re)create it on every start. A
+    # failure here is fatal — if the run dir can't be made, the daemon can't
+    # write its pidfiles and start would fail more cryptically later.
+    if ! install -d -o "${epistula_database_user}" -g "${epistula_database_group}" -m 750 \
+        /var/run/epistula-database; then
+        echo "${name}: cannot create /var/run/epistula-database" >&2
+        return 1
+    fi
+    # (The quickstart also pre-creates the logfile; this is the safety net for
+    # installs that didn't follow it.)
+    if [ ! -f "${epistula_database_logfile}" ]; then
+        install -o "${epistula_database_user}" -g "${epistula_database_group}" -m 640 \
+            /dev/null "${epistula_database_logfile}" 2>/dev/null || true
+    fi
+}
+
+epistula_database_poststop()
+{
+    rm -f "${pidfile}" "${pidfile}.supervisor"
+}
+
+run_rc_command "$1"
