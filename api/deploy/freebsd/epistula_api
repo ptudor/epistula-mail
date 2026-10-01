@@ -1,0 +1,103 @@
+#!/bin/sh
+
+# PROVIDE: epistula_api
+# REQUIRE: LOGIN postgresql
+# KEYWORD: shutdown
+
+# Add the following lines to /etc/rc.conf to enable epistula_api:
+#
+# epistula_api_enable="YES"
+#
+# Optional (defaults shown):
+# epistula_api_user="epistula-api"
+# epistula_api_config="/usr/local/etc/epistula/epistula-api.toml"
+# epistula_api_pidfile="/var/run/epistula-api/epistula_api.pid"
+# epistula_api_logfile="/var/log/epistula_api.log"
+#
+# The pidfiles live under /var/run/epistula-api/ (a user-owned dir the prestart
+# creates), NOT directly in /var/run: daemon(8) drops to ${epistula_api_user}
+# via -u *before* it opens the pidfiles and the -o logfile, so their parent
+# directory must be writable by that account.
+#
+# Notes:
+# - Both listeners bind loopback (API 127.0.0.1:8784, admin 127.0.0.1:8785
+#   by default). Apache terminates TLS and reverse-proxies the API; see
+#   deploy/apache/epistula-api-include.conf.
+# - The service user needs group-read on epistula-database's storage root
+#   (per-mailbox <mailbox>/raw blob tree) for GET /v1/messages/{id}/raw.
+# - Token lifecycle is epistula-database's:
+#     epistula-database admin api-token-add -name N -mailboxes "*" -permission read_content
+
+. /etc/rc.subr
+
+name="epistula_api"
+rcvar="${name}_enable"
+
+load_rc_config $name
+
+: ${epistula_api_enable:="NO"}
+: ${epistula_api_user:="epistula-api"}
+: ${epistula_api_group:="epistula-api"}
+: ${epistula_api_config:="/usr/local/etc/epistula/epistula-api.toml"}
+: ${epistula_api_pidfile:="/var/run/epistula-api/${name}.pid"}
+: ${epistula_api_logfile:="/var/log/${name}.log"}
+
+# Privilege drop is rc.subr's job here, via ${name}_user / ${name}_group
+# (epistula_api_user / epistula_api_group above) -- NOT daemon(8)'s -u.
+# Because command/command_args use rc.subr's default execution, rc.subr already
+# wraps the command in `su -m ${epistula_api_user}`; a redundant `daemon -u` would
+# then run as the already-unprivileged user and setusercontext() fails
+# ("daemon: failed to set user environment"). So daemon must NOT also carry -u.
+#
+# stop's SIGTERM reaches the Go process because -p writes the CHILD pid to
+# ${pidfile}, which rc.subr targets for stop. No -r, so no restart-on-stop
+# hazard; syslog (-S/-T) is unnecessary (the app logs via slog to ${logfile}).
+pidfile="${epistula_api_pidfile}"
+procname="/usr/local/bin/epistula-api"
+command="/usr/sbin/daemon"
+# -f detaches daemon(8)'s own inherited stdio. Without it `service epistula_api start`
+# over ssh never returns — the supervisor holds the pipe until the process exits.
+# It does not replace -o/-S below: those route the child's output, -f the parent's.
+command_args="-c -f -p ${pidfile} \
+              -o ${epistula_api_logfile} \
+              ${procname} serve -config ${epistula_api_config}"
+
+start_precmd="${name}_prestart"
+stop_postcmd="${name}_poststop"
+
+epistula_api_prestart()
+{
+    if [ ! -f "${epistula_api_config}" ]; then
+        echo "${name}: config not found: ${epistula_api_config}" >&2
+        return 1
+    fi
+    if ! /usr/local/bin/epistula-api check-config -config "${epistula_api_config}" >/dev/null 2>&1; then
+        echo "${name}: check-config failed; not starting" >&2
+        /usr/local/bin/epistula-api check-config -config "${epistula_api_config}" >&2
+        return 1
+    fi
+    # rc.subr drops to ${epistula_api_user} before running daemon(8), so the
+    # pidfiles and -o logfile must live somewhere that account can write.
+    # /var/run is cleared at boot, so (re)create the run dir on every start.
+    install -d -o "${epistula_api_user}" -g "${epistula_api_group}" -m 750 \
+        /var/run/epistula-api 2>/dev/null || true
+    # daemon(8) opens -o ${logfile} as ${epistula_api_user} (rc.subr dropped to it),
+    # so a root-owned logfile (an earlier manual run, or a newsyslog rotation
+    # that recreated it root-owned) can't be opened and start fails. Create it
+    # if missing, then re-assert ownership/mode every start — the guard must
+    # cover the pre-existing-file case, not only the missing one. A newsyslog
+    # entry that keeps rotations epistula-api-owned ships in QUICKSTART-FREEBSD.md.
+    if [ ! -f "${epistula_api_logfile}" ]; then
+        install -o "${epistula_api_user}" -g "${epistula_api_group}" -m 640 \
+            /dev/null "${epistula_api_logfile}" 2>/dev/null || true
+    fi
+    chown "${epistula_api_user}:${epistula_api_group}" "${epistula_api_logfile}" 2>/dev/null || true
+    chmod 640 "${epistula_api_logfile}" 2>/dev/null || true
+}
+
+epistula_api_poststop()
+{
+    rm -f "${pidfile}" "${pidfile}.supervisor"
+}
+
+run_rc_command "$1"
