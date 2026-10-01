@@ -1,0 +1,105 @@
+# Epistula package configuration: configure credentials and paths before enabling.
+# epistula-imap configuration (TOML).
+# Installed as /etc/epistula/epistula-imap.toml; edit in place.
+
+production = true
+
+[server]
+# IMAP listener. Implicit TLS only; no port 143, no STARTTLS.
+listen_addr     = ":993"
+tls_cert        = "/etc/letsencrypt/live/mail.example.invalid/fullchain.pem"
+tls_key         = "/etc/letsencrypt/live/mail.example.invalid/privkey.pem"
+# TLS minimum: "1.2" or "1.3". 1.0/1.1 are refused regardless.
+min_tls_version = "1.3"
+# Development-only: accept cleartext (no TLS) on the IMAP port. Refused in production.
+accept_insecure_for_dev = false
+# Graceful shutdown: seconds live sessions get to finish after SIGTERM
+# before being force-closed.
+drain_timeout_seconds = 30
+
+[admin]
+# Plaintext HTTP for /metrics, /health, /healthz. Loopback only.
+listen_addr               = "127.0.0.1:8783"
+expose_metrics            = true
+read_timeout_seconds      = 5
+write_timeout_seconds     = 10
+shutdown_timeout_seconds  = 30
+
+[postgres]
+# Same database as epistula-database. Read-mostly; APPEND writes via shared ingest path.
+dsn = "" # Configure the PostgreSQL role and database before starting.
+statement_timeout    = "10s"
+max_open_conns       = 40
+max_idle_conns       = 10    # connections kept warm (maps to pgx MinConns)
+conn_max_lifetime    = "5m"
+idle_conn_pool_size  = 20    # dedicated pool for IMAP IDLE LISTEN connections; 0 shares the main pool
+
+[storage]
+# Must match epistula-database's storage.root. The daemon needs group-read on raw/
+# and att/ for FETCH, and group-WRITE for APPEND (Sent/Drafts saves).
+root = "/var/spool/epistula-database"
+# Must match epistula-database's [storage] group_writable. true = the store uses
+# setgid group-writable modes so this daemon can write blobs on APPEND.
+group_writable = true
+
+[limits]
+per_ip_connections      = 10
+per_mailbox_connections = 5
+login_attempts          = 5
+login_window            = "60s"
+login_cooldown          = "60s"
+command_rate_per_sec    = 100
+idle_timeout            = "29m"
+max_append_bytes        = 52428800  # 50 MiB
+tls_handshake_timeout   = "10s"     # drop connections whose TLS handshake stalls
+preauth_timeout         = "60s"     # drop connections that never authenticate
+# Total Argon2id scratch memory allowed in flight across the whole daemon.
+# Every LOGIN pays a KDF, including the deliberate equalizing hash for an
+# unknown or disabled account, so this is what stops a distributed attacker
+# holding no credentials from exhausting the host's memory. 0 = a default
+# scaled to GOMAXPROCS (capped at 4096). Hashes larger than the budget
+# are refused: audit stored costs before lowering it. Allow at least 64 MiB
+# for the dummy hash and raise it for any more expensive deployed accounts.
+auth_verify_budget_mib  = 0
+# Floor every LOGIN is padded to, so an account whose stored Argon2 cost differs
+# from the default is not distinguishable by response timing. Acts as a
+# lower bound on a value calibrated at startup against this host; raise it if
+# your accounts are hashed at a higher cost than the default 64 MiB / t=3.
+auth_min_duration       = "150ms"
+
+# Archive sorting (ARCHIVE_SORTING.md at the repository root). Archive is the
+# everyday "done with this" action; Trash really deletes.
+[archive]
+# File what users archive: a message in a mailbox's \Archive folder that
+# epistula-llm-worker has classified into one of the mailbox's categories
+# (`epistula-database admin archive-category-import`) moves to that category's
+# folder. Unclassified and low-confidence mail stays in \Archive.
+sort_enabled     = false
+# Destroy what users delete: messages that have been in a mailbox's \Trash
+# folder longer than trash_retention are removed from the database, and
+# `epistula-database gc` reaps their files. Turn this on only after anything you
+# want to keep has been moved out of \Trash (archive-apply drains it).
+purge_enabled    = false
+# Delete means Archive, as in Gmail: a message a client marks deleted and
+# expunges anywhere but Trash, Drafts and Junk is archived instead of
+# destroyed (the last copy of it; a copy-then-delete move still removes), and
+# a message left marked deleted in INBOX is archived after settle_delay.
+# With this on, Mac Mail's Delete key archives once "Move deleted messages to
+# the Trash mailbox" is unchecked; moving a message to Trash is the only way
+# to destroy it. Mailboxes without an \Archive folder are unaffected.
+delete_archives  = false
+interval         = "1m"
+# Leave a just-archived message where it is this long, so a client's Undo
+# still finds it.
+settle_delay     = "5m"
+min_confidence   = 0.6
+# How long a deleted message can still be recovered from Trash.
+trash_retention  = "24h"
+# Also destroy every other copy of a deleted message's content in the mailbox
+# (an import or a COPY can leave identical copies in other folders).
+purge_all_copies = true
+batch_size       = 500
+
+[logging]
+level  = "info"   # debug | info | warn | error
+format = "text"   # text | json
