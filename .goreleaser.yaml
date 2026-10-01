@@ -1,0 +1,329 @@
+# Epistula releases use GoReleaser OSS 2.18.1. RSA OpenPGP signs packages
+# and checksums.txt. Snapshots use the disposable key in scripts/snapshot.sh.
+version: 2
+project_name: epistula-mail
+env:
+  - CGO_ENABLED=0
+builds:
+  - id: database
+    binary: epistula-database
+    dir: database
+    main: .
+    goos: [linux, freebsd, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    mod_timestamp: '{{ .CommitTimestamp }}'
+    ldflags:
+      - -s -w -X main.Version={{ .Version }} -X main.BuildTime={{ .CommitDate }}
+  - id: imap
+    binary: epistula-imap
+    dir: imap
+    main: .
+    goos: [linux, freebsd, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    mod_timestamp: '{{ .CommitTimestamp }}'
+    ldflags:
+      - -s -w -X main.Version={{ .Version }} -X main.BuildTime={{ .CommitDate }}
+  - id: api
+    binary: epistula-api
+    dir: api
+    main: .
+    goos: [linux, freebsd, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    mod_timestamp: '{{ .CommitTimestamp }}'
+    ldflags:
+      - -s -w -X main.Version={{ .Version }} -X main.BuildTime={{ .CommitDate }}
+  - id: llm-worker
+    binary: epistula-llm-worker
+    dir: llm-worker
+    main: .
+    goos: [linux, freebsd, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    mod_timestamp: '{{ .CommitTimestamp }}'
+    ldflags:
+      - -s -w -X main.Version={{ .Version }} -X main.BuildTime={{ .CommitDate }}
+  - id: mcp
+    binary: epistula-mcp
+    dir: mcp
+    main: .
+    goos: [linux, freebsd, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    mod_timestamp: '{{ .CommitTimestamp }}'
+    ldflags:
+      - -s -w -X main.Version={{ .Version }} -X main.BuildTime={{ .CommitDate }}
+archives:
+  - formats: [tar.gz]
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files:
+      - README.md
+      - CHANGELOG.md
+      - LICENSE
+      - THIRD_PARTY_NOTICES.md
+      - SECURITY.md
+      - ARCHIVE_SORTING.md
+      - docs/*.md
+      - packaging/*.toml
+      - packaging/release-signing-key.asc
+      - database/*.toml.example
+      - database/deploy/**/*
+      - imap/*.toml.example
+      - imap/deploy/**/*
+      - api/*.toml.example
+      - api/deploy/**/*
+      - llm-worker/*.toml.example
+      - llm-worker/deploy/**/*
+      - mcp/*.toml.example
+      - mcp/deploy/**/*
+nfpms:
+  - id: database
+    package_name: epistula-database
+    ids: [database]
+    file_name_template: '{{ .ConventionalFileName }}'
+    homepage: https://github.com/ptudor/epistula-mail
+    maintainer: Patrick Tudor <ptudor@ptudor.net>
+    description: Epistula delivery, administration, and mail storage.
+    license: MIT
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    section: mail
+    priority: optional
+    mtime: '{{ .CommitDate }}'
+    rpm:
+      signature:
+        key_file: '{{ .Env.RELEASE_GPG_KEY_FILE }}'
+    deb:
+      signature:
+        key_file: '{{ .Env.RELEASE_GPG_KEY_FILE }}'
+        type: origin
+    overrides:
+      deb:
+        dependencies: [ca-certificates, systemd, passwd]
+      rpm:
+        dependencies: [ca-certificates, systemd, shadow-utils]
+    contents:
+      - src: packaging/epistula-database.toml
+        dst: /etc/epistula/epistula-database.toml
+        type: config|noreplace
+        file_info:
+          mode: 0640
+      - src: packaging/epistula-database.service
+        dst: /usr/lib/systemd/system/epistula-database.service
+      - src: README.md
+        dst: /usr/share/doc/epistula-database/README.md
+      - src: docs/linux-packages.md
+        dst: /usr/share/doc/epistula-database/linux-packages.md
+      - src: THIRD_PARTY_NOTICES.md
+        dst: /usr/share/doc/epistula-database/copyright
+    scripts:
+      preinstall: packaging/epistula-database-preinstall.sh
+      postinstall: packaging/epistula-database-postinstall.sh
+      preremove: packaging/epistula-database-preremove.sh
+      postremove: packaging/postremove.sh
+  - id: imap
+    package_name: epistula-imap
+    ids: [imap]
+    file_name_template: '{{ .ConventionalFileName }}'
+    homepage: https://github.com/ptudor/epistula-mail
+    maintainer: Patrick Tudor <ptudor@ptudor.net>
+    description: Epistula IMAP access.
+    license: MIT
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    section: mail
+    priority: optional
+    mtime: '{{ .CommitDate }}'
+    rpm:
+      signature:
+        key_file: '{{ .Env.RELEASE_GPG_KEY_FILE }}'
+    deb:
+      signature:
+        key_file: '{{ .Env.RELEASE_GPG_KEY_FILE }}'
+        type: origin
+    overrides:
+      deb:
+        dependencies: [ca-certificates, systemd, passwd]
+      rpm:
+        dependencies: [ca-certificates, systemd, shadow-utils]
+    contents:
+      - src: packaging/epistula-imap.toml
+        dst: /etc/epistula/epistula-imap.toml
+        type: config|noreplace
+        file_info:
+          mode: 0640
+      - src: packaging/epistula-imap.service
+        dst: /usr/lib/systemd/system/epistula-imap.service
+      - src: README.md
+        dst: /usr/share/doc/epistula-imap/README.md
+      - src: docs/linux-packages.md
+        dst: /usr/share/doc/epistula-imap/linux-packages.md
+      - src: THIRD_PARTY_NOTICES.md
+        dst: /usr/share/doc/epistula-imap/copyright
+    scripts:
+      preinstall: packaging/epistula-imap-preinstall.sh
+      postinstall: packaging/epistula-imap-postinstall.sh
+      preremove: packaging/epistula-imap-preremove.sh
+      postremove: packaging/postremove.sh
+  - id: api
+    package_name: epistula-api
+    ids: [api]
+    file_name_template: '{{ .ConventionalFileName }}'
+    homepage: https://github.com/ptudor/epistula-mail
+    maintainer: Patrick Tudor <ptudor@ptudor.net>
+    description: Epistula HTTP API.
+    license: MIT
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    section: mail
+    priority: optional
+    mtime: '{{ .CommitDate }}'
+    rpm:
+      signature:
+        key_file: '{{ .Env.RELEASE_GPG_KEY_FILE }}'
+    deb:
+      signature:
+        key_file: '{{ .Env.RELEASE_GPG_KEY_FILE }}'
+        type: origin
+    overrides:
+      deb:
+        dependencies: [ca-certificates, systemd, passwd]
+      rpm:
+        dependencies: [ca-certificates, systemd, shadow-utils]
+    contents:
+      - src: packaging/epistula-api.toml
+        dst: /etc/epistula/epistula-api.toml
+        type: config|noreplace
+        file_info:
+          mode: 0640
+      - src: packaging/epistula-api.service
+        dst: /usr/lib/systemd/system/epistula-api.service
+      - src: README.md
+        dst: /usr/share/doc/epistula-api/README.md
+      - src: docs/linux-packages.md
+        dst: /usr/share/doc/epistula-api/linux-packages.md
+      - src: THIRD_PARTY_NOTICES.md
+        dst: /usr/share/doc/epistula-api/copyright
+    scripts:
+      preinstall: packaging/epistula-api-preinstall.sh
+      postinstall: packaging/epistula-api-postinstall.sh
+      preremove: packaging/epistula-api-preremove.sh
+      postremove: packaging/postremove.sh
+  - id: llm-worker
+    package_name: epistula-llm-worker
+    ids: [llm-worker]
+    file_name_template: '{{ .ConventionalFileName }}'
+    homepage: https://github.com/ptudor/epistula-mail
+    maintainer: Patrick Tudor <ptudor@ptudor.net>
+    description: Epistula model annotation worker.
+    license: MIT
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    section: mail
+    priority: optional
+    mtime: '{{ .CommitDate }}'
+    rpm:
+      signature:
+        key_file: '{{ .Env.RELEASE_GPG_KEY_FILE }}'
+    deb:
+      signature:
+        key_file: '{{ .Env.RELEASE_GPG_KEY_FILE }}'
+        type: origin
+    overrides:
+      deb:
+        dependencies: [ca-certificates, systemd, passwd]
+      rpm:
+        dependencies: [ca-certificates, systemd, shadow-utils]
+    contents:
+      - src: packaging/epistula-llm-worker.toml
+        dst: /etc/epistula/epistula-llm-worker.toml
+        type: config|noreplace
+        file_info:
+          mode: 0640
+      - src: packaging/epistula-llm-worker.service
+        dst: /usr/lib/systemd/system/epistula-llm-worker.service
+      - src: README.md
+        dst: /usr/share/doc/epistula-llm-worker/README.md
+      - src: docs/linux-packages.md
+        dst: /usr/share/doc/epistula-llm-worker/linux-packages.md
+      - src: THIRD_PARTY_NOTICES.md
+        dst: /usr/share/doc/epistula-llm-worker/copyright
+    scripts:
+      preinstall: packaging/epistula-llm-worker-preinstall.sh
+      postinstall: packaging/epistula-llm-worker-postinstall.sh
+      preremove: packaging/epistula-llm-worker-preremove.sh
+      postremove: packaging/postremove.sh
+  - id: mcp
+    package_name: epistula-mcp
+    ids: [mcp]
+    file_name_template: '{{ .ConventionalFileName }}'
+    homepage: https://github.com/ptudor/epistula-mail
+    maintainer: Patrick Tudor <ptudor@ptudor.net>
+    description: Epistula MCP connector.
+    license: MIT
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    section: mail
+    priority: optional
+    mtime: '{{ .CommitDate }}'
+    rpm:
+      signature:
+        key_file: '{{ .Env.RELEASE_GPG_KEY_FILE }}'
+    deb:
+      signature:
+        key_file: '{{ .Env.RELEASE_GPG_KEY_FILE }}'
+        type: origin
+    overrides:
+      deb:
+        dependencies: [ca-certificates, systemd, passwd]
+      rpm:
+        dependencies: [ca-certificates, systemd, shadow-utils]
+    contents:
+      - src: packaging/epistula-mcp.toml
+        dst: /etc/epistula/epistula-mcp.toml
+        type: config|noreplace
+        file_info:
+          mode: 0640
+      - src: packaging/epistula-mcp.service
+        dst: /usr/lib/systemd/system/epistula-mcp.service
+      - src: README.md
+        dst: /usr/share/doc/epistula-mcp/README.md
+      - src: docs/linux-packages.md
+        dst: /usr/share/doc/epistula-mcp/linux-packages.md
+      - src: THIRD_PARTY_NOTICES.md
+        dst: /usr/share/doc/epistula-mcp/copyright
+    scripts:
+      preinstall: packaging/epistula-mcp-preinstall.sh
+      postinstall: packaging/epistula-mcp-postinstall.sh
+      preremove: packaging/epistula-mcp-preremove.sh
+      postremove: packaging/postremove.sh
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+signs:
+  - artifacts: checksum
+    cmd: gpg
+    stdin: '{{ .Env.NFPM_PASSPHRASE }}'
+    args:
+      - --batch
+      - --pinentry-mode=loopback
+      - --passphrase-fd=0
+      - --local-user={{ .Env.RELEASE_GPG_FINGERPRINT }}
+      - --output=${signature}
+      - --detach-sign
+      - ${artifact}
+changelog:
+  disable: true
+release:
+  github:
+    owner: ptudor
+    name: epistula-mail
+  draft: true
+  prerelease: auto
+  header: |
+    Epistula's five executables are included in each platform archive.
+    Linux DEBs and RPMs install without starting or enabling services.
+    Packages and checksums.txt use the published OpenPGP release key.
+    See docs/releases.md for verification and docs/linux-packages.md for setup.
