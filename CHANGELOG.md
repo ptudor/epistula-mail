@@ -1,5 +1,15 @@
 # Epistula changelog
 
+## Unreleased
+
+- epistula-api: add `GET /v1/messages/{id}/attachments/{part}`, which streams one
+  attachment's decoded bytes to a `read_content` token in the message's mailbox
+  scope. The response is a non-rendering download (`Content-Disposition:
+  attachment`, `nosniff`, a sandboxing CSP), and the blob's size is checked
+  against the database before any header is sent, as for `/raw`. The service
+  user now also reads the `<mailbox>/att` blob tree, which the storage group
+  already covers.
+
 ## 1.0.0 — 2026-10-01
 
 - Establish Epistula's public repository from the current five-component baseline,

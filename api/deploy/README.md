@@ -61,7 +61,7 @@ those two answer 503 while everything else works.
 
 ## Blob access
 
-`GET /v1/messages/{id}/raw` streams from epistula-database's per-mailbox blob tree (`<mailbox>/raw/...`). Put the `epistula-api` user in the storage group (the same group the IMAP server reads with) so the blobs are group-readable; the daemon never writes blobs.
+`GET /v1/messages/{id}/raw` and `GET /v1/messages/{id}/attachments/{part}` stream from epistula-database's per-mailbox blob trees (`<mailbox>/raw/...` and `<mailbox>/att/...`). Put the `epistula-api` user in the storage group (the same group the IMAP server reads with) so the blobs are group-readable; the daemon never writes blobs.
 
 ## Smoke test after install
 

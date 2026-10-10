@@ -247,6 +247,7 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /v1/messages/{id}", s.api("/v1/messages/{id}", s.handleMessage))
 	mux.Handle("GET /v1/messages/{id}/text", s.api("/v1/messages/{id}/text", s.handleMessageText))
 	mux.Handle("GET /v1/messages/{id}/raw", s.api("/v1/messages/{id}/raw", s.handleMessageRaw))
+	mux.Handle("GET /v1/messages/{id}/attachments/{part}", s.api("/v1/messages/{id}/attachments/{part}", s.handleMessageAttachment))
 	mux.Handle("PUT /v1/messages/{id}/annotation", s.api("/v1/messages/{id}/annotation", s.handleAnnotationPut))
 	mux.Handle("POST /v1/pass-required/prune", s.api("/v1/pass-required/prune", s.handlePassRequiredPrune))
 	mux.Handle("PUT /v1/messages/{id}/classification", s.api("/v1/messages/{id}/classification", s.handleClassificationPut))

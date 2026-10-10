@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"strconv"
@@ -18,7 +19,8 @@ import (
 	"github.com/ptudor/epistula-mail/database/blob"
 )
 
-// Single-message endpoints: full document, plaintext projection, raw bytes.
+// Single-message endpoints: full document, plaintext projection, raw bytes,
+// one attachment's bytes.
 
 // safeShortSHA truncates a hex sha256 to 16 chars for logging without
 // assuming the column holds a full-length digest — a store already corrupt
@@ -506,49 +508,11 @@ func (s *server) handleMessageRaw(w http.ResponseWriter, r *http.Request, tok *a
 		return
 	}
 
-	// The blob tenant is the owning mailbox (ref.Mailbox = mb.name). It comes
-	// from the DB, which constrains names to the path-safe charset; a parse
-	// failure is store/schema corruption, surfaced as an internal error.
-	tenant, terr := blob.ParseTenant(ref.Mailbox)
-	if terr != nil {
-		slog.Error("raw blob tenant invalid", "message_id", id,
-			"mailbox", ref.Mailbox, "err", terr)
-		problemInternal(w, r)
-		return
-	}
-	bucket := blob.BucketFromTime(ref.RawBlobDate)
-	rc, err := s.store.Open(blob.KindRaw, tenant, bucket, ref.RawSHA256)
-	if err != nil {
-		// A DB row whose blob is gone is store corruption — same
-		// operator-paging condition the IMAP server raises as SERVERBUG.
-		slog.Error("raw blob open", "message_id", id,
-			"sha16", safeShortSHA(ref.RawSHA256), "bucket", bucket, "err", err)
-		problemInternal(w, r)
+	rc := s.openSizedBlob(w, r, id, blob.KindRaw, ref.Mailbox, ref.RawBlobDate, ref.RawSHA256, ref.RawSize)
+	if rc == nil {
 		return
 	}
 	defer rc.Close()
-
-	// Content-Length is announced from the DB's raw_size but the bytes come
-	// off disk. If they disagree the response is malformed either way:
-	// disk < DB leaves the client blocking for bytes that never arrive
-	// (a stalled Apache proxy worker), and disk > DB makes net/http refuse
-	// the overflow, so io.Copy fails with ErrContentLength after a
-	// truncated message/rfc822 has already gone out — which the consumer
-	// re-parses as a different message. Refuse before writing any header.
-	//
-	// blob.Store.Open returns an *os.File, so the assertion holds; if Stat
-	// itself fails, stream anyway rather than failing closed on an
-	// unrelated errno. This is the R-060 check epistula-imap already
-	// applies to the same blobs (RO5X-005).
-	if statter, ok := rc.(interface{ Stat() (os.FileInfo, error) }); ok {
-		if fi, statErr := statter.Stat(); statErr == nil && fi.Size() != ref.RawSize {
-			slog.Error("raw blob size mismatch", "message_id", id,
-				"sha16", safeShortSHA(ref.RawSHA256),
-				"db_size", ref.RawSize, "disk_size", fi.Size())
-			problemInternal(w, r)
-			return
-		}
-	}
 
 	w.Header().Set("Content-Type", "message/rfc822")
 	w.Header().Set("Content-Length", strconv.FormatInt(ref.RawSize, 10))
@@ -558,4 +522,180 @@ func (s *server) handleMessageRaw(w http.ResponseWriter, r *http.Request, tok *a
 		// do is log and let the connection tear down.
 		slog.Warn("raw blob stream", "message_id", id, "err", err)
 	}
+}
+
+// ---- GET /v1/messages/{id}/attachments/{part} ----
+
+// maxPartNumberLen bounds the {part} path value. Ingest numbers parts as an
+// IMAP part path ("2", "1.2.3") under a nesting depth of 10 and at most 200
+// parts per message, so a real part number is far shorter than this.
+const maxPartNumberLen = 64
+
+// validPartNumber reports whether s has the shape ingest gives every
+// attachment's part_number: dot-separated decimal fields, none empty.
+func validPartNumber(s string) bool {
+	if s == "" || len(s) > maxPartNumberLen {
+		return false
+	}
+	afterDot := true
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c >= '0' && c <= '9':
+			afterDot = false
+		case c == '.' && !afterDot:
+			afterDot = true
+		default:
+			return false
+		}
+	}
+	return !afterDot
+}
+
+// handleMessageAttachment streams one attachment's decoded bytes: the payload
+// ingest wrote to the mailbox's att blob tree. {part} is the part_number that
+// GET /v1/messages/{id} lists for the attachment.
+//
+// The bytes, the filename and the content type all come from whoever sent the
+// mail. The response therefore presents the file as a download that must not
+// be sniffed or rendered as a page (Content-Disposition: attachment, nosniff,
+// a sandboxing CSP), and the stored type is re-validated before it becomes a
+// header.
+func (s *server) handleMessageAttachment(w http.ResponseWriter, r *http.Request, tok *apiToken) {
+	if !requirePermission(w, r, tok, auth.PermissionReadContent) {
+		return
+	}
+	id, ok := parseMessageID(w, r)
+	if !ok {
+		return
+	}
+	part := r.PathValue("part")
+	if !validPartNumber(part) {
+		problemNotFound(w, r, "No such attachment.")
+		return
+	}
+	// Resolve and scope-check the message before looking at its attachments,
+	// so an out-of-scope message is a 403 whichever part was asked for: the
+	// same 403-vs-404 contract as the other message routes.
+	ref := s.resolveMessage(w, r, id)
+	if ref == nil {
+		return
+	}
+	if !requireMailboxScope(w, r, tok, ref.MailboxID, ref.Mailbox) {
+		return
+	}
+
+	var (
+		filename    *string
+		contentType string
+		size        int64
+		shaHex      string
+		blobDate    time.Time
+	)
+	err := s.pool.QueryRow(r.Context(),
+		`SELECT filename, content_type, size_bytes, encode(sha256, 'hex'), blob_date
+		   FROM attachments
+		  WHERE message_id = $1 AND part_number = $2
+		  ORDER BY id LIMIT 1`, id, part,
+	).Scan(&filename, &contentType, &size, &shaHex, &blobDate)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			problemNotFound(w, r, "No such attachment.")
+			return
+		}
+		slog.Error("attachment query", "message_id", id, "err", err)
+		problemInternal(w, r)
+		return
+	}
+
+	// Attachment blobs live in the owning mailbox's tree, like the raw message.
+	rc := s.openSizedBlob(w, r, id, blob.KindAttachment, ref.Mailbox, blobDate, shaHex, size)
+	if rc == nil {
+		return
+	}
+	defer rc.Close()
+
+	h := w.Header()
+	h.Set("Content-Type", attachmentMediaType(contentType))
+	h.Set("Content-Disposition", attachmentDisposition(filename))
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Content-Security-Policy", "sandbox")
+	h.Set("Content-Length", strconv.FormatInt(size, 10))
+	w.WriteHeader(http.StatusOK)
+	if _, err := io.Copy(w, rc); err != nil {
+		slog.Warn("attachment blob stream", "message_id", id, "err", err)
+	}
+}
+
+// attachmentMediaType returns the stored content type as a bare, well-formed
+// type/subtype, or application/octet-stream when it is not one. Ingest stores
+// the media type parsed from the sender's Content-Type header, so the value is
+// re-checked here before it becomes a response header.
+func attachmentMediaType(stored string) string {
+	mediatype, _, err := mime.ParseMediaType(stored)
+	if err == nil && strings.Contains(mediatype, "/") {
+		if v := mime.FormatMediaType(mediatype, nil); v != "" {
+			return v
+		}
+	}
+	return "application/octet-stream"
+}
+
+// attachmentDisposition builds the Content-Disposition header. FormatMediaType
+// quotes the filename, or encodes it per RFC 2231 when it holds non-ASCII or
+// control bytes, so a hostile filename cannot inject a header or a parameter.
+func attachmentDisposition(filename *string) string {
+	if filename != nil && *filename != "" {
+		if v := mime.FormatMediaType("attachment", map[string]string{"filename": *filename}); v != "" {
+			return v
+		}
+	}
+	return "attachment"
+}
+
+// openSizedBlob opens one blob of a message's owning mailbox and checks that
+// its size on disk is the size the database records, before any header is
+// written. On failure it writes the problem response and returns nil.
+//
+// Content-Length is announced from the database but the bytes come off disk.
+// If they disagree the response is malformed either way: disk < DB leaves the
+// client blocking for bytes that never arrive (a stalled Apache proxy worker),
+// and disk > DB makes net/http refuse the overflow, so io.Copy fails with
+// ErrContentLength after a truncated body has already gone out — which a
+// consumer re-parses as different content. Refuse before writing any header.
+// This is the R-060 check epistula-imap already applies to the same blobs
+// (RO5X-005).
+func (s *server) openSizedBlob(w http.ResponseWriter, r *http.Request, id int64, kind blob.Kind, mailbox string, blobDate time.Time, shaHex string, size int64) io.ReadCloser {
+	// The blob tenant is the owning mailbox (mb.name). It comes from the DB,
+	// which constrains names to the path-safe charset; a parse failure is
+	// store/schema corruption, surfaced as an internal error.
+	tenant, err := blob.ParseTenant(mailbox)
+	if err != nil {
+		slog.Error(string(kind)+" blob tenant invalid", "message_id", id,
+			"mailbox", mailbox, "err", err)
+		problemInternal(w, r)
+		return nil
+	}
+	bucket := blob.BucketFromTime(blobDate)
+	rc, err := s.store.Open(kind, tenant, bucket, shaHex)
+	if err != nil {
+		// A DB row whose blob is gone is store corruption — same
+		// operator-paging condition the IMAP server raises as SERVERBUG.
+		slog.Error(string(kind)+" blob open", "message_id", id,
+			"sha16", safeShortSHA(shaHex), "bucket", bucket, "err", err)
+		problemInternal(w, r)
+		return nil
+	}
+	// blob.Store.Open returns an *os.File, so the assertion holds; if Stat
+	// itself fails, stream anyway rather than failing closed on an unrelated
+	// errno.
+	if statter, ok := rc.(interface{ Stat() (os.FileInfo, error) }); ok {
+		if fi, statErr := statter.Stat(); statErr == nil && fi.Size() != size {
+			slog.Error(string(kind)+" blob size mismatch", "message_id", id,
+				"sha16", safeShortSHA(shaHex), "db_size", size, "disk_size", fi.Size())
+			rc.Close()
+			problemInternal(w, r)
+			return nil
+		}
+	}
+	return rc
 }

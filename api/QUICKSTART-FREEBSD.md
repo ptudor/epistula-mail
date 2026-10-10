@@ -62,9 +62,9 @@ pw groupadd -n "${SVC_GROUP}" 2>/dev/null || true
 pw useradd  -n "${SVC_USER}" -g "${SVC_GROUP}" -d /nonexistent \
             -s /usr/sbin/nologin -c "Epistula api" 2>/dev/null || true
 
-# GET /v1/messages/{id}/raw streams from epistula-database's per-mailbox blob tree
-# (<mailbox>/raw/...). Put the epistula-api user in the storage group so the blobs
-# are group-readable.
+# GET /v1/messages/{id}/raw and .../attachments/{part} stream from epistula-database's
+# per-mailbox blob trees (<mailbox>/raw/... and <mailbox>/att/...). Put the
+# epistula-api user in the storage group so the blobs are group-readable.
 pw groupmod "${STORAGE_GROUP}" -m "${SVC_USER}"
 
 # rc.d log file + run dir are created by the rc.d prestart on start; nothing
@@ -223,10 +223,11 @@ reason.
 scoped to that mailbox. Re-mint with the right `-mailboxes`. `401` is a bad/absent
 token; `404` is a genuinely-absent resource.
 
-**`GET .../raw` returns 5xx / permission error** — the `epistula-api` user isn't in
-the `${STORAGE_GROUP}` group, or the blob tree isn't group-readable. Re-check
-step 1 and `ls -l /var/spool/epistula-database/*/raw` (blobs are partitioned per
-mailbox, so there is no top-level `raw/` — each mailbox has its own subtree).
+**`GET .../raw` or `.../attachments/{part}` returns 5xx / permission error** — the
+`epistula-api` user isn't in the `${STORAGE_GROUP}` group, or the blob tree isn't
+group-readable. Re-check step 1 and `ls -l /var/spool/epistula-database/*/raw`
+(or `*/att` for attachments; blobs are partitioned per mailbox, so there is no
+top-level `raw/` or `att/` — each mailbox has its own subtrees).
 
 **`503` on `PUT .../annotation`** — the `message_annotations` migration isn't
 applied. Run `epistula-database migrate up` on the store.

@@ -24,7 +24,8 @@
 #   by default). Apache terminates TLS and reverse-proxies the API; see
 #   deploy/apache/epistula-api-include.conf.
 # - The service user needs group-read on epistula-database's storage root
-#   (per-mailbox <mailbox>/raw blob tree) for GET /v1/messages/{id}/raw.
+#   (per-mailbox <mailbox>/raw and <mailbox>/att blob trees) for
+#   GET /v1/messages/{id}/raw and GET /v1/messages/{id}/attachments/{part}.
 # - Token lifecycle is epistula-database's:
 #     epistula-database admin api-token-add -name N -mailboxes "*" -permission read_content
 
