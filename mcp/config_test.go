@@ -47,6 +47,9 @@ token = "tok-abc"
 	if cfg.MaxTextBytes != defaultMaxTextBytes {
 		t.Errorf("MaxTextBytes = %d, want %d", cfg.MaxTextBytes, defaultMaxTextBytes)
 	}
+	if cfg.MaxAttachmentBytes != defaultMaxAttachmentBytes {
+		t.Errorf("MaxAttachmentBytes = %d, want %d", cfg.MaxAttachmentBytes, defaultMaxAttachmentBytes)
+	}
 	if cfg.BaseURL != "http://127.0.0.1:8784" || cfg.Token != "tok-abc" {
 		t.Errorf("got BaseURL=%q Token=%q", cfg.BaseURL, cfg.Token)
 	}
@@ -63,6 +66,7 @@ request_timeout = "10s"
 [mcp]
 max_limit = 50
 max_text_bytes = 1024
+max_attachment_bytes = 2097152
 `)
 	cfg, err := loadConfig(p)
 	if err != nil {
@@ -76,6 +80,9 @@ max_text_bytes = 1024
 	}
 	if cfg.MaxTextBytes != 1024 {
 		t.Errorf("MaxTextBytes = %d, want 1024", cfg.MaxTextBytes)
+	}
+	if cfg.MaxAttachmentBytes != 2<<20 {
+		t.Errorf("MaxAttachmentBytes = %d, want %d", cfg.MaxAttachmentBytes, 2<<20)
 	}
 }
 

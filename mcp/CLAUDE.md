@@ -7,8 +7,8 @@ this week?", "find the invoice from the hosting company", "summarize this thread
 `epistula-api`** and speaks slimmed JSON the model can reason about.
 
 **Status: implemented with unit and mock API integration coverage.** Both
-transports, configuration, and deployment artifacts are in place. Six read tools
-are registered by default; a distinct annotation token enables the seventh tool.
+transports, configuration, and deployment artifacts are in place. Seven read tools
+are registered by default; a distinct annotation token enables the eighth tool.
 `go test -race ./...` exercises round trips against an HTTP test server, and
 `make smoke` prints a stdio handshake and tool list. Acceptance against an
 operator's live API and scoped tokens remains a deployment check. This document
@@ -68,7 +68,7 @@ process asks for.
   data epistula-api doesn't serve, the feature belongs in epistula-api first.
 - **Capability follows the token — and there are two of them.** Don't add MCP-side
   permission knobs that shadow epistula-api's token scopes; the deployment decides what
-  the MCP can do by which tokens it mints. `token` authenticates the six read tools.
+  the MCP can do by which tokens it mints. `token` authenticates the seven read tools.
   `annotate_token` is a **separate, optional** credential used only by `annotate`,
   and **when it is absent the `annotate` tool is not registered at all** — with no
   write credential there is no capability to advertise. That is not a permission
@@ -87,7 +87,8 @@ process asks for.
 - **Slim the payload.** Project responses to the fields that answer the question and
   omit nulls/empties. Never forward `html_body`. Cap message text at a configured
   byte budget with an explicit `truncated: true` marker. Cap every list with a
-  clamped `limit`.
+  clamped `limit`. Refuse an attachment over `max_attachment_bytes` rather than
+  truncate it — a cut-off file is a different, broken file.
 - **Fail loud, bounded, correctable.** A bad argument or an upstream RFC 7807 problem
   comes back as `{"error": …}` tool-result data the model can correct (status, title,
   detail — bounded, never a full upstream body dump), not a protocol fault. Timeouts
@@ -119,7 +120,7 @@ Postgres + content-addressed blob store     (schema owned by epistula-database)
 
 ## Tools
 
-Seven tools. Names and argument names are chosen for the model to reason about, not
+Eight tools. Names and argument names are chosen for the model to reason about, not
 for parity with epistula-api's URL shapes. Prefer the domain tools; `search` is the
 free-text entry point.
 
@@ -130,11 +131,28 @@ free-text entry point.
 | `messages` | `GET …/folders/{f}/messages` | Paginated message list in one folder. Filters: `since`/`before` (received), `sent_since`/`sent_before`, `flag`/`not_flag`, `larger`/`smaller`, `tag`, `category`, `annotated_by`/`not_annotated_by`; `cursor`, `limit`. |
 | `message` | `GET /v1/messages/{id}` | One message in full: subject, from/to/cc, dates, flags, selected headers, attachment metadata, ranked annotations. `html_body` is dropped; `text_body` is capped. |
 | `message_text` | `GET /v1/messages/{id}/text` | Just the ready-to-read plaintext body (HTML→text already applied at ingest), byte-capped with a `truncated` flag and an `offset` argument to continue. |
+| `attachment` | `GET /v1/messages/{id}/attachments/{part}` | One attachment's file, by message `id` and the `part_number` that `message` lists. Returned as MCP content rather than JSON — see below. Refused over `max_attachment_bytes`. |
 | `search` | `GET /v1/search` | Full-text search (`q=` over the tsvector) with optional `mailbox`, `folder`, `tag`, `category`, `since`/`before`; cursor-paginated. |
 | `annotate` | `PUT /v1/messages/{id}/annotation` | Store/replace this model's annotation: `tags`, advisory `category`, optional `summary`. Idempotent on `(message_id, model)`. **Registered only when `annotate_token` is configured**, and the write rides that token, never the read one. |
 
-Six tools by default, seven with an `annotate_token`. Read-only is the default
+Seven tools by default, eight with an `annotate_token`. Read-only is the default
 posture on purpose.
+
+**`attachment` returns the file itself, in the content type that fits it.** The
+first content block is always a JSON description (`id`, `part_number`,
+`content_type`, `size_bytes`, `filename` when the sender gave one, `returned_as`).
+The second is the file: an `image` block for PNG/JPEG/GIF/WebP (the types a Claude
+model takes as an image), an embedded `resource` with `text` for a UTF-8 `text/*`
+file, and an embedded `resource` with a base64 `blob` and its MIME type for
+everything else, PDFs included. An empty file gets the description only. What a
+client does with a blob is the client's business: some save it to disk and show
+the model the path, others may not pass it on at all. Type and filename come from
+epistula-api's `Content-Type` and `Content-Disposition` headers, and the whole
+file is buffered under `max_attachment_bytes` (default 10 MiB): a declared
+`Content-Length` over the cap is refused before the body is read, an undeclared
+one as soon as the read crosses it. The tool needs only `read_content`, which the
+read token already holds for message bodies; attachment content is as
+attacker-controlled as a body, and the tool adds no write capability.
 
 Deliberately excluded from v1 (see `ROADMAP.md` "Later / maybe"): `raw` (RFC 5322
 bytes are for reprocessing pipelines, not context windows), `export` (bulk NDJSON),
@@ -183,9 +201,10 @@ annotate_token  = ""                         # optional WRITE token: write_annot
 request_timeout = "30s"
 
 [mcp]
-http_token     = ""    # bearer for -http; required to bind non-loopback
-max_limit      = 200   # clamp for every list/search `limit`
-max_text_bytes = 65536 # cap on message text returned to the model
+http_token           = ""       # bearer for -http; required to bind non-loopback
+max_limit            = 200      # clamp for every list/search `limit`
+max_text_bytes       = 65536    # cap on message text returned to the model
+max_attachment_bytes = 10485760 # largest file the attachment tool returns
 ```
 
 Env overrides (highest precedence, so the stdio path can run with zero files):
@@ -205,7 +224,7 @@ epistula-database admin api-token-add -name epistula-mcp-annotate \
     -mailboxes "jdoe" -permission write_annotation
 ```
 
-Leaving `annotate_token` empty is the default and the safe posture: six read tools,
+Leaving `annotate_token` empty is the default and the safe posture: seven read tools,
 no write capability present for a model reading attacker-supplied mail to reach.
 Setting both keys to the same value is rejected at config load.
 
@@ -215,7 +234,8 @@ Setting both keys to the same value is rejected at config load.
 - `config.go` — TOML + env overrides; https/loopback validation; caps.
 - `client.go` — the epistula-api HTTP client: bearer header, timeouts, RFC 7807
   decoding into bounded tool errors, retry-free (the model retries).
-- `tools.go` — the seven tools, typed input structs, window parsing, slimming.
+- `tools.go` — the eight tools, typed input structs, window parsing, slimming,
+  attachment content mapping.
 - `auth.go` — `-http` bearer middleware + loopback-bind guard.
 - `*_test.go` — pure-logic tests + `httptest`-mock-epistula-api integration tests.
 - `version.go` — `main.Version`/`main.BuildTime` stamped via `-ldflags`
@@ -257,7 +277,8 @@ which still means treating `.mcp.json` itself as sensitive if you inline the tok
 ```
 
 Smoke test: pipe an `initialize` → `notifications/initialized` → `tools/list`
-JSON-RPC sequence into the binary and confirm the seven tools come back
+JSON-RPC sequence into the binary and confirm the seven read tools come back
+(eight with an `annotate_token`)
 (`make smoke`; hold stdin open briefly so the SDK flushes before EOF).
 
 ## Security posture

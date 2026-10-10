@@ -52,7 +52,7 @@ token's scope — epistula-api enforces it at the SQL level.
 
 **Leaving `annotate_token` empty is the default and the recommended posture.** With
 no write credential the `annotate` tool is not registered at all, so the connector
-advertises six read tools and nothing that writes. That matters because message
+advertises seven read tools and nothing that writes. That matters because message
 bodies are attacker-controlled: anyone who can email you can put instructions in
 one, aimed at the model that reads it. Splitting the credential means the token
 exposed to that content cannot write; a single token carrying `write_annotation`
@@ -69,14 +69,17 @@ loopback.
 ## Smoke test after install
 
 ```sh
-# stdio: the SDK handshake should list all seven tools.
+# stdio: the SDK handshake should list the seven read tools, plus annotate when an
+# annotate_token is configured.
 MAIL_MCP_BASE_URL=http://127.0.0.1:8784 MAIL_MCP_TOKEN=... make smoke
 
 # -http daemon: point an MCP client at http://127.0.0.1:8786 (Authorization:
 # Bearer <http_token> if set). tools/list should return:
-#   mailboxes folders messages message message_text search annotate
+#   mailboxes folders messages message message_text attachment search annotate
 ```
 
 Omitted, zero and negative tool list/search limits use the API's configured default capped by MCP `max_limit`, via `limit=default:<cap>`. Explicit positive values are clamped normally.
 
 The message tool returns bounded inspection metadata with explicit continuation. Supply `attachment_after`/`annotation_after` from `next_attachment`/`next_annotation` to inspect later parts/models. For a long summary, supply `annotation_model` and that model's `summary_next_offset` as `summary_offset` (UTF-8 bytes). All models remain accessible and primary/ranking information remains available. `metadata_truncated` identifies more attachment/model pages; individual summaries carry their own continuation. Use message_text for remaining body text. API consumers that omit the inspection parameters still get the full document.
+
+The attachment tool fetches one attachment's file by message id and the `part_number` the message tool lists. A PNG, JPEG, GIF or WebP image is returned as an MCP image, a UTF-8 `text/*` file as an embedded text resource, and anything else (PDFs included) as an embedded blob resource with its MIME type. What the model sees of a blob is up to the MCP client: some save it to disk and report the path, others may not pass it to the model at all. Check with your client. A file over `max_attachment_bytes` (default 10 MiB) is refused, not truncated. The read token needs `read_content`, which it already has for message bodies.

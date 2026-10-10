@@ -1,7 +1,8 @@
-// The seven MCP tools over the mail store. Six read (mailboxes, folders,
-// messages, message, message_text, search) and one writes (annotate). Each tool
-// turns into exactly one epistula-api /v1 request; the response is slimmed to the
-// fields that answer the question, nulls/empties omitted, message text capped.
+// The eight MCP tools over the mail store. Seven read (mailboxes, folders,
+// messages, message, message_text, attachment, search) and one writes
+// (annotate). Each tool turns into exactly one epistula-api /v1 request; the
+// response is slimmed to the fields that answer the question, nulls/empties
+// omitted, message text capped, attachment files size-capped.
 //
 // Tool names and argument names are chosen for the model to reason about, not for
 // parity with epistula-api's URL shapes. Input structs use `jsonschema` tags so the
@@ -13,6 +14,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"mime"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -449,7 +452,8 @@ func (t *toolset) messageListResult(data any) (*mcp.CallToolResult, any, error) 
 // ---------------------------------------------------------------------------
 
 const messageDesc = "Use next_attachment/next_annotation as the corresponding after fields to continue metadata; use a model and its summary_next_offset to continue a long summary. Fetch one message by numeric id: subject, from/to/cc, dates, flags, " +
-	"attachment metadata, and its ranked annotations (tags, category, summary — highest-" +
+	"attachment metadata (fetch a file itself with `attachment` and its part_number), " +
+	"and its ranked annotations (tags, category, summary — highest-" +
 	"priority model first, the preferred one flagged primary). The plaintext body is " +
 	"included but capped; the HTML body is never returned. For a long body use " +
 	"`message_text` to page through it. Get an id from `messages` or `search`."
@@ -710,6 +714,98 @@ func capText(s string, offset, maxBytes int) (string, bool) {
 }
 
 // ---------------------------------------------------------------------------
+// attachment — one attachment's file
+// ---------------------------------------------------------------------------
+
+const attachmentDesc = "Fetch the file content of one attachment: a PDF, image, spreadsheet, " +
+	"archive or any other file a message carries. Get the message id from `messages` or " +
+	"`search`, and the attachment's part_number from the attachments list of `message`. " +
+	"A PNG, JPEG, GIF or WebP image comes back as an image you can see, a text file as " +
+	"text, and anything else as an embedded file with its MIME type, which the MCP client " +
+	"decides how to present (some save it to disk and report the path). A file larger than " +
+	"the connector's limit is refused, so check size_bytes in `message` first. A 403 means " +
+	"the token lacks read_content or isn't scoped to the message's mailbox."
+
+type attachmentInput struct {
+	ID         int64  `json:"id" jsonschema:"numeric message id from the messages or search tool"`
+	PartNumber string `json:"part_number" jsonschema:"the attachment's part_number from the message tool's attachments list, e.g. 2 or 1.2"`
+}
+
+func (t *toolset) attachment(ctx context.Context, _ *mcp.CallToolRequest, in attachmentInput) (*mcp.CallToolResult, any, error) {
+	if in.ID <= 0 {
+		return toolErr("id must be a positive message id (get one from messages or search)")
+	}
+	part := strings.TrimSpace(in.PartNumber)
+	if part == "" {
+		return toolErr("part_number is required (get it from the attachments list of the message tool)")
+	}
+	path := "/messages/" + strconv.FormatInt(in.ID, 10) + "/attachments/" + escapePathData(part)
+	resp, data, aerr := t.c.getBytes(ctx, path, t.cfg.MaxAttachmentBytes)
+	if aerr != nil {
+		return fail(aerr)
+	}
+	return attachmentResult(in.ID, part, resp.Header, data)
+}
+
+// modelImageTypes are the image types a Claude model accepts as an image
+// block. Other images (TIFF, BMP, HEIC, SVG) go out as an embedded file.
+var modelImageTypes = map[string]bool{
+	"image/png":  true,
+	"image/jpeg": true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
+// attachmentResult turns one downloaded attachment into tool content: a text
+// block describing the file, then the file itself in the MCP content type that
+// fits it. An image the model can view is an image block. A UTF-8 text file is
+// an embedded text resource. Everything else, PDFs included, is an embedded
+// blob resource carrying its MIME type, and the client decides what to do with
+// it. The type and filename come from epistula-api's response headers.
+func attachmentResult(id int64, part string, h http.Header, data []byte) (*mcp.CallToolResult, any, error) {
+	mediatype := "application/octet-stream"
+	if mt, _, err := mime.ParseMediaType(h.Get("Content-Type")); err == nil && strings.Contains(mt, "/") {
+		mediatype = mt
+	}
+	info := map[string]any{
+		"id":           id,
+		"part_number":  part,
+		"content_type": mediatype,
+		"size_bytes":   len(data),
+	}
+	if _, params, err := mime.ParseMediaType(h.Get("Content-Disposition")); err == nil {
+		setStr(info, "filename", params["filename"])
+	}
+
+	// An empty attachment has no content to embed; MCP resource contents need
+	// either text or a blob, and an empty blob says nothing the size does not.
+	var file mcp.Content
+	uri := "epistula:///messages/" + strconv.FormatInt(id, 10) + "/attachments/" + url.PathEscape(part)
+	switch {
+	case len(data) == 0:
+	case modelImageTypes[mediatype]:
+		file = &mcp.ImageContent{Data: data, MIMEType: mediatype}
+		info["returned_as"] = "image"
+	case strings.HasPrefix(mediatype, "text/") && utf8.Valid(data):
+		file = &mcp.EmbeddedResource{Resource: &mcp.ResourceContents{URI: uri, MIMEType: mediatype, Text: string(data)}}
+		info["returned_as"] = "text resource"
+	default:
+		file = &mcp.EmbeddedResource{Resource: &mcp.ResourceContents{URI: uri, MIMEType: mediatype, Blob: data}}
+		info["returned_as"] = "binary resource"
+	}
+
+	b, err := json.Marshal(info)
+	if err != nil {
+		return nil, nil, err
+	}
+	res := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}
+	if file != nil {
+		res.Content = append(res.Content, file)
+	}
+	return res, nil, nil
+}
+
+// ---------------------------------------------------------------------------
 // search — full-text over the fts tsvector
 // ---------------------------------------------------------------------------
 
@@ -825,7 +921,7 @@ func (t *toolset) annotate(ctx context.Context, _ *mcp.CallToolRequest, in annot
 
 // register wires the tools onto the server.
 //
-// The six read tools are always registered. `annotate` is registered ONLY when a
+// The seven read tools are always registered. `annotate` is registered ONLY when a
 // separate annotate_token is configured, because that credential is the tool's
 // entire capability — with no token there is nothing for it to authenticate as.
 //
@@ -845,6 +941,7 @@ func (t *toolset) register(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{Name: "messages", Description: messagesDesc}, t.messages)
 	mcp.AddTool(server, &mcp.Tool{Name: "message", Description: messageDesc}, t.message)
 	mcp.AddTool(server, &mcp.Tool{Name: "message_text", Description: messageTextDesc}, t.messageText)
+	mcp.AddTool(server, &mcp.Tool{Name: "attachment", Description: attachmentDesc}, t.attachment)
 	mcp.AddTool(server, &mcp.Tool{Name: "search", Description: searchDesc}, t.search)
 	if t.w != nil {
 		mcp.AddTool(server, &mcp.Tool{Name: "annotate", Description: annotateDesc}, t.annotate)

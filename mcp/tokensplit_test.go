@@ -59,7 +59,7 @@ func listToolNames(t *testing.T, ts *toolset) map[string]bool {
 	return names
 }
 
-const readOnlyToolCount = 6 // mailboxes, folders, messages, message, message_text, search
+const readOnlyToolCount = 7 // mailboxes, folders, messages, message, message_text, attachment, search
 
 func TestReadOnlyByDefaultOmitsAnnotateTool(t *testing.T) {
 	m := newMockAPI(t)
@@ -74,7 +74,7 @@ func TestReadOnlyByDefaultOmitsAnnotateTool(t *testing.T) {
 	if len(names) != readOnlyToolCount {
 		t.Errorf("tool count = %d (%v), want %d read tools", len(names), names, readOnlyToolCount)
 	}
-	for _, want := range []string{"mailboxes", "folders", "messages", "message", "message_text", "search"} {
+	for _, want := range []string{"mailboxes", "folders", "messages", "message", "message_text", "attachment", "search"} {
 		if !names[want] {
 			t.Errorf("read tool %q missing — the split must not cost read capability", want)
 		}

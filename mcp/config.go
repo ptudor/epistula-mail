@@ -6,7 +6,8 @@
 //     stdio connector, so the stdio path can run with ZERO files and no secret
 //     sits in a file on the client's workstation.
 //  2. The TOML file (-config, or the default search path if a file exists there).
-//  3. Built-in defaults (request_timeout=30s, max_limit=200, max_text_bytes=64KiB).
+//  3. Built-in defaults (request_timeout=30s, max_limit=200, max_text_bytes=64KiB,
+//     max_attachment_bytes=10MiB).
 //
 // Three secrets live here and must never leak: the epistula-api read `token`, the
 // optional `annotate_token`, and the `http_token` gating the -http transport.
@@ -55,6 +56,14 @@ const (
 	// minMaxResponseBytes floors the cap so a small max_text_bytes cannot
 	// make ordinary list pages start failing.
 	minMaxResponseBytes = 4 << 20
+
+	// defaultMaxAttachmentBytes bounds one file the attachment tool will
+	// download and hand to the client. The tool holds the whole file in
+	// memory and the client receives it base64-encoded (a third larger), so
+	// the cap is separate from max_response_bytes, which sizes JSON pages.
+	// Invoices, statements and datasheets sit well under it; epistula-database
+	// accepts messages up to 50 MiB, so larger attachments do exist.
+	defaultMaxAttachmentBytes = 10 << 20
 )
 
 // fileConfig is the on-disk TOML shape:
@@ -69,6 +78,7 @@ const (
 //	max_limit      = 200
 //	max_text_bytes = 65536
 //	max_response_bytes = 8388608
+//	max_attachment_bytes = 10485760
 type fileConfig struct {
 	MailAPI struct {
 		BaseURL        string `toml:"base_url"`
@@ -77,10 +87,11 @@ type fileConfig struct {
 		RequestTimeout string `toml:"request_timeout"`
 	} `toml:"mailapi"`
 	MCP struct {
-		HTTPToken        string `toml:"http_token"`
-		MaxLimit         int    `toml:"max_limit"`
-		MaxTextBytes     int    `toml:"max_text_bytes"`
-		MaxResponseBytes int    `toml:"max_response_bytes"`
+		HTTPToken          string `toml:"http_token"`
+		MaxLimit           int    `toml:"max_limit"`
+		MaxTextBytes       int    `toml:"max_text_bytes"`
+		MaxResponseBytes   int    `toml:"max_response_bytes"`
+		MaxAttachmentBytes int    `toml:"max_attachment_bytes"`
 	} `toml:"mcp"`
 }
 
@@ -105,6 +116,8 @@ type config struct {
 	MaxTextBytes   int           // cap on message text returned to the model
 	// MaxResponseBytes bounds a buffered upstream response body.
 	MaxResponseBytes int
+	// MaxAttachmentBytes bounds one file the attachment tool downloads.
+	MaxAttachmentBytes int
 }
 
 // loadConfig reads the TOML file (explicit -config, else the first existing file
@@ -146,14 +159,15 @@ func loadConfig(path string) (config, error) {
 	}
 
 	cfg := config{
-		BaseURL:          strings.TrimRight(strings.TrimSpace(fc.MailAPI.BaseURL), "/"),
-		Token:            strings.TrimSpace(fc.MailAPI.Token),
-		AnnotateToken:    strings.TrimSpace(fc.MailAPI.AnnotateToken),
-		HTTPToken:        strings.TrimSpace(fc.MCP.HTTPToken),
-		RequestTimeout:   defaultRequestTimeout,
-		MaxLimit:         defaultMaxLimit,
-		MaxTextBytes:     defaultMaxTextBytes,
-		MaxResponseBytes: defaultMaxResponseBytes,
+		BaseURL:            strings.TrimRight(strings.TrimSpace(fc.MailAPI.BaseURL), "/"),
+		Token:              strings.TrimSpace(fc.MailAPI.Token),
+		AnnotateToken:      strings.TrimSpace(fc.MailAPI.AnnotateToken),
+		HTTPToken:          strings.TrimSpace(fc.MCP.HTTPToken),
+		RequestTimeout:     defaultRequestTimeout,
+		MaxLimit:           defaultMaxLimit,
+		MaxTextBytes:       defaultMaxTextBytes,
+		MaxResponseBytes:   defaultMaxResponseBytes,
+		MaxAttachmentBytes: defaultMaxAttachmentBytes,
 	}
 
 	if cfg.Token == "" {
@@ -206,6 +220,9 @@ func loadConfig(path string) (config, error) {
 	}
 	if fc.MCP.MaxResponseBytes > 0 {
 		cfg.MaxResponseBytes = fc.MCP.MaxResponseBytes
+	}
+	if fc.MCP.MaxAttachmentBytes > 0 {
+		cfg.MaxAttachmentBytes = fc.MCP.MaxAttachmentBytes
 	}
 	if fc.MCP.MaxTextBytes > 0 {
 		// A budget narrower than the widest UTF-8 rune cannot hold one

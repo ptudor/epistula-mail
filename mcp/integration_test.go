@@ -115,6 +115,11 @@ func newMockAPI(t *testing.T) *mockAPI {
 		_, _ = io.WriteString(w, strings.Repeat("z", 100))
 	})
 
+	mux.HandleFunc("GET /v1/messages/{id}/attachments/{part}", func(w http.ResponseWriter, r *http.Request) {
+		m.capture(r)
+		serveMockAttachment(w, r.PathValue("part"))
+	})
+
 	mux.HandleFunc("GET /v1/search", func(w http.ResponseWriter, r *http.Request) {
 		m.capture(r)
 		writeJSON(w, map[string]any{
@@ -168,6 +173,9 @@ func newTestToolset(t *testing.T, m *mockAPI) *toolset {
 		RequestTimeout: defaultRequestTimeout,
 		MaxLimit:       200,
 		MaxTextBytes:   50,
+		// Small enough that the oversized fixtures in attachment_test.go
+		// cross it without the test moving megabytes.
+		MaxAttachmentBytes: mockAttachmentLimit,
 	}
 	return &toolset{
 		c:   newClient(cfg),

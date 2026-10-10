@@ -6,6 +6,8 @@
 // retries — a 429/503 passes through honestly and the model (or the human)
 // retries. There are no streaming endpoints in v1 (the MCP does not wrap
 // /v1/export), so a single http.Client with a total-deadline timeout suffices.
+// Every body is buffered under a cap: max_response_bytes for JSON and text,
+// max_attachment_bytes for an attachment's file.
 //
 // Secrets hygiene: the token rides only in the Authorization header — never in a
 // URL, never in a log, never in an error. Upstream error bodies are bounded to a
@@ -211,12 +213,69 @@ func (c *client) put(ctx context.Context, path string, body any) *apiError {
 	return aerr
 }
 
+// getBytes issues GET {base}/v1{path} for a binary body (one attachment) and
+// returns it whole. A body over limit bytes is refused rather than truncated:
+// a cut-off PDF or image is a different, broken file. When epistula-api
+// announces the length, as it does for attachments, the refusal happens before
+// any of the body is read. A non-2xx is decoded like any other response.
+func (c *client) getBytes(ctx context.Context, path string, limit int) (*http.Response, []byte, *apiError) {
+	if limit <= 0 {
+		limit = defaultMaxAttachmentBytes
+	}
+	resp, aerr := c.send(ctx, http.MethodGet, path, nil, "*/*", "", nil)
+	if aerr != nil {
+		return nil, nil, aerr
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		data, aerr := readBounded(resp, c.responseLimit())
+		if aerr != nil {
+			return resp, nil, aerr
+		}
+		return resp, data, problemError(resp, data)
+	}
+	overLimit := fmt.Sprintf("over the connector's max_attachment_bytes limit of %d bytes", limit)
+	if resp.ContentLength > int64(limit) {
+		return resp, nil, &apiError{Message: fmt.Sprintf("the attachment is %d bytes, %s",
+			resp.ContentLength, overLimit)}
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
+	if err != nil {
+		return resp, nil, &apiError{Message: fmt.Sprintf("reading epistula-api %d response failed", resp.StatusCode)}
+	}
+	if len(data) > limit {
+		return resp, nil, &apiError{Message: "the attachment is " + overLimit}
+	}
+	return resp, data, nil
+}
+
 // do performs one request and reads the full body. On a 2xx it returns
 // (resp, body, nil); on any non-2xx it decodes problem+json (or bounds a
 // snippet) into *apiError; on a transport failure it returns an *apiError with
 // only Message set. The token is set on the header and never appears anywhere
 // else.
 func (c *client) do(ctx context.Context, method, path string, params url.Values, contentType string, body []byte) (*http.Response, []byte, *apiError) {
+	resp, aerr := c.send(ctx, method, path, params, "application/json", contentType, body)
+	if aerr != nil {
+		return nil, nil, aerr
+	}
+	defer resp.Body.Close()
+
+	data, aerr := readBounded(resp, c.responseLimit())
+	if aerr != nil {
+		return resp, nil, aerr
+	}
+	if resp.StatusCode >= 400 {
+		return resp, data, problemError(resp, data)
+	}
+	return resp, data, nil
+}
+
+// send builds and performs one request, returning the response with its body
+// unread; the caller closes it. A transport failure comes back as an *apiError
+// with only Message set.
+func (c *client) send(ctx context.Context, method, path string, params url.Values, accept, contentType string, body []byte) (*http.Response, *apiError) {
 	target := c.base + "/v1" + path
 	if len(params) > 0 {
 		target += "?" + params.Encode()
@@ -228,10 +287,10 @@ func (c *client) do(ctx context.Context, method, path string, params url.Values,
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target, reader)
 	if err != nil {
-		return nil, nil, &apiError{Message: "build request: " + err.Error()}
+		return nil, &apiError{Message: "build request: " + err.Error()}
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", c.ua)
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
@@ -243,34 +302,37 @@ func (c *client) do(ctx context.Context, method, path string, params url.Values,
 		// error — never a hang, and never a leak of the target URL.
 		var nerr net.Error
 		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &nerr) && nerr.Timeout()) {
-			return nil, nil, &apiError{Message: fmt.Sprintf("epistula-api request timed out after %s", c.http.Timeout)}
+			return nil, &apiError{Message: fmt.Sprintf("epistula-api request timed out after %s", c.http.Timeout)}
 		}
-		return nil, nil, &apiError{Message: "epistula-api request failed: could not reach the API"}
+		return nil, &apiError{Message: "epistula-api request failed: could not reach the API"}
 	}
-	defer resp.Body.Close()
+	return resp, nil
+}
 
-	// Bound the buffered body. Reading max+1 makes an overflow detectable
-	// rather than silently truncating a JSON document into something that
-	// would fail to parse with a confusing error (RO5X-016).
-	limit := c.maxResponseBytes
-	if limit <= 0 {
-		limit = defaultMaxResponseBytes
+// responseLimit is the cap on a buffered JSON or text response body.
+func (c *client) responseLimit() int {
+	if c.maxResponseBytes <= 0 {
+		return defaultMaxResponseBytes
 	}
+	return c.maxResponseBytes
+}
+
+// readBounded reads a response body of at most limit bytes. Reading max+1
+// makes an overflow detectable rather than silently truncating a JSON
+// document into something that would fail to parse with a confusing error
+// (RO5X-016).
+func readBounded(resp *http.Response, limit int) ([]byte, *apiError) {
 	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
-		return resp, nil, &apiError{Message: fmt.Sprintf("reading epistula-api %d response failed", resp.StatusCode)}
+		return nil, &apiError{Message: fmt.Sprintf("reading epistula-api %d response failed", resp.StatusCode)}
 	}
 	if len(data) > limit {
-		return resp, nil, &apiError{
+		return nil, &apiError{
 			Status:  resp.StatusCode,
 			Message: fmt.Sprintf("epistula-api response exceeded the connector's %d-byte limit", limit),
 		}
 	}
-
-	if resp.StatusCode >= 400 {
-		return resp, data, problemError(resp, data)
-	}
-	return resp, data, nil
+	return data, nil
 }
 
 // problemError turns a non-2xx response into a bounded *apiError: an RFC 7807

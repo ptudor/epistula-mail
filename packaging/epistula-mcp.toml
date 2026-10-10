@@ -32,7 +32,7 @@ token = ""
 
 # OPTIONAL second token, used ONLY by the `annotate` tool. Leave it empty unless
 # you want that tool to exist: with no annotate_token the tool is not registered
-# at all, and the connector is purely read-only (six tools instead of seven).
+# at all, and the connector is purely read-only (seven tools instead of eight).
 #
 # Why a second credential rather than one token carrying write_annotation: every
 # message body is attacker-controlled input. Anyone who can send you mail can put
@@ -70,3 +70,8 @@ max_limit = 200
 # body at this size with a marker; `message_text` returns this many bytes per call
 # with an offset to continue. Default 65536.
 max_text_bytes = 65536
+
+# Largest attachment file the `attachment` tool will download and return (bytes).
+# A larger file is refused, never truncated. The whole file is held in memory and
+# reaches the MCP client base64-encoded, a third larger. Default 10485760 (10 MiB).
+max_attachment_bytes = 10485760

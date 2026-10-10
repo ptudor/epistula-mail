@@ -93,8 +93,9 @@ The database, IMAP, and API processes must use the same mounted blob root;
 database and IMAP writers must agree on `group_writable`.
 
 The worker is optional. Its [README](llm-worker/README.md) explains model setup,
-resuming exports, and scheduled rounds. The MCP connector has six read tools by
-default; configuring a distinct annotation token adds its write tool.
+resuming exports, and scheduled rounds. The MCP connector has seven read tools by
+default, including attachment download; configuring a distinct annotation token
+adds its write tool.
 
 ## Operations
 

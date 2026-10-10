@@ -68,7 +68,7 @@ func main() {
 	readClient := newClient(cfg)
 
 	// The annotate tool exists only when a second, write-scoped credential was
-	// supplied. Default (no annotate_token) is read-only: six tools, and no
+	// supplied. Default (no annotate_token) is read-only: seven tools, and no
 	// write capability for a model reading attacker-supplied mail to reach.
 	var writeClient *client
 	if cfg.AnnotateToken != "" {

@@ -67,6 +67,12 @@ Implementation items are complete; live deployment acceptance is separate.
       `offset` argument so the model can continue a long body in slices.
 - [x] `search` — `GET /v1/search` (`q` required; `mailbox`, `folder`, `tag`,
       `category`, `since`, `before`, `cursor`, `limit`).
+- [x] `attachment` — `GET /v1/messages/{id}/attachments/{part}` (`id`,
+      `part_number` from `message`). Returns a description plus the file as MCP
+      content: an image block for PNG/JPEG/GIF/WebP, an embedded text resource for
+      UTF-8 `text/*`, an embedded blob resource otherwise. Refused, never
+      truncated, over `max_attachment_bytes` (default 10 MiB); the declared
+      Content-Length is checked before the body is read.
 - [x] Tool descriptions written for the model: say `mailboxes`/`folders` first for
       orientation, name the filter vocabulary, state defaults, note that a `403`
       means the token isn't scoped for that mailbox/permission (correct by asking
@@ -99,7 +105,7 @@ Implementation items are complete; live deployment acceptance is separate.
       client without a live store. Matches the repo's integration-test culture
       without needing pgtest (this project has no DB).
 - [x] `make smoke` — stdio `initialize` → `notifications/initialized` → `tools/list`
-      piped into the binary; prints six read tools, plus `annotate` when a separate
+      piped into the binary; prints seven read tools, plus `annotate` when a separate
       annotation token is configured; trailing hold-open so the SDK flushes before EOF.
 - [ ] Operator acceptance against a live epistula-api with minted scoped tokens:
       every read tool returns expected data; `annotate` round-trips and re-`PUT`

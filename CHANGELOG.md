@@ -9,6 +9,11 @@
   against the database before any header is sent, as for `/raw`. The service
   user now also reads the `<mailbox>/att` blob tree, which the storage group
   already covers.
+- epistula-mcp: add the read-only `attachment` tool, which returns an
+  attachment as MCP content: an image for PNG/JPEG/GIF/WebP, embedded text for
+  UTF-8 text files, and an embedded blob with its MIME type for anything else,
+  such as a PDF. Files over the new `max_attachment_bytes` setting (default
+  10 MiB) are refused rather than truncated.
 
 ## 1.0.0 — 2026-10-01
 
