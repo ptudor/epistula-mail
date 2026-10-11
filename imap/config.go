@@ -73,6 +73,8 @@ type StorageConfig struct {
 }
 
 type LimitsConfig struct {
+	// Connection limits count TCP/IMAP sessions, not devices. Desktop and
+	// mobile mail clients commonly keep several sessions open for one account.
 	PerIPConnections      int    `toml:"per_ip_connections"`
 	PerMailboxConnections int    `toml:"per_mailbox_connections"`
 	LoginAttempts         int    `toml:"login_attempts"`
@@ -176,8 +178,11 @@ func DefaultConfig() *Config {
 			Root: "/var/spool/epistula-database",
 		},
 		Limits: LimitsConfig{
-			PerIPConnections:      10,
-			PerMailboxConnections: 5,
+			// Leave room for connection pools from multiple clients behind the
+			// same NAT. In particular, one Mac plus one phone can legitimately
+			// exceed five simultaneous sessions for a single mailbox.
+			PerIPConnections:      30,
+			PerMailboxConnections: 20,
 			LoginAttempts:         5,
 			LoginWindow:           "60s",
 			LoginCooldown:         "60s",

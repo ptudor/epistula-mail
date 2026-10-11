@@ -29,6 +29,41 @@ func TestDefaultConfigAcceptsTLS13(t *testing.T) {
 	}
 }
 
+func TestDefaultConnectionLimitsAccommodateClientPools(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Limits.PerMailboxConnections < 20 {
+		t.Errorf("default per-mailbox connection limit = %d, want at least 20 for multi-device client pools",
+			cfg.Limits.PerMailboxConnections)
+	}
+	if cfg.Limits.PerIPConnections <= cfg.Limits.PerMailboxConnections {
+		t.Errorf("default per-IP connection limit = %d, want more than per-mailbox limit %d for shared NAT addresses",
+			cfg.Limits.PerIPConnections, cfg.Limits.PerMailboxConnections)
+	}
+}
+
+func TestDistributedConnectionLimitsMatchDefaults(t *testing.T) {
+	want := DefaultConfig().Limits
+	for _, path := range []string{
+		"epistula-imap.toml.example",
+		"../packaging/epistula-imap.toml",
+	} {
+		t.Run(path, func(t *testing.T) {
+			cfg := DefaultConfig()
+			if err := loadTOML(path, cfg); err != nil {
+				t.Fatalf("loadTOML: %v", err)
+			}
+			if cfg.Limits.PerMailboxConnections != want.PerMailboxConnections {
+				t.Errorf("per_mailbox_connections = %d, want default %d",
+					cfg.Limits.PerMailboxConnections, want.PerMailboxConnections)
+			}
+			if cfg.Limits.PerIPConnections != want.PerIPConnections {
+				t.Errorf("per_ip_connections = %d, want default %d",
+					cfg.Limits.PerIPConnections, want.PerIPConnections)
+			}
+		})
+	}
+}
+
 func TestExplicitTLS12OptInMapsToVersionTLS12(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Postgres.DSN = "postgres://localhost/m?sslmode=disable"

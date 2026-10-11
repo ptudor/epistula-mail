@@ -85,11 +85,11 @@ These are the defaults the daemon refuses to weaken without an explicit `product
 
 - **TLS handshake deadline**: each accepted connection must complete its handshake within `tls_handshake_timeout` (default 10s) or it is dropped — handshakes run eagerly under a deadline before a connection ever reaches the IMAP server, so a connect-and-say-nothing peer cannot hold a slot.
 - **Pre-auth timeout**: a handshaken connection must authenticate within `preauth_timeout` (default 60s); the read deadline is lifted on successful LOGIN.
-- **Per-IP concurrent connection limit**: 10 (configurable). Excess connections receive `* BYE Too many connections` and are dropped. The cap is enforced at raw-TCP accept, before any TLS work, so a capped IP costs no handshake CPU (its BYE goes out in cleartext).
-- **Per-mailbox concurrent session limit**: 5 (laptop + phone + watch + spare + headroom).
+- **Per-IP concurrent connection limit**: 30 (configurable). This counts connections, not devices, and leaves room for several client connection pools behind one NAT address. Excess connections receive `* BYE Too many connections` and are dropped. The cap is enforced at raw-TCP accept, before any TLS work, so a capped IP costs no handshake CPU (its BYE goes out in cleartext).
+- **Per-mailbox concurrent session limit**: 20. Desktop and mobile mail clients commonly open several simultaneous sessions for one account, so this must not be sized as though one device used one session.
 - **Login throttling**: per-IP token bucket, 5 failed AUTH attempts per 60s. On lockout, the connection accepts the `LOGIN` command but always returns `NO [AUTHENTICATIONFAILED]` for the duration, with a configurable extra delay (default 2s) before responding to slow down credential-spray attacks.
 - **Command-rate cap**: 100 commands/sec per connection, intended to detect a misbehaving or compromised client rather than a real attack.
-- **Idle connection timeout**: 30 minutes (RFC 9051 §5.4 allows 30 min minimum for IDLE; we honor it).
+- **IDLE heartbeat**: `idle_timeout` defaults to 29 minutes and controls notification reconciliation; it does not expire an authenticated session. The protocol library separately requires client activity or an IDLE `DONE` within 35 minutes, and well-behaved clients renew IDLE before then.
 
 ### Resource bounds
 

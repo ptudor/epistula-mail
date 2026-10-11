@@ -43,13 +43,15 @@ root = "/var/spool/epistula-database"
 group_writable = true
 
 [limits]
-per_ip_connections      = 10
-per_mailbox_connections = 5
+# These count simultaneous IMAP connections, not devices. Mail clients may
+# keep several connections open per account for folder sync and IDLE.
+per_ip_connections      = 30
+per_mailbox_connections = 20
 login_attempts          = 5
 login_window            = "60s"
 login_cooldown          = "60s"
 command_rate_per_sec    = 100
-idle_timeout            = "29m"
+idle_timeout            = "29m"    # IDLE notification heartbeat, not session expiry
 max_append_bytes        = 52428800  # 50 MiB
 tls_handshake_timeout   = "10s"     # drop connections whose TLS handshake stalls
 preauth_timeout         = "60s"     # drop connections that never authenticate
