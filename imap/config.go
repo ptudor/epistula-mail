@@ -291,6 +291,13 @@ func (c *Config) Validate() error {
 	if c.Postgres.DSN == "" {
 		return errors.New("postgres.dsn is required")
 	}
+	// Parse the DSN as the connection layer will, in every mode, opening no
+	// connection. Only production's strict-check (RequireVerifiedTLS) did,
+	// so a development config passed check-config with a DSN the daemon
+	// could not start with.
+	if err := pgdsn.Usable(c.Postgres.DSN); err != nil {
+		return fmt.Errorf("postgres.dsn: %w", err)
+	}
 	// Durations are validated against what their CONSTRUCTOR does with them,
 	// not merely for parseability (RA6X-050). A value that parses and then
 	// selects a fallback, or disables a limit that has no "off" setting, is a

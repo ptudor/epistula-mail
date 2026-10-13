@@ -107,6 +107,30 @@ func TestDevelopmentKeepsLocalPlaintextDSN(t *testing.T) {
 	}
 }
 
+// TestDevelopmentRejectsUnusableDSN: development mode skips the TLS policy,
+// not the question of whether the connection layer can use the DSN at all.
+// check-config used to pass both of these and the daemon then failed to
+// start: a raw "=" in a URI query value, which pgx 5.11 refuses as libpq
+// does, and an sslrootcert the daemon cannot read.
+func TestDevelopmentRejectsUnusableDSN(t *testing.T) {
+	for _, dsn := range []string{
+		"postgres://localhost/mail?sslmode=disable&application_name=a=b",
+		"postgres://localhost/mail?sslmode=verify-full&sslrootcert=/nonexistent/epistula/ca.pem",
+	} {
+		cfg := DefaultConfig()
+		cfg.Production = false
+		cfg.Postgres.DSN = dsn
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "not usable by the connection layer") {
+			t.Errorf("development accepted an unusable DSN: %v", err)
+			continue
+		}
+		if strings.Contains(err.Error(), dsn) {
+			t.Errorf("error echoes the DSN verbatim: %v", err)
+		}
+	}
+}
+
 // writeTestCA generates a throwaway self-signed CA and writes it to path, so
 // a verify-full DSN naming it actually resolves. It is not a credential: the
 // private key is discarded and the certificate is never presented to anything.

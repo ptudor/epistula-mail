@@ -12,6 +12,11 @@
   a keyword/value string escapes the next character, and a repeated URI
   parameter takes its last value instead of its first. Run `check-config`
   against each existing configuration before restarting on the new build.
+- `check-config` (database, IMAP and API) now asks the PostgreSQL connection
+  layer to parse `postgres.dsn` in every mode, opening no connection. Only
+  production mode used to, so a development configuration could pass
+  `check-config` with a DSN the daemon then failed to start with: an
+  unreadable `sslrootcert`, or a spelling `pgx` 5.11 no longer accepts.
 - epistula-imap: an authenticated command over `command_rate_per_sec` now waits
   for its turn instead of failing with `NO [LIMIT]`. A client checking a
   mailbox with thousands of folders sends one STATUS per folder in a burst

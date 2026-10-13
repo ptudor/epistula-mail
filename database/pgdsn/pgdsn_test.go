@@ -217,6 +217,34 @@ func TestRequireVerifiedTLS(t *testing.T) {
 	}
 }
 
+// TestUsable pins the every-mode check: plaintext and socket DSNs a
+// development config uses are fine, and anything the connection layer cannot
+// parse or load is refused with a DSN-free error.
+func TestUsable(t *testing.T) {
+	for _, tc := range []struct {
+		dsn  string
+		want string // substring of the error; "" means usable
+	}{
+		{"postgres://localhost/mail?sslmode=disable", ""},
+		{"host=/tmp user=app dbname=mail", ""},
+		{"postgres://user:sslmode=verify-full@db.mail.invalid/mail?sslmode=%64isable", ""},
+		{"", "empty"},
+		{"postgres://localhost/mail?application_name=a=b", "not usable by the connection layer"},
+		{"postgres://localhost/mail?sslmode=nonsense", "not usable by the connection layer"},
+		{"postgres://localhost/mail?sslmode=verify-full&sslrootcert=/nonexistent/epistula/ca.pem", "not usable by the connection layer"},
+	} {
+		err := Usable(tc.dsn)
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("Usable(%q) = %v, want nil", tc.dsn, err)
+		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+			t.Errorf("Usable(%q) = %v, want an error mentioning %q", tc.dsn, err, tc.want)
+		case err != nil && tc.dsn != "" && strings.Contains(err.Error(), tc.dsn):
+			t.Errorf("Usable(%q) echoes the DSN: %v", tc.dsn, err)
+		}
+	}
+}
+
 // TestRequireVerifiedTLSHonoursEnvironment pins that the guard sees the same
 // PG* environment defaults the connection layer does. An operator who sets
 // PGSSLMODE=disable outside the config file must not slip past production

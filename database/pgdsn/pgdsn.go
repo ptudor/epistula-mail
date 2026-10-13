@@ -70,21 +70,9 @@ var ErrNoDSN = errors.New("postgres DSN is empty")
 // server with TLS simply switched off — downgrades the connection silently.
 // Every entry must therefore be verified, not just the first.
 func RequireVerifiedTLS(dsn string) error {
-	if strings.TrimSpace(dsn) == "" {
-		return ErrNoDSN
-	}
-
-	cfg, err := pgconn.ParseConfig(dsn)
+	cfg, err := parse(dsn)
 	if err != nil {
-		// Reaching here is itself a finding: whatever the connection layer
-		// cannot parse, it also cannot connect with. The common real cause is
-		// an sslrootcert/sslcert/sslkey the daemon user cannot read, which is
-		// exactly what check-config should catch before a restart.
-		//
-		// The cause is worth showing, but pgconn's ParseConfigError embeds the
-		// connection string, so scrub any verbatim copy of the DSN out of it
-		// rather than trusting an upstream redaction to cover every secret.
-		return fmt.Errorf("postgres DSN is not usable by the connection layer: %s", scrub(dsn, err))
+		return err
 	}
 
 	// The primary target plus every permitted fallback. pgx tries them in
@@ -122,6 +110,37 @@ func RequireVerifiedTLS(dsn string) error {
 		}
 	}
 	return nil
+}
+
+// Usable reports whether the connection layer can use dsn at all, opening
+// no connection. It is the check every mode needs: development configs skip
+// RequireVerifiedTLS, so without it check-config passed a DSN the daemon then
+// failed to start with — a missing or unreadable sslrootcert, or a spelling a
+// pgx upgrade stopped accepting (5.11 parses URIs exactly as libpq does).
+func Usable(dsn string) error {
+	_, err := parse(dsn)
+	return err
+}
+
+// parse resolves dsn the way the connection layer does, returning a
+// DSN-free error.
+func parse(dsn string) (*pgconn.Config, error) {
+	if strings.TrimSpace(dsn) == "" {
+		return nil, ErrNoDSN
+	}
+	cfg, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		// Reaching here is itself a finding: whatever the connection layer
+		// cannot parse, it also cannot connect with. The common real cause is
+		// an sslrootcert/sslcert/sslkey the daemon user cannot read, which is
+		// exactly what check-config should catch before a restart.
+		//
+		// The cause is worth showing, but pgconn's ParseConfigError embeds the
+		// connection string, so scrub any verbatim copy of the DSN out of it
+		// rather than trusting an upstream redaction to cover every secret.
+		return nil, fmt.Errorf("postgres DSN is not usable by the connection layer: %s", scrub(dsn, err))
+	}
+	return cfg, nil
 }
 
 type target struct {
