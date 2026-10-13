@@ -67,13 +67,28 @@ epistula_mcp_start() {
 }
 
 epistula_mcp_stop() {
-	if [ ! -f "${supervisor_pidfile}" ]; then
+	# Signal the supervisor so its restart loop ends, but only after checking
+	# that its pidfile names a live daemon(8): a stale pidfile must not send
+	# TERM to, or wait on, a reused unrelated PID. With the supervisor gone,
+	# signal a surviving child directly.
+	_child="$(cat ${pidfile} 2>/dev/null)"
+	_supervisor="$(cat ${supervisor_pidfile} 2>/dev/null)"
+	if [ -n "${_supervisor}" ] && pgrep -F "${supervisor_pidfile}" daemon >/dev/null 2>&1; then
+		echo "Stopping epistula-mcp."
+		kill -TERM "${_supervisor}" 2>/dev/null
+	elif [ -n "${_child}" ] && pgrep -F "${pidfile}" epistula-mcp >/dev/null 2>&1; then
+		echo "Stopping epistula-mcp (supervisor absent; signalling child directly)."
+		kill -TERM "${_child}" 2>/dev/null
+		_supervisor=""
+	else
 		echo "epistula-mcp not running."
 		return 0
 	fi
-	echo "Stopping epistula-mcp."
-	kill -TERM "$(cat ${supervisor_pidfile})" 2>/dev/null
-	wait_for_pids "$(cat ${pidfile} 2>/dev/null)"
+	# Wait for the supervisor too, not only the child. daemon(8) outlives the
+	# child briefly while it unwinds and keeps its pidfiles locked until it
+	# exits, so a `restart` whose start ran in that window failed with
+	# "process already running" and left the service down.
+	wait_for_pids ${_child} ${_supervisor}
 }
 
 run_rc_command "$1"

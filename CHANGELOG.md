@@ -12,6 +12,10 @@
   a keyword/value string escapes the next character, and a repeated URI
   parameter takes its last value instead of its first. Run `check-config`
   against each existing configuration before restarting on the new build.
+- FreeBSD: `service epistula_mcp restart` no longer fails with "process already
+  running" and leaves the connector stopped. Stop now waits for the daemon(8)
+  supervisor as well as the connector, and it ignores a stale supervisor
+  pidfile.
 - epistula-api: add `GET /v1/messages/{id}/attachments/{part}`, which streams one
   attachment's decoded bytes to a `read_content` token in the message's mailbox
   scope. The response is a non-rendering download (`Content-Disposition:
