@@ -126,7 +126,8 @@ func TestTokenBucketWaitStopsWhenContextEnds(t *testing.T) {
 // TestRequireAuthPacesInsteadOfRefusing is the regression for the
 // thousand-folder mailbox: a burst past the command rate used to fail with
 // NO [LIMIT] and log a WARN per command. Now every command succeeds, the
-// burst is slowed to the rate, and the log gets one line for the burst.
+// burst is slowed to the rate, and the log gets one line for the burst, not
+// at the first command the bucket can serve at once but once it is over.
 func TestRequireAuthPacesInsteadOfRefusing(t *testing.T) {
 	var logs bytes.Buffer
 	be := &Backend{CommandRatePerSec: 20, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
@@ -148,17 +149,22 @@ func TestRequireAuthPacesInsteadOfRefusing(t *testing.T) {
 		t.Errorf("logged during the burst: %q", logs.String())
 	}
 
-	// The next command, after the bucket has refilled, ends the burst and
-	// writes its one summary line.
+	// A command the refilled bucket serves at once does not end the burst:
+	// in a real sweep that happens every few dozen commands.
 	time.Sleep(200 * time.Millisecond)
 	if err := sess.requireAuth(); err != nil {
 		t.Fatal(err)
 	}
+	if logs.Len() != 0 {
+		t.Errorf("logged within the quiet gap: %q", logs.String())
+	}
+	// Closing the session reports what it had not reported yet.
+	sess.Close()
 	out := logs.String()
 	if n := strings.Count(out, "\n"); n != 1 {
 		t.Fatalf("log has %d lines, want 1 summary: %q", n, out)
 	}
-	for _, want := range []string{"level=INFO", `msg="command burst paced"`, "mailbox=jdoe", "commands="} {
+	for _, want := range []string{"level=INFO", `msg="command burst paced"`, "mailbox=jdoe", "commands=10", "span="} {
 		if !strings.Contains(out, want) {
 			t.Errorf("summary %q lacks %q", out, want)
 		}
@@ -202,9 +208,9 @@ func TestCommandPacingReportsSustainedPacingEachMinute(t *testing.T) {
 	if !p.note(t0.Add(61*time.Second), 10*time.Millisecond) {
 		t.Fatal("a minute of pacing was not reported")
 	}
-	commands, waited := p.take()
-	if commands != 3 || waited != 30*time.Millisecond {
-		t.Errorf("take = %d commands, %v waited; want 3, 30ms", commands, waited)
+	commands, waited, span := p.take()
+	if commands != 3 || waited != 30*time.Millisecond || span != 61*time.Second {
+		t.Errorf("take = %d commands, %v waited over %v; want 3, 30ms over 61s", commands, waited, span)
 	}
 	if p.pending() {
 		t.Error("still pending after take")
@@ -212,6 +218,34 @@ func TestCommandPacingReportsSustainedPacingEachMinute(t *testing.T) {
 	// The next period starts from its own first command.
 	if p.note(t0.Add(90*time.Second), time.Millisecond) {
 		t.Error("new period reported immediately")
+	}
+}
+
+// TestCommandPacingCoalescesASweep: within one sweep, paced commands
+// alternate with ones the refilled bucket serves at once. The burst is over
+// only after pacingQuietGap without a paced command, so a sweep is one line.
+func TestCommandPacingCoalescesASweep(t *testing.T) {
+	var p commandPacing
+	t0 := time.Date(2026, 10, 13, 6, 24, 48, 0, time.UTC)
+	if p.ended(t0) {
+		t.Fatal("nothing pending, yet ended")
+	}
+	p.note(t0, 10*time.Millisecond)
+	for _, gap := range []time.Duration{50 * time.Millisecond, 2 * time.Second} {
+		if p.ended(t0.Add(gap)) {
+			t.Fatalf("burst ended %v after a paced command, inside the quiet gap", gap)
+		}
+	}
+	p.note(t0.Add(3*time.Second), 20*time.Millisecond)
+	if p.ended(t0.Add(3*time.Second + pacingQuietGap - time.Millisecond)) {
+		t.Fatal("burst ended just before the quiet gap elapsed")
+	}
+	if !p.ended(t0.Add(3*time.Second + pacingQuietGap)) {
+		t.Fatal("burst not over after a full quiet gap")
+	}
+	commands, waited, span := p.take()
+	if commands != 2 || waited != 30*time.Millisecond || span != 3*time.Second {
+		t.Errorf("take = %d commands, %v waited over %v; want 2, 30ms over 3s", commands, waited, span)
 	}
 }
 

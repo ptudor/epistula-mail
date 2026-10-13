@@ -450,13 +450,22 @@ func (b *tokenBucket) refill(now time.Time) {
 	b.last = now
 }
 
+// pacingQuietGap is how long a session must go without a paced command
+// before its burst counts as over and is logged. Inside one folder sweep the
+// client's pipeline has small gaps in which the bucket refills, so "the next
+// command was not paced" does not mean the sweep is over: ending a burst
+// there wrote a summary every few dozen commands, 400 lines in 13 minutes
+// for one mailbox.
+const pacingQuietGap = 10 * time.Second
+
 // commandPacing summarises a session's paced commands for the log: one line
-// when a burst ends, and one a minute while pacing goes on, in place of the
+// when a burst is over, and one a minute while pacing goes on, in place of the
 // line per command that refusing used to write.
 type commandPacing struct {
 	commands int
 	waited   time.Duration
-	since    time.Time // when the unreported pacing began
+	since    time.Time // first unreported paced command
+	last     time.Time // latest paced command
 }
 
 // note records one command that waited and reports whether pacing has now
@@ -467,15 +476,23 @@ func (p *commandPacing) note(now time.Time, waited time.Duration) bool {
 	}
 	p.commands++
 	p.waited += waited
+	p.last = now
 	return now.Sub(p.since) >= time.Minute
 }
 
 // pending reports whether paced commands are waiting to be logged.
 func (p *commandPacing) pending() bool { return p.commands > 0 }
 
-// take returns the unreported totals and starts a new period.
-func (p *commandPacing) take() (commands int, waited time.Duration) {
-	commands, waited = p.commands, p.waited
+// ended reports whether paced commands are waiting to be logged and none has
+// been paced for pacingQuietGap, so the burst they belong to is over.
+func (p *commandPacing) ended(now time.Time) bool {
+	return p.commands > 0 && now.Sub(p.last) >= pacingQuietGap
+}
+
+// take returns the unreported totals, including the time from the first
+// paced command to the last, and starts a new period.
+func (p *commandPacing) take() (commands int, waited, span time.Duration) {
+	commands, waited, span = p.commands, p.waited, p.last.Sub(p.since)
 	*p = commandPacing{}
-	return commands, waited
+	return commands, waited, span
 }

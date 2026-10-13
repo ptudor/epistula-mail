@@ -533,7 +533,7 @@ func (s *Session) requireAuth() error {
 		if s.pacing.note(time.Now(), waited) {
 			s.logPacing(slog.LevelWarn, "command rate limit pacing client")
 		}
-	} else if s.pacing.pending() {
+	} else if s.pacing.ended(time.Now()) {
 		s.logPacing(slog.LevelInfo, "command burst paced")
 	}
 	return nil
@@ -541,12 +541,15 @@ func (s *Session) requireAuth() error {
 
 // logPacing writes one line for the commands paced since the last one.
 // Sustained pacing logs at WARN once a minute, which is how a looping client
-// shows up; a burst that has ended logs once at INFO.
+// shows up; a burst that is over logs once at INFO. span is the time from the
+// burst's first paced command to its last, since the line itself is written
+// later, by the next command or by Close.
 func (s *Session) logPacing(level slog.Level, msg string) {
-	commands, waited := s.pacing.take()
+	commands, waited, span := s.pacing.take()
 	s.be.Logger.Log(context.Background(), level, msg,
 		"mailbox", s.mailboxName, "ip", s.remoteIP,
-		"commands", commands, "waited", waited.Round(time.Millisecond))
+		"commands", commands, "waited", waited.Round(time.Millisecond),
+		"span", span.Round(time.Millisecond))
 }
 
 // Subscribe records the (mailbox, folder) row in folder_subscriptions.
