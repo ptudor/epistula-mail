@@ -18,8 +18,10 @@ import (
 // TestProductionRejectsDisguisedSSLMode is the RA6X-029 regression: the
 // production guard must read the SSL mode pgx resolves, not search the DSN's
 // text. "%64isable" is "disable" percent-escaped, so the old negative
-// substring never matched, and the decoy application_name satisfied the
-// positive one — while the connection ran in plaintext.
+// substring never matched, and a decoy "sslmode=verify-full" satisfied the
+// positive one — while the connection ran in plaintext. The report put the
+// decoy in application_name; pgx 5.11 parses URIs as libpq does and refuses a
+// raw "=" in a query value, so the decoy sits in the password here.
 func TestProductionRejectsDisguisedSSLMode(t *testing.T) {
 	cases := []struct {
 		name string
@@ -27,13 +29,13 @@ func TestProductionRejectsDisguisedSSLMode(t *testing.T) {
 		want string
 	}{
 		{
-			name: "percent-escaped disable with decoy application_name",
-			dsn:  "postgres://user@db.mail.invalid/mail?sslmode=%64isable&application_name=sslmode=verify-full",
+			name: "percent-escaped disable with a decoy password",
+			dsn:  "postgres://user:sslmode=verify-full@db.mail.invalid/mail?sslmode=%64isable",
 			want: "unencrypted",
 		},
 		{
-			name: "default prefer with decoy application_name",
-			dsn:  "postgres://user@db.mail.invalid/mail?application_name=sslmode=verify-full",
+			name: "default prefer with a decoy password",
+			dsn:  "postgres://user:sslmode=verify-full@db.mail.invalid/mail",
 			want: "unencrypted",
 		},
 		{
@@ -70,7 +72,8 @@ func TestProductionAcceptsVerifiedTLS(t *testing.T) {
 		"postgres://user@db.mail.invalid/mail?sslmode=verify-full",
 		"postgres://user@db.mail.invalid/mail?sslmode=verify-ca",
 		"host=db.mail.invalid user=app dbname=mail sslmode=verify-full",
-		"postgres://user@db.mail.invalid/mail?sslmode=verify-full&application_name=sslmode=disable",
+		"postgres://user:sslmode=disable@db.mail.invalid/mail?sslmode=verify-full",
+		"host=db.mail.invalid user=app dbname=mail sslmode=verify-full application_name='sslmode=disable'",
 		"postgres://user@/mail?host=/var/run/postgresql",
 	} {
 		cfg := productionFixture(t)

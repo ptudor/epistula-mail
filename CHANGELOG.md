@@ -5,6 +5,13 @@
 - Security: build with Go 1.27.2 and `golang.org/x/net` v0.60.0, which fix
   advisories in `net/http`, HTTP/2, `crypto/tls`, `net/textproto` and `os`
   (GO-2026-6603 through GO-2026-6617). Rebuild and redeploy every component.
+- Dependencies: `pgx` v5.11.0, `prometheus/client_golang` v1.25.0, `go-toml`
+  v2.4.3, the MCP Go SDK v1.8.0, and current `golang.org/x` modules. `pgx` now
+  parses PostgreSQL connection strings exactly as libpq does: a raw `=` inside a
+  URI query value is a parse error (percent-encode it as `%3D`), a backslash in
+  a keyword/value string escapes the next character, and a repeated URI
+  parameter takes its last value instead of its first. Run `check-config`
+  against each existing configuration before restarting on the new build.
 - epistula-api: add `GET /v1/messages/{id}/attachments/{part}`, which streams one
   attachment's decoded bytes to a `read_content` token in the message's mailbox
   scope. The response is a non-rendering download (`Content-Disposition:

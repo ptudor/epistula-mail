@@ -77,13 +77,15 @@ func TestProductionAcceptsVerifyFull(t *testing.T) {
 }
 
 // TestProductionRejectsDisguisedSSLMode is the RA6X-029 regression at the
-// Config boundary: a percent-escaped sslmode with a decoy application_name
+// Config boundary: a percent-escaped sslmode with a decoy "sslmode=verify-full"
 // satisfied both halves of the old substring guard while pgx connected in
-// plaintext.
+// plaintext. The report put the decoy in application_name; pgx 5.11 parses
+// URIs as libpq does and refuses a raw "=" in a query value, so the decoy sits
+// in the password here, where the connection layer accepts it.
 func TestProductionRejectsDisguisedSSLMode(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Production = true
-	cfg.Postgres.DSN = "postgres://user@db.mail.invalid/mail?sslmode=%64isable&application_name=sslmode=verify-full"
+	cfg.Postgres.DSN = "postgres://user:sslmode=verify-full@db.mail.invalid/mail?sslmode=%64isable"
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("production accepted a DSN that resolves to sslmode=disable")

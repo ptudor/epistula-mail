@@ -12,8 +12,11 @@
 // passes that check — the positive substring is in application_name, and the
 // negative substring never appears because "disable" is percent-escaped — while
 // pgx resolves the effective mode to `disable` and connects in plaintext.
-// Conversely a perfectly secure DSN whose password or application_name happens
-// to contain "sslmode=allow" is rejected.
+// (Since 5.11 pgx parses URIs exactly as libpq does and refuses that spelling's
+// raw "=" in a query value, but the same decoy in the password,
+// postgres://u:sslmode=verify-full@db/mail?sslmode=%64isable, still parses to
+// plaintext.) Conversely a perfectly secure DSN whose password or
+// application_name happens to contain "sslmode=allow" is rejected.
 //
 // So this package asks pgx the same way the connection layer does: it calls
 // pgconn.ParseConfig and inspects the *resolved* TLS configuration, including

@@ -18,20 +18,42 @@ func TestRequireVerifiedTLS(t *testing.T) {
 	}{
 		// --- the reported bypass -------------------------------------------
 		{
-			// RA6X-029's example. "%64isable" is "disable" percent-escaped, so
-			// the old negative substring test never fired; the positive test
-			// was satisfied by the application_name. pgx resolves this to
-			// plaintext.
-			name:         "percent-escaped disable hidden behind a decoy application_name",
+			// RA6X-029's example as reported. "%64isable" is "disable"
+			// percent-escaped, so the old negative substring test never fired,
+			// and the decoy application_name satisfied the positive one. pgx
+			// 5.11 parses URIs exactly as libpq does, and libpq refuses a raw
+			// "=" inside a query value, so this DSN no longer connects at all.
+			// Production must still refuse it: whatever the connection layer
+			// cannot parse, it cannot use.
+			name:         "RA6X-029 as reported: a raw = in a query value does not parse",
 			dsn:          "postgres://user@db.mail.invalid/mail?sslmode=%64isable&application_name=sslmode=verify-full",
+			wantErr:      true,
+			wantContains: "not usable by the connection layer",
+		},
+		{
+			// The same bypass in a form the connection layer accepts: libpq
+			// allows a raw "=" in the userinfo, so the decoy moves to the
+			// password. The DSN text still contains "sslmode=verify-full" and
+			// never "sslmode=disable", and pgx resolves it to plaintext.
+			name:         "percent-escaped disable hidden behind a decoy password",
+			dsn:          "postgres://user:sslmode=verify-full@db.mail.invalid/mail?sslmode=%64isable",
+			wantErr:      true,
+			wantContains: "unencrypted",
+		},
+		{
+			// A decoy application_name the connection layer accepts must be
+			// percent-encoded; it decodes to "sslmode=verify-full" and changes
+			// nothing about the effective mode.
+			name:         "percent-escaped disable with an encoded decoy application_name",
+			dsn:          "postgres://user@db.mail.invalid/mail?sslmode=%64isable&application_name=sslmode%3Dverify-full",
 			wantErr:      true,
 			wantContains: "unencrypted",
 		},
 		{
 			// Default mode is `prefer`, which carries a plaintext fallback.
-			// The decoy application_name satisfied the old positive test.
-			name:         "default prefer with a decoy application_name",
-			dsn:          "postgres://user@db.mail.invalid/mail?application_name=sslmode=verify-full",
+			// The decoy satisfied the old positive test.
+			name:         "default prefer with a decoy password",
+			dsn:          "postgres://user:sslmode=verify-full@db.mail.invalid/mail",
 			wantErr:      true,
 			wantContains: "unencrypted",
 		},
@@ -99,6 +121,14 @@ func TestRequireVerifiedTLS(t *testing.T) {
 			wantContains: "unencrypted",
 		},
 		{
+			// The keyword spelling of RA6X-029: a quoted decoy, and "disable"
+			// hidden by a backslash escape inside a quoted value.
+			name:         "keyword DSN with a decoy application_name and an escaped disable",
+			dsn:          `host=db.mail.invalid user=app dbname=mail application_name='sslmode=verify-full' sslmode='d\isable'`,
+			wantErr:      true,
+			wantContains: "unencrypted",
+		},
+		{
 			name: "keyword DSN with a quoted decoy password",
 			dsn:  `host=db.mail.invalid user=app password='sslmode=verify-full' dbname=mail sslmode=disable`,
 			// The password quotes the positive substring; only real parsing
@@ -108,19 +138,20 @@ func TestRequireVerifiedTLS(t *testing.T) {
 		},
 		{
 			// A repeated URL parameter has to be resolved the same way the
-			// connection layer resolves it, whichever way that is. pgx's URL
-			// parser takes the FIRST occurrence (pgconn.parseURLSettings reads
-			// url.Query()[k][0]), so these two DSNs must be judged by their
-			// first sslmode, not by whether "verify-full" appears anywhere.
-			name:    "repeated sslmode, pgx takes the first and it is secure",
-			dsn:     "postgres://user@db.mail.invalid/mail?sslmode=verify-full&sslmode=disable",
-			wantErr: false,
-		},
-		{
-			name:         "repeated sslmode, pgx takes the first and it is insecure",
-			dsn:          "postgres://user@db.mail.invalid/mail?sslmode=disable&sslmode=verify-full",
+			// connection layer resolves it, whichever way that is. Since 5.11
+			// pgx takes the LAST occurrence, as libpq does; before that its
+			// net/url-based parser took the first, and this table pinned the
+			// opposite answers. These DSNs must be judged by their last
+			// sslmode, not by whether "verify-full" appears anywhere.
+			name:         "repeated sslmode, the last wins and it is insecure",
+			dsn:          "postgres://user@db.mail.invalid/mail?sslmode=verify-full&sslmode=disable",
 			wantErr:      true,
 			wantContains: "unencrypted",
+		},
+		{
+			name:    "repeated sslmode, the last wins and it is secure",
+			dsn:     "postgres://user@db.mail.invalid/mail?sslmode=disable&sslmode=verify-full",
+			wantErr: false,
 		},
 
 		// --- Unix sockets: documented as acceptable ------------------------
