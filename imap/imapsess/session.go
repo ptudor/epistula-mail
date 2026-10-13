@@ -166,6 +166,9 @@ type Session struct {
 
 	// cmdLimiter enforces Backend.CommandRatePerSec. Nil = unlimited.
 	cmdLimiter *tokenBucket
+	// pacing accumulates the commands cmdLimiter delayed until they are
+	// logged. Touched only by the session's own command handlers and Close.
+	pacing commandPacing
 
 	// conn is the client's net.Conn when the session was built via
 	// NewSessionForNetConn; nil in tests that construct sessions directly.
@@ -279,6 +282,9 @@ func (s *Session) Close() error {
 		return nil
 	}
 	s.closed = true
+	if s.pacing.pending() {
+		s.logPacing(slog.LevelInfo, "command burst paced")
+	}
 	// Release anything queued on this session's behalf — notably a wait for
 	// authentication budget or an IDLE connection — before touching the rest.
 	if s.sessCancel != nil {
@@ -515,18 +521,32 @@ func (s *Session) requireAuth() error {
 		return &imap.Error{Type: imap.StatusResponseTypeBad, Text: "not authenticated"}
 	}
 	// Every authenticated command flows through here — the natural choke
-	// point for the per-session command-rate cap.
-	if !s.cmdLimiter.allow() {
-		s.be.Logger.Warn("command rate exceeded",
-			"mailbox", s.mailboxName, "ip", s.remoteIP)
-		metricLimiterRejections.WithLabelValues("command_rate").Inc()
-		return &imap.Error{
-			Type: imap.StatusResponseTypeNo,
-			Code: imap.ResponseCodeLimit,
-			Text: "command rate exceeded; slow down",
+	// point for the per-session command-rate cap. A command over the rate
+	// waits for its token instead of failing (see tokenBucket.wait), so a
+	// client sweeping thousands of folders is slowed, not refused.
+	waited, err := s.cmdLimiter.wait(s.sessCtx)
+	if err != nil {
+		return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "session closing"}
+	}
+	if waited > 0 {
+		metricCommandsPaced.Inc()
+		if s.pacing.note(time.Now(), waited) {
+			s.logPacing(slog.LevelWarn, "command rate limit pacing client")
 		}
+	} else if s.pacing.pending() {
+		s.logPacing(slog.LevelInfo, "command burst paced")
 	}
 	return nil
+}
+
+// logPacing writes one line for the commands paced since the last one.
+// Sustained pacing logs at WARN once a minute, which is how a looping client
+// shows up; a burst that has ended logs once at INFO.
+func (s *Session) logPacing(level slog.Level, msg string) {
+	commands, waited := s.pacing.take()
+	s.be.Logger.Log(context.Background(), level, msg,
+		"mailbox", s.mailboxName, "ip", s.remoteIP,
+		"commands", commands, "waited", waited.Round(time.Millisecond))
 }
 
 // Subscribe records the (mailbox, folder) row in folder_subscriptions.

@@ -15,6 +15,7 @@
 package imapsess
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"sync"
@@ -353,9 +354,11 @@ func (c *limitedConn) Close() error {
 }
 
 // tokenBucket is the per-session command-rate limiter (the
-// command_rate_per_sec config key). It detects a misbehaving or
-// compromised client looping commands; the per-IP connection cap already
-// bounds connection-level abuse. A nil bucket allows everything.
+// command_rate_per_sec config key). It holds a misbehaving or compromised
+// client looping commands to the configured rate; the per-IP connection cap
+// already bounds connection-level abuse. Authenticated commands over the rate
+// wait for their token (wait); pre-auth LOGIN over the rate is refused
+// (allow). A nil bucket allows everything.
 type tokenBucket struct {
 	mu     sync.Mutex
 	rate   float64 // tokens added per second
@@ -374,22 +377,105 @@ func newTokenBucket(ratePerSec int) *tokenBucket {
 	return &tokenBucket{rate: r, burst: r, tokens: r, last: time.Now()}
 }
 
-// allow consumes one token, refilling first. Nil receiver always allows.
+// allow consumes one token if one is available, refilling first. Nil
+// receiver always allows.
 func (b *tokenBucket) allow() bool {
 	if b == nil {
 		return true
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	now := time.Now()
-	b.tokens += now.Sub(b.last).Seconds() * b.rate
-	if b.tokens > b.burst {
-		b.tokens = b.burst
-	}
-	b.last = now
+	b.refill(time.Now())
 	if b.tokens < 1 {
 		return false
 	}
 	b.tokens--
 	return true
+}
+
+// wait takes one token, blocking until it is due, and returns how long it
+// waited. It returns ctx's error if ctx ends first, which for a session means
+// the client has gone. Nil receiver never waits.
+//
+// Pacing rather than refusing is what lets a large mailbox be swept: a client
+// checking each of a few thousand folders sends one STATUS per folder in a
+// single burst, every few minutes. Refusing everything past the first second
+// of tokens failed most of those commands with NO [LIMIT] on every sweep, so
+// those folders were never checked, and logged a warning per command.
+// Waiting holds the same client to the same sustained rate, and holds a
+// runaway client to it too: commands on a connection run one at a time, so
+// the excess queues in the client's own socket instead of being answered.
+func (b *tokenBucket) wait(ctx context.Context) (time.Duration, error) {
+	if b == nil {
+		return 0, nil
+	}
+	d := b.reserve(time.Now())
+	if d <= 0 {
+		return 0, nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return d, nil
+	case <-ctx.Done():
+		return d, ctx.Err()
+	}
+}
+
+// reserve takes one token at now, refilling first, and returns how long
+// until that token is due: zero when one was already in the bucket. The
+// balance may go negative, so callers that overlap queue behind one another
+// rather than each claiming the same refill.
+func (b *tokenBucket) reserve(now time.Time) time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refill(now)
+	b.tokens--
+	if b.tokens >= 0 {
+		return 0
+	}
+	return time.Duration(-b.tokens / b.rate * float64(time.Second))
+}
+
+// refill credits the tokens earned since the last call, up to the burst.
+// The caller holds b.mu.
+func (b *tokenBucket) refill(now time.Time) {
+	if elapsed := now.Sub(b.last); elapsed > 0 {
+		b.tokens += elapsed.Seconds() * b.rate
+	}
+	if b.tokens > b.burst {
+		b.tokens = b.burst
+	}
+	b.last = now
+}
+
+// commandPacing summarises a session's paced commands for the log: one line
+// when a burst ends, and one a minute while pacing goes on, in place of the
+// line per command that refusing used to write.
+type commandPacing struct {
+	commands int
+	waited   time.Duration
+	since    time.Time // when the unreported pacing began
+}
+
+// note records one command that waited and reports whether pacing has now
+// gone a minute without being reported.
+func (p *commandPacing) note(now time.Time, waited time.Duration) bool {
+	if p.commands == 0 {
+		p.since = now
+	}
+	p.commands++
+	p.waited += waited
+	return now.Sub(p.since) >= time.Minute
+}
+
+// pending reports whether paced commands are waiting to be logged.
+func (p *commandPacing) pending() bool { return p.commands > 0 }
+
+// take returns the unreported totals and starts a new period.
+func (p *commandPacing) take() (commands int, waited time.Duration) {
+	commands, waited = p.commands, p.waited
+	*p = commandPacing{}
+	return commands, waited
 }

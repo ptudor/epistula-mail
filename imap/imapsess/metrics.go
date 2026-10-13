@@ -16,6 +16,11 @@ var (
 		Help: "Connections or commands refused by a limiter (per_ip | per_mailbox | login_throttle | command_rate | auth_budget).",
 	}, []string{"limiter"})
 
+	metricCommandsPaced = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "imap_database_commands_paced_total",
+		Help: "Authenticated commands delayed, not refused, by the per-session command-rate limit (command_rate_per_sec).",
+	})
+
 	metricAppendsTotal = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "imap_database_appends_total",
 		Help: "Successful APPENDs.",
@@ -33,6 +38,7 @@ func MetricsCollectors() []prometheus.Collector {
 	return []prometheus.Collector{
 		metricAuthTotal,
 		metricLimiterRejections,
+		metricCommandsPaced,
 		metricAppendsTotal,
 		metricAppendBytes,
 	}

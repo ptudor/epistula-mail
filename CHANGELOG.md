@@ -12,6 +12,13 @@
   a keyword/value string escapes the next character, and a repeated URI
   parameter takes its last value instead of its first. Run `check-config`
   against each existing configuration before restarting on the new build.
+- epistula-imap: an authenticated command over `command_rate_per_sec` now waits
+  for its turn instead of failing with `NO [LIMIT]`. A client checking a
+  mailbox with thousands of folders sends one STATUS per folder in a burst
+  every few minutes; most of each sweep was refused, so those folders were not
+  checked, and the server logged a warning per refused command. The sustained
+  rate limit is unchanged. The log now gets one line per burst, and the new
+  `imap_database_commands_paced_total` metric counts delayed commands.
 - FreeBSD: `service epistula_mcp restart` no longer fails with "process already
   running" and leaves the connector stopped. Stop now waits for the daemon(8)
   supervisor as well as the connector, and it ignores a stale supervisor
