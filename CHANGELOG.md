@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Security: build with Go 1.27.2 and `golang.org/x/net` v0.60.0, which fix
+  advisories in `net/http`, HTTP/2, `crypto/tls`, `net/textproto` and `os`
+  (GO-2026-6603 through GO-2026-6617). Rebuild and redeploy every component.
 - epistula-api: add `GET /v1/messages/{id}/attachments/{part}`, which streams one
   attachment's decoded bytes to a `read_content` token in the message's mailbox
   scope. The response is a non-rendering download (`Content-Disposition:
