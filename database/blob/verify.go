@@ -81,9 +81,6 @@ func (s *Store) logf(msg string, args ...any) {
 // A missing file is not a match and not an error: the caller's next step is to
 // write it.
 func (s *Store) blobMatches(path, wantSHA string, wantSize int64) (bool, error) {
-	if s.verifyMode == VerifyOff {
-		return true, nil
-	}
 	fi, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -93,6 +90,9 @@ func (s *Store) blobMatches(path, wantSHA string, wantSize int64) (bool, error) 
 	}
 	if !fi.Mode().IsRegular() {
 		return false, fmt.Errorf("blob path %s is not a regular file", path)
+	}
+	if s.verifyMode == VerifyOff {
+		return true, nil
 	}
 	if wantSize >= 0 && fi.Size() != wantSize {
 		return false, nil
