@@ -278,7 +278,7 @@ func (p *Parser) Parse(raw []byte) (*Message, error) {
 		Headers:   make(map[string][]string, len(top.header)),
 	}
 
-	wd := &mime.WordDecoder{CharsetReader: charsetReader}
+	wd := NewWordDecoder()
 
 	// Iterate the wire keys in SORTED order, not map order.
 	//

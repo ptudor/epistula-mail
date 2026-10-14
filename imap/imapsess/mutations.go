@@ -167,7 +167,7 @@ func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *im
 			return clientFlagLimit()
 		}
 		s.be.Logger.Error("STORE", "folder", s.selectedFolderName, "err", err)
-		if isRetryableTxError(err) {
+		if isRetryableTxError(err) || isTxAborted(err) {
 			return txAborted("STORE")
 		}
 		return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "STORE failed"}
@@ -439,7 +439,7 @@ func (s *Session) Expunge(w *imapserver.ExpungeWriter, uids *imap.UIDSet) (err e
 
 	if err := retryTx(ctx, s.be.Pool.Begin, attempt); err != nil {
 		s.be.Logger.Error("EXPUNGE", "folder", s.selectedFolderName, "err", err)
-		if isRetryableTxError(err) {
+		if isRetryableTxError(err) || isTxAborted(err) {
 			return txAborted("EXPUNGE")
 		}
 		return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "EXPUNGE failed"}
@@ -504,7 +504,7 @@ func (s *Session) Copy(numSet imap.NumSet, dest string) (copyData *imap.CopyData
 		data, err = s.copyInTx(ctx, tx, rows, dest, 0)
 		return err
 	}); err != nil {
-		if isRetryableTxError(err) {
+		if isRetryableTxError(err) || isTxAborted(err) {
 			s.be.Logger.Warn("COPY aborted after retries", "dest", dest, "err", err)
 			return nil, txAborted("COPY")
 		}
@@ -1110,7 +1110,7 @@ func (s *Session) Move(w *imapserver.MoveWriter, numSet imap.NumSet, dest string
 	}
 
 	if err := retryTx(ctx, s.be.Pool.Begin, moveTx); err != nil {
-		if isRetryableTxError(err) {
+		if isRetryableTxError(err) || isTxAborted(err) {
 			s.be.Logger.Warn("MOVE aborted after retries", "dest", dest, "err", err)
 			return txAborted("MOVE")
 		}

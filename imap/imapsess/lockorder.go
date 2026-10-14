@@ -171,7 +171,7 @@ func sortedUnique(in []int64) []int64 {
 const maxTxAttempts = 3
 
 // retryTx runs body in a transaction, retrying the WHOLE thing on a PostgreSQL
-// serialization failure or deadlock (SQLSTATE class 40).
+// serialization failure or deadlock (SQLSTATE 40001 or 40P01).
 //
 // A consistent lock order makes cycles far rarer but does not make them
 // impossible: PostgreSQL may still choose a transaction as a deadlock victim,
@@ -192,13 +192,22 @@ func retryTx(ctx context.Context, begin func(context.Context) (pgx.Tx, error), b
 		if err != nil {
 			return err
 		}
-		err = body(tx)
+		err = func() error {
+			defer func() {
+				if p := recover(); p != nil {
+					_ = tx.Rollback(ctx)
+					panic(p)
+				}
+			}()
+			if err := body(tx); err != nil {
+				return err
+			}
+			return tx.Commit(ctx)
+		}()
 		if err != nil {
 			_ = tx.Rollback(ctx)
 			if isRetryableTxError(err) && attempt < maxTxAttempts && ctx.Err() == nil {
 				lastErr = err
-				// A brief, growing pause so two transactions that just
-				// deadlocked do not immediately re-collide.
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -206,18 +215,9 @@ func retryTx(ctx context.Context, begin func(context.Context) (pgx.Tx, error), b
 				}
 				continue
 			}
-			return err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			_ = tx.Rollback(ctx)
-			if isRetryableTxError(err) && attempt < maxTxAttempts && ctx.Err() == nil {
-				lastErr = err
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(time.Duration(attempt) * 5 * time.Millisecond):
-				}
-				continue
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "40003" {
+				return txAborted("transaction outcome unknown")
 			}
 			return err
 		}
@@ -238,7 +238,7 @@ func isRetryableTxError(err error) bool {
 	if !errors.As(err, &pgErr) {
 		return false
 	}
-	return len(pgErr.Code) >= 2 && pgErr.Code[:2] == "40"
+	return pgErr.Code == "40001" || pgErr.Code == "40P01"
 }
 
 // txAborted renders a retry-exhausted transaction as a protocol error the
@@ -249,4 +249,9 @@ func txAborted(command string) error {
 		Code: imap.ResponseCodeInUse,
 		Text: command + ": mailbox busy, please retry",
 	}
+}
+
+func isTxAborted(err error) bool {
+	var protocolErr *imap.Error
+	return errors.As(err, &protocolErr) && protocolErr.Code == imap.ResponseCodeInUse
 }

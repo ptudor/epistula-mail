@@ -3,6 +3,7 @@ package ingest
 import (
 	"bytes"
 	"io"
+	"mime"
 	"strings"
 	"unicode/utf8"
 
@@ -131,4 +132,9 @@ func collapseWhitespace(s string) string {
 		}
 	}
 	return strings.TrimSpace(out.String())
+}
+
+// NewWordDecoder shares ingest's charset support with protocol envelope readers.
+func NewWordDecoder() *mime.WordDecoder {
+	return &mime.WordDecoder{CharsetReader: charsetReader}
 }

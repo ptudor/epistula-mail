@@ -1114,7 +1114,7 @@ func (s *Session) applySeenSideEffect(ctx context.Context, uids []int64) (map[in
 		return nil
 	}); err != nil {
 		s.be.Logger.Error("FETCH seen update", "err", err)
-		if isRetryableTxError(err) {
+		if isRetryableTxError(err) || isTxAborted(err) {
 			return nil, txAborted("FETCH")
 		}
 		return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "FETCH seen update failed"}
@@ -1738,15 +1738,25 @@ func headerValues(hdrs map[string][]string, name string) []string {
 	return nil
 }
 
-// firstNonEmptyAddrs returns the first non-empty address list, so the retained
-// header wins and the convenience column is the fallback.
+// firstNonEmptyAddrs prefers parsed addresses over name-only parse-failure
+// placeholders, so convenience columns can recover a malformed raw header.
 func firstNonEmptyAddrs(lists ...[]imap.Address) []imap.Address {
-	for _, l := range lists {
-		if len(l) > 0 {
-			return l
+	var placeholder []imap.Address
+	for _, list := range lists {
+		if len(list) == 0 {
+			continue
+		}
+		if placeholder == nil {
+			placeholder = list
+		}
+		for _, addr := range list {
+			// A group marker has a Mailbox too; empty named groups remain valid.
+			if addr.Mailbox != "" {
+				return list
+			}
 		}
 	}
-	return nil
+	return placeholder
 }
 
 // strPtr dereferences a *string treating nil as "".

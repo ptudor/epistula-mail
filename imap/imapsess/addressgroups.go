@@ -6,13 +6,15 @@ import (
 	"strings"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/ptudor/epistula-mail/database/ingest"
 )
 
 // parseGroupedAddresses retains group delimiters discarded by net/mail. The
 // standard parser validates the full list and parses each phrase/member; this
 // scanner only locates delimiters outside comments, quotes, literals and routes.
 func parseGroupedAddresses(s string) ([]imap.Address, error) {
-	if _, err := mail.ParseAddressList(s); err != nil {
+	parser := &mail.AddressParser{WordDecoder: ingest.NewWordDecoder()}
+	if _, err := parser.ParseList(s); err != nil {
 		return nil, err
 	}
 	var out []imap.Address
@@ -20,7 +22,7 @@ func parseGroupedAddresses(s string) ([]imap.Address, error) {
 		if strings.TrimSpace(raw) == "" {
 			return nil
 		}
-		members, err := mail.ParseAddressList(raw)
+		members, err := parser.ParseList(raw)
 		if err != nil {
 			return err
 		}
@@ -92,7 +94,7 @@ func parseGroupedAddresses(s string) ([]imap.Address, error) {
 		}
 		switch c {
 		case ':':
-			name, err := mail.ParseAddress(strings.TrimSpace(s[start:i]) + " <group@example.invalid>")
+			name, err := parser.Parse(strings.TrimSpace(s[start:i]) + " <group@example.invalid>")
 			if err != nil {
 				return nil, err
 			}
