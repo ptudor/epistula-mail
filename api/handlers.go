@@ -305,12 +305,13 @@ func (s *server) handleFolders(w http.ResponseWriter, r *http.Request, tok *apiT
 	if !requireMailboxScope(w, r, tok, mailboxID, mailbox) {
 		return
 	}
+	all, scope := scopeParams(tok)
 	rows, err := s.pool.Query(r.Context(),
 		`SELECT f.name, f.uidvalidity, f.uidnext, COALESCE(f.special_use, ''),
 		        (SELECT count(*) FROM messages WHERE folder_id = f.id)
 		   FROM folders f
-		  WHERE f.mailbox_id = $1
-		  ORDER BY f.name`, mailboxID)
+		  WHERE f.mailbox_id = $1 AND ($2::bool OR f.mailbox_id = ANY($3::bigint[]))
+		  ORDER BY f.name`, mailboxID, all, scope)
 	if err != nil {
 		slog.Error("folders query", "err", err)
 		problemInternal(w, r)

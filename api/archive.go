@@ -57,18 +57,19 @@ func (s *server) handleArchiveCategories(w http.ResponseWriter, r *http.Request,
 	if !requireMailboxScope(w, r, tok, mailboxID, mailbox) {
 		return
 	}
+	all, scope := scopeParams(tok)
 	var archiveFolder *string
 	if err := s.pool.QueryRow(r.Context(),
-		`SELECT name FROM folders WHERE mailbox_id = $1 AND special_use = '\Archive' ORDER BY id LIMIT 1`,
-		mailboxID,
+		`SELECT f.name FROM folders f WHERE f.mailbox_id = $1 AND ($2::bool OR f.mailbox_id = ANY($3::bigint[])) AND f.special_use = '\Archive' ORDER BY f.id LIMIT 1`,
+		mailboxID, all, scope,
 	).Scan(&archiveFolder); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		slog.Error("archive folder lookup", "err", err)
 		problemInternal(w, r)
 		return
 	}
 	rows, err := s.pool.Query(r.Context(),
-		`SELECT key, folder, description, annual FROM archive_categories
-		  WHERE mailbox_id = $1 AND retired_at IS NULL ORDER BY key`, mailboxID)
+		`SELECT ac.key, ac.folder, ac.description, ac.annual FROM archive_categories ac
+		  WHERE ac.mailbox_id = $1 AND ($2::bool OR ac.mailbox_id = ANY($3::bigint[])) AND ac.retired_at IS NULL ORDER BY ac.key`, mailboxID, all, scope)
 	if err != nil {
 		slog.Error("archive categories query", "err", err)
 		problemInternal(w, r)
