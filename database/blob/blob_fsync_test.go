@@ -76,6 +76,12 @@ func TestFsyncFreshTenantChain(t *testing.T) {
 			t.Errorf("expected fsync of %q; fsynced set = %v", want, *synced)
 		}
 	}
+	if set[filepath.Join(root, "alice", "tmp")] {
+		t.Errorf("disposable staging directory was fsynced: %v", *synced)
+	}
+	if len(set) != len(*synced) {
+		t.Errorf("fresh chain redundantly fsynced a directory: %v", *synced)
+	}
 }
 
 // TestFsyncDedupParent is R-028 part 1: a dedup hit (writing identical bytes
@@ -108,13 +114,7 @@ func TestFsyncDedupParent(t *testing.T) {
 	if !deduped {
 		t.Fatal("second identical write should have deduped")
 	}
-	found := false
-	for _, p := range *synced {
-		if p == shard {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("dedup path did not fsync the parent shard %q; fsynced = %v", shard, *synced)
+	if len(*synced) != 1 || (*synced)[0] != shard {
+		t.Errorf("second write fsynced %v, want only parent shard %q", *synced, shard)
 	}
 }

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestVerificationPeerShardSyncsDespiteBucketMarker(t *testing.T) {
+func TestVerificationPeerShardSyncsDespiteCachedAncestry(t *testing.T) {
 	s, tenant, bucket := verifyStore(t)
 	_, path := writeVerifyBlob(t, s, KindRaw, tenant, bucket, []byte("initial"))
 	marker, _ := markerPathFor(s.root, filepath.Dir(path))
@@ -23,9 +23,12 @@ func TestVerificationPeerShardSyncsDespiteBucketMarker(t *testing.T) {
 	if err := s.ensureDir(shard); err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{s.root, filepath.Dir(marker), filepath.Dir(shard), shard} {
+	for _, dir := range []string{filepath.Dir(marker), filepath.Dir(shard), shard} {
 		if !seen[dir] {
 			t.Errorf("acknowledged unsynced peer directory %s", dir)
 		}
+	}
+	if seen[s.root] {
+		t.Errorf("unchanged cached root was redundantly fsynced: %v", seen)
 	}
 }

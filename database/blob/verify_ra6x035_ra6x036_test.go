@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -206,7 +207,7 @@ func TestVerifySizeModeCatchesTruncation(t *testing.T) {
 	}
 }
 
-// TestDurabilityMarkerProvesAncestry is the RA6X-036 regression.
+// TestDurableDirectoryHandleProvesAncestry is the RA6X-036 regression.
 //
 // ensureDir's fast path returned as soon as the leaf directory existed, so one
 // writer could observe directories another had created but not yet fsynced,
@@ -215,11 +216,9 @@ func TestVerifySizeModeCatchesTruncation(t *testing.T) {
 // process-local mutex cannot help, because the LDA and the IMAP server are
 // separate processes.
 //
-// The marker's presence is the cross-process proof. This asserts the protocol:
-// a bucket that has been written to carries one, a writer that finds one takes
-// the fast path, and a writer that does NOT find one re-establishes durability
-// rather than assuming it.
-func TestDurabilityMarkerProvesAncestry(t *testing.T) {
+// An open directory handle plus its last-synced mtime is the process-local
+// proof. A separate Store has no such proof and must sync for itself.
+func TestDurableDirectoryHandleProvesAncestry(t *testing.T) {
 	s, tenant, bucket := verifyStore(t)
 	_, path := writeVerifyBlob(t, s, KindRaw, tenant, bucket, []byte("first blob"))
 
@@ -228,27 +227,25 @@ func TestDurabilityMarkerProvesAncestry(t *testing.T) {
 	if !ok {
 		t.Fatalf("no marker path derived for %s", shard)
 	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("a written bucket has no durability marker: %v", err)
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new write created legacy durability marker: %v", err)
 	}
 
-	// A SECOND process — no memoized state — must accept the marker as proof.
+	synced := fsyncRecorder(t)
+	if err := s.ensureDir(shard); err != nil {
+		t.Fatalf("cached ensureDir: %v", err)
+	}
+	if len(*synced) != 0 {
+		t.Fatalf("unchanged cached ancestry was fsynced: %v", *synced)
+	}
+
+	// A SECOND process has no open-handle proof and syncs the complete chain.
 	peer := NewStore(s.root)
 	if err := peer.ensureDir(shard); err != nil {
 		t.Fatalf("peer ensureDir: %v", err)
 	}
-
-	// With the marker gone (a crashed creator, or a pruned bucket), a writer
-	// must re-establish and re-publish durability rather than assume it.
-	if err := os.Remove(marker); err != nil {
-		t.Fatalf("remove marker: %v", err)
-	}
-	third := NewStore(s.root)
-	if err := third.ensureDir(shard); err != nil {
-		t.Fatalf("third ensureDir: %v", err)
-	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("a writer that found no proof did not publish one: %v", err)
+	if len(*synced) == 0 || (*synced)[0] != s.root {
+		t.Fatalf("peer trusted another process's in-memory proof: %v", *synced)
 	}
 }
 
@@ -260,6 +257,9 @@ func TestDurabilityMarkerIsRemovableWhenAloneOnly(t *testing.T) {
 	shard := filepath.Dir(path)
 	marker, _ := markerPathFor(s.root, shard)
 	bucketDir := filepath.Dir(marker)
+	if err := os.WriteFile(marker, []byte("legacy"), 0o640); err != nil {
+		t.Fatal(err)
+	}
 
 	if RemoveDurabilityMarkerIfOnlyEntry(bucketDir) {
 		t.Fatal("the marker was removed from a bucket that still holds shard directories")

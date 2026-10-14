@@ -47,7 +47,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -200,10 +199,9 @@ type Store struct {
 	// logger records integrity events. Nil is silent.
 	logger *slog.Logger
 
-	// durableDirs memoizes date buckets this process has proven durable, so
-	// the ancestry check costs one stat per bucket rather than per blob
-	// (RA6X-036).
-	durableDirs sync.Map
+	// durableDirs keeps a bounded set of open directory handles as identity
+	// witnesses for ancestry this process has already synced. See durability.go.
+	durableDirs durableDirCache
 }
 
 // NewStore returns a Store rooted at root. The directory tree is not created
@@ -272,7 +270,8 @@ func (s *Store) ensureDir(dir string) error {
 		// state the design forbids. A process-local mutex cannot help: the LDA
 		// and the IMAP server are separate processes.
 		//
-		// durableAncestry syncs every ancestor, even if a marker exists.
+		// durableAncestry verifies the cached prefix by open-handle identity and
+		// syncs every unproven directory below it.
 		return s.durableAncestry(dir)
 	}
 
@@ -280,6 +279,33 @@ func (s *Store) ensureDir(dir string) error {
 }
 
 func (s *Store) ensureDirSlow(dir string) error {
+	return s.ensureDirSlowMode(dir, true)
+}
+
+// ensureTempDir creates staging ancestry without forcing it durable. Losing a
+// pre-link temporary file in a crash is harmless; the final blob ancestry is
+// synced before Writer.Close acknowledges it.
+func (s *Store) ensureTempDir(dir string) error {
+	if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+		return nil
+	}
+	return s.ensureDirSlowMode(dir, false)
+}
+
+// ensureLinkDir prepares a final blob directory. The leaf itself is synced
+// after the hard link; before the link only its parent must be synced to make
+// the leaf's directory entry durable.
+func (s *Store) ensureLinkDir(dir string) error {
+	if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+		return s.durableAncestry(filepath.Dir(dir))
+	}
+	if err := s.ensureDirSlowMode(dir, false); err != nil {
+		return err
+	}
+	return s.durableAncestry(filepath.Dir(dir))
+}
+
+func (s *Store) ensureDirSlowMode(dir string, durable bool) error {
 	rel, relErr := filepath.Rel(s.root, dir)
 	if relErr != nil || rel == "." || rel == "" || strings.HasPrefix(rel, "..") {
 		// dir is the root itself or outside it; create + (shared mode) chmod.
@@ -333,8 +359,11 @@ func (s *Store) ensureDirSlow(dir string) error {
 		}
 	}
 
+	if !durable {
+		return nil
+	}
 	// Existing ancestors may have been created by a peer that has not synced
-	// them yet. Sync the whole chain on both paths, without chmodding peers.
+	// them yet. The bounded identity cache skips only an unchanged prefix.
 	return s.durableAncestry(dir)
 }
 
@@ -390,7 +419,7 @@ func (s *Store) InitExisting() error {
 			return err
 		}
 	}
-	if err := fsyncDir(s.root); err != nil {
+	if err := s.syncAndRememberDurableDir(s.root); err != nil {
 		return fmt.Errorf("fsync storage root %s: %w", s.root, err)
 	}
 	return nil
@@ -703,7 +732,7 @@ func (s *Store) NewWriter(kind Kind, tenant Tenant, bucket Bucket) (*Writer, err
 		return nil, err
 	}
 	tmpDir := s.tenantTmpDir(tenant)
-	if err := s.ensureDir(tmpDir); err != nil {
+	if err := s.ensureTempDir(tmpDir); err != nil {
 		return nil, fmt.Errorf("create tenant tmp: %w", err)
 	}
 	f, err := os.CreateTemp(tmpDir, "blob-*")
@@ -790,10 +819,10 @@ func (w *Writer) Close() (sha256Hex string, size int64, deduped bool, err error)
 	}
 
 	parent := filepath.Dir(finalPath)
-	mkErr := w.store.ensureDir(parent)
+	mkErr := w.store.ensureLinkDir(parent)
 	if errors.Is(mkErr, os.ErrNotExist) {
 		// GC may remove a level between stat and the ancestry fsync.
-		mkErr = w.store.ensureDirSlow(parent)
+		mkErr = w.store.ensureLinkDir(parent)
 	}
 	if mkErr != nil {
 		_ = os.Remove(w.tmpPath)
@@ -810,7 +839,7 @@ func (w *Writer) Close() (sha256Hex string, size int64, deduped bool, err error)
 	// (R-046).
 	linkErr := osLink(w.tmpPath, finalPath)
 	if linkErr != nil && errors.Is(linkErr, os.ErrNotExist) {
-		if mkErr := w.store.ensureDir(parent); mkErr != nil {
+		if mkErr := w.store.ensureLinkDir(parent); mkErr != nil {
 			_ = os.Remove(w.tmpPath)
 			err = fmt.Errorf("recreate parent after prune race: %w", mkErr)
 			return
@@ -853,7 +882,7 @@ func (w *Writer) Close() (sha256Hex string, size int64, deduped bool, err error)
 	// that crashed before its own fsyncDir — committing a PG row against a dir
 	// entry a power loss can still erase would leave a row with no blob, the
 	// state the design forbids. The fsync is cheap.
-	if dirErr := fsyncDir(parent); dirErr != nil {
+	if dirErr := w.store.syncAndRememberDurableDir(parent); dirErr != nil {
 		err = fmt.Errorf("fsync parent dir: %w", dirErr)
 		return
 	}

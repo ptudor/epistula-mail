@@ -1,101 +1,150 @@
 package blob
 
 import (
-	"errors"
+	"container/list"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
-// Every writer syncs its directory ancestry, including a chain created by a
-// peer. A date-bucket marker cannot certify new shards or a pruned/recreated
-// bucket, and a process cache cannot detect either. Markers from older builds
-// remain harmless bookkeeping, never evidence permitting a skipped fsync.
+// Directory handles make the durability memo safe across unlocked GC pruning:
+// an open handle keeps the old inode alive, so os.SameFile detects a path that
+// a peer removed and recreated even if the filesystem would otherwise reuse
+// its inode number. A cached mtime detects new entries beneath the same inode.
+// The bounded LRU avoids turning a large shard tree into an fd leak.
+const maxDurableDirHandles = 128
 
-// durabilityMarker is legacy bookkeeping retained for compatibility with
-// existing stores and GC. The leading dot keeps it out of the way of shard
-// directories, and Walk already ignores anything that is not a
-// `<64 hex>.<ext>` blob.
+type durableDirEntry struct {
+	path    string
+	file    *os.File
+	modTime time.Time
+	elem    *list.Element
+}
+
+type durableDirCache struct {
+	mu      sync.Mutex
+	entries map[string]*durableDirEntry
+	lru     list.List
+}
+
+// durabilityMarker is legacy bookkeeping retained only so GC can remove
+// markers written by older versions. New writes use the in-memory handle
+// cache and do not create marker files.
 const durabilityMarker = ".durable"
 
 // durableAncestry verifies — and if necessary establishes — that dir's
 // directory chain is durable. Called on the fast path, where dir already
 // exists.
 func (s *Store) durableAncestry(dir string) error {
-	if err := s.syncAncestry(dir); err != nil {
-		return err
-	}
-	return s.markAncestryDurable(dir)
+	return s.syncAncestry(dir)
 }
 
-// markAncestryDurable creates and syncs the marker for dir's bucket, after the
-// caller has synced the chain.
-func (s *Store) markAncestryDurable(dir string) error {
-	marker, ok := s.markerPathFor(dir)
-	if !ok {
-		return nil
-	}
-	if _, cached := s.durableDirs.Load(marker); cached {
-		return nil
-	}
+func (s *Store) forgetDurableDirLocked(entry *durableDirEntry) {
+	delete(s.durableDirs.entries, entry.path)
+	s.durableDirs.lru.Remove(entry.elem)
+	_ = entry.file.Close()
+}
 
-	f, err := os.OpenFile(marker, os.O_CREATE|os.O_WRONLY, s.fileMode)
+// durableDirUnchanged reports whether path still names the exact directory
+// inode whose entry set was last fsynced by this process.
+func (s *Store) durableDirUnchanged(path string) bool {
+	c := &s.durableDirs
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry := c.entries[path]
+	if entry == nil {
+		return false
+	}
+	openInfo, openErr := entry.file.Stat()
+	pathInfo, pathErr := os.Stat(path)
+	if openErr != nil || pathErr != nil || !pathInfo.IsDir() ||
+		!os.SameFile(openInfo, pathInfo) || !openInfo.ModTime().Equal(entry.modTime) {
+		s.forgetDurableDirLocked(entry)
+		return false
+	}
+	c.lru.MoveToFront(entry.elem)
+	return true
+}
+
+// syncAndRememberDurableDir opens an identity witness before fsync. That
+// ordering matters: if GC replaces the path around the fsync, the old handle
+// will not match the new path and the replacement is never cached as durable.
+func (s *Store) syncAndRememberDurableDir(path string) error {
+	f, err := os.Open(path)
 	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			s.durableDirs.Store(marker, struct{}{})
-			return nil
-		}
-		// A peer daemon may own the bucket in shared-group mode and the mode
-		// bits may not permit us to create here. That is not a reason to fail
-		// a delivery: fall back to syncing the chain on every write from this
-		// process, which is correct, just slower.
+		return fsyncDir(path)
+	}
+	info, err := f.Stat()
+	if err != nil || !info.IsDir() {
+		_ = f.Close()
+		return fsyncDir(path)
+	}
+	if err := fsyncDir(path); err != nil {
+		_ = f.Close()
+		return err
+	}
+	pathInfo, err := os.Stat(path)
+	if err != nil || !os.SameFile(info, pathInfo) {
+		_ = f.Close()
 		return nil
 	}
-	syncErr := f.Sync()
-	closeErr := f.Close()
-	if syncErr != nil {
-		return fmt.Errorf("fsync durability marker %s: %w", marker, syncErr)
+	c := &s.durableDirs
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = make(map[string]*durableDirEntry)
 	}
-	if closeErr != nil {
-		return fmt.Errorf("close durability marker %s: %w", marker, closeErr)
+	if old := c.entries[path]; old != nil {
+		s.forgetDurableDirLocked(old)
 	}
-	// Persist the bookkeeping entry. Writers still sync their whole chain
-	// independently of this marker on every write.
-	if err := fsyncDir(filepath.Dir(marker)); err != nil {
-		return fmt.Errorf("fsync %s after marking durable: %w", filepath.Dir(marker), err)
+	entry := &durableDirEntry{path: path, file: f, modTime: info.ModTime()}
+	entry.elem = c.lru.PushFront(entry)
+	c.entries[path] = entry
+	for len(c.entries) > maxDurableDirHandles {
+		oldest := c.lru.Back().Value.(*durableDirEntry)
+		s.forgetDurableDirLocked(oldest)
 	}
-	s.durableDirs.Store(marker, struct{}{})
 	return nil
 }
 
-// syncAncestry fsyncs every directory from the store root down to dir. Used
-// when a chain exists but nothing proves it is durable.
+// syncAncestry fsyncs the unproven suffix from the store root down to dir.
+// Every directory before that suffix has an unchanged open-handle witness.
 func (s *Store) syncAncestry(dir string) error {
 	rel, err := filepath.Rel(s.root, dir)
 	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
-		return fsyncDir(s.root)
-	}
-	cur := s.root
-	if err := fsyncDir(cur); err != nil {
-		return fmt.Errorf("fsync %s: %w", cur, err)
-	}
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
-		if part == "" {
-			continue
+		if s.durableDirUnchanged(s.root) {
+			return nil
 		}
-		cur = filepath.Join(cur, part)
-		if err := fsyncDir(cur); err != nil {
-			return fmt.Errorf("fsync %s: %w", cur, err)
+		if err := s.syncAndRememberDurableDir(s.root); err != nil {
+			return err
+		}
+		return nil
+	}
+	paths := []string{s.root}
+	cur := s.root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part != "" {
+			cur = filepath.Join(cur, part)
+			paths = append(paths, cur)
+		}
+	}
+	firstUnproven := 0
+	for firstUnproven < len(paths) && s.durableDirUnchanged(paths[firstUnproven]) {
+		firstUnproven++
+	}
+	for _, path := range paths[firstUnproven:] {
+		if err := s.syncAndRememberDurableDir(path); err != nil {
+			return fmt.Errorf("fsync %s: %w", path, err)
 		}
 	}
 	return nil
 }
 
-// markerPathFor returns the durability marker for the date bucket containing
-// dir. dir is a shard directory (`<tenant>/<kind>/yyyy/mm/dd/aa/bb`), so the
-// bucket is two levels up. Returns ok=false for a path that is not inside a
-// bucket, which the caller treats as "nothing to prove here".
+// markerPathFor returns the legacy durability marker for the date bucket
+// containing dir. It is used by compatibility tests and cleanup only.
 func markerPathFor(root, dir string) (string, bool) {
 	rel, err := filepath.Rel(root, dir)
 	if err != nil || strings.HasPrefix(rel, "..") {
@@ -110,19 +159,13 @@ func markerPathFor(root, dir string) (string, bool) {
 	return filepath.Join(bucket, durabilityMarker), true
 }
 
-func (s *Store) markerPathFor(dir string) (string, bool) {
-	return markerPathFor(s.root, dir)
-}
-
 // RemoveDurabilityMarkerIfOnlyEntry deletes a bucket's durability marker when
 // it is the only remaining entry, so GC can prune a date bucket whose blobs
 // have all been reaped.
 //
 // It reports whether it removed something. A bucket that still holds blobs, or
-// holds anything else at all, is left alone — the marker is only disposable
-// once there is nothing left for it to protect. The next write into the bucket
-// recreates it, syncing the chain again, which is the protocol working as
-// intended rather than an exception to it.
+// holds anything else at all, is left alone. New versions do not recreate the
+// marker after removing it.
 func RemoveDurabilityMarkerIfOnlyEntry(dir string) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
