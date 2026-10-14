@@ -2,11 +2,11 @@
 
 ## Unreleased
 
-- epistula-database, epistula-imap and epistula-api reject unknown TOML keys with their key paths and line
+- epistula-database, epistula-imap, epistula-api and epistula-llm-worker reject unknown TOML keys with their key paths and line
   numbers. Previously tolerated misspellings now fail startup and check-config.
   Configuration discovery uses only `/usr/local/etc/epistula/epistula-database.toml`
   and `/etc/epistula/epistula-database.toml` (the corresponding `epistula-imap.toml`
-  and `epistula-api.toml` paths for IMAP and API); use `-config` for other locations.
+  `epistula-api.toml` and `epistula-llm-worker.toml` paths for the sibling services); use `-config` for other locations.
 
 - Security: build with Go 1.27.2 and `golang.org/x/net` v0.60.0, which fix
   advisories in `net/http`, HTTP/2, `crypto/tls`, `net/textproto` and `os`

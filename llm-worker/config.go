@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -16,7 +18,6 @@ import (
 var defaultConfigPaths = []string{
 	"/usr/local/etc/epistula/epistula-llm-worker.toml",
 	"/etc/epistula/epistula-llm-worker.toml",
-	"epistula-llm-worker.toml",
 }
 
 type Config struct {
@@ -203,6 +204,12 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 	applyEnv(cfg)
+	for name, token := range map[string]*string{"mail_api.token": &cfg.MailAPI.Token, "lmstudio.api_token": &cfg.LMStudio.APIToken} {
+		*token = strings.TrimSpace(*token)
+		if strings.ContainsFunc(*token, unicode.IsControl) {
+			return nil, fmt.Errorf("%s contains a control character", name)
+		}
+	}
 	cfg.deriveAnnotationModel()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -238,9 +245,19 @@ func loadTOML(path string, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("read config %q: %w", path, err)
 	}
-	if err := toml.Unmarshal(data, cfg); err != nil {
+	if err := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(cfg); err != nil {
+		var missing *toml.StrictMissingError
+		if errors.As(err, &missing) {
+			var details []string
+			for _, e := range missing.Errors {
+				line, _ := e.Position()
+				details = append(details, fmt.Sprintf("%s (line %d)", strings.Join(e.Key(), "."), line))
+			}
+			return fmt.Errorf("parse config %q: unknown keys %s: %w", path, strings.Join(details, ", "), err)
+		}
 		return fmt.Errorf("parse config %q: %w", path, err)
 	}
+	slog.Info("loaded configuration", "path", path)
 	return nil
 }
 
@@ -276,6 +293,20 @@ func applyEnv(cfg *Config) {
 }
 
 func (c *Config) Validate() error {
+	if c.MailAPI.Folder != "" && c.MailAPI.Mailbox == "" {
+		return errors.New("mail_api.folder requires mail_api.mailbox")
+	}
+	for name, value := range map[string]string{"since": c.MailAPI.Since, "before": c.MailAPI.Before} {
+		if value == "" {
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339, value); err != nil {
+			if _, err := time.Parse("2006-01-02", value); err != nil {
+				return fmt.Errorf("mail_api.%s must be RFC 3339 or YYYY-MM-DD", name)
+			}
+		}
+	}
+
 	if _, err := parseBaseURL(c.MailAPI.BaseURL); err != nil {
 		return fmt.Errorf("mail_api.base_url: %w", err)
 	}
@@ -452,6 +483,9 @@ func parseBaseURL(raw string) (*url.URL, error) {
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return nil, errors.New("must use http or https")
+	}
+	if u.User != nil {
+		return nil, errors.New("userinfo is not allowed; use the token fields")
 	}
 	if u.Host == "" {
 		return nil, errors.New("host is required")
