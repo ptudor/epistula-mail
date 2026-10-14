@@ -331,6 +331,7 @@ func (p *Parser) Parse(raw []byte) (*Message, error) {
 	if strings.TrimSpace(ct) == "" {
 		ct = "text/plain; charset=us-ascii"
 	}
+	mark := walker.snapshot()
 	bs, err := walker.walk(
 		bodyPartNumber("", ct),
 		ct,
@@ -341,7 +342,15 @@ func (p *Parser) Parse(raw []byte) (*Message, error) {
 		0,
 	)
 	if err != nil {
-		return nil, err
+		defect, ok := walker.entityDefect(err)
+		if !ok {
+			return nil, err
+		}
+		walker.restore(mark)
+		bs.Parts = nil
+		bs.Envelope = nil
+		bs.Lines = textLines(bs, top.body)
+		bs.Defects = append(bs.Defects, defect)
 	}
 	if len(top.defects) > 0 {
 		bs.Defects = append(top.defects, bs.Defects...)
@@ -886,7 +895,7 @@ func populateConveniences(m *Message) {
 		m.Cc = splitAddresses(vs)
 	}
 	if v := firstHeader(m.Headers, "Date"); v != "" {
-		if t, err := mail.ParseDate(v); err == nil {
+		if t, err := mail.ParseDate(v); err == nil && t.Year() >= 1 && t.Year() <= 9999 {
 			m.SentDate = t
 			// mail.ParseDate keeps the header's offset in the returned
 			// Location, so formatting there yields the sender's own calendar

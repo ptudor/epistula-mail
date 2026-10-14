@@ -198,6 +198,7 @@ func TestDeliverSalvagesButKeepsLimits(t *testing.T) {
 		name, raw, outcome string
 		code               int
 	}{
+		{"missing boundary", "From: a@ops003.invalid\r\nContent-Type: multipart/mixed\r\n\r\nopaque\r\n", "delivered:degraded", EX_OK},
 		{"truncated multipart", truncatedFixture, "delivered:degraded", EX_OK},
 		{"base64 with a footer", footerFixture, "delivered:degraded", EX_OK},
 		{"header only", headerOnlyFixture, "delivered", EX_OK},
@@ -228,7 +229,7 @@ func TestDeliverSalvagesButKeepsLimits(t *testing.T) {
 	if err := db.Pool().QueryRow(ctx, `SELECT count(*) FROM messages`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 3 {
-		t.Errorf("%d messages stored, want the 3 delivered", n)
+	if n != 4 {
+		t.Errorf("%d messages stored, want the 4 delivered", n)
 	}
 }

@@ -52,6 +52,18 @@ func entityFrom(raw []byte, containerSubtype string) (rawEntity, error) {
 	if err != nil {
 		return rawEntity{}, err
 	}
+	if ingest.IsMultipart(ct.mediaType) {
+		children := 0
+		boundary := ct.params["boundary"]
+		if boundary != "" {
+			if err := ingest.VisitRawMultipart(body, boundary, func([]byte) error { children++; return nil }); err != nil {
+				return rawEntity{}, err
+			}
+		}
+		if children == 0 {
+			ct.mediaType = "text/plain"
+		}
+	}
 	return rawEntity{header: header, body: body, ct: ct, containerSubtype: containerSubtype}, nil
 }
 

@@ -87,6 +87,11 @@ func decodeBodyStructure(raw []byte) (imap.BodyStructure, error) {
 // and clients addressing BODY[N.1] from it computed the wrong part path
 // (RO5X-004).
 func convertBS(p persistedBS) imap.BodyStructure {
+	// An opaque multipart has no addressable children. Present its bytes
+	// as a single text body without changing the persisted structure.
+	if p.Type == "multipart" && len(p.Parts) == 0 {
+		p.Type, p.Subtype = "text", "plain"
+	}
 	switch {
 	case p.Type == "message" && p.Subtype == "rfc822":
 		sp := singlePartFrom(p)
