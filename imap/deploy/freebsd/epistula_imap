@@ -31,9 +31,10 @@
 #   A failed reload keeps the previous cert and logs at ERROR.
 # - This rc.d script runs the daemon as epistula_imap_user. If you need
 #   public :993 and the unprivileged user cannot bind low ports, put a
-#   small TLS TCP proxy / packet redirect in front or grant the service
+#   packet-level redirect in front or grant the service
 #   user that OS capability explicitly. Do not run this daemon as root
-#   just to bind the low port.
+#   just to bind the low port. TCP/TLS proxies collapse per-IP limits; this
+#   listener does not accept PROXY headers.
 
 . /etc/rc.subr
 

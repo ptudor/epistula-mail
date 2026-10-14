@@ -130,7 +130,7 @@ func TestAdvertisedCapabilitiesIncludeImplementedOnes(t *testing.T) {
 
 	// The three RO5X-007 additions, plus the four that were already correct.
 	for _, want := range []string{
-		"IDLE", "LIST-EXTENDED", "SPECIAL-USE",
+		"IDLE", "LIST-EXTENDED", "LIST-STATUS", "CHILDREN", "SPECIAL-USE",
 		"MOVE", "UIDPLUS", "ESEARCH", "NAMESPACE",
 	} {
 		if !strings.Contains(caps, want) {
@@ -139,7 +139,7 @@ func TestAdvertisedCapabilitiesIncludeImplementedOnes(t *testing.T) {
 	}
 
 	// Must stay unadvertised.
-	for _, unwanted := range []string{"COMPRESS=DEFLATE", "CONDSTORE", "QRESYNC"} {
+	for _, unwanted := range []string{"COMPRESS=DEFLATE", "CONDSTORE", "QRESYNC", "SEARCHRES", "IMAP4rev2"} {
 		if strings.Contains(caps, unwanted) {
 			t.Errorf("CAPABILITY advertises %s, which is not implemented: %s", unwanted, caps)
 		}

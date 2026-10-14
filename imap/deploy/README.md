@@ -35,7 +35,7 @@ deploy_hook="service epistula_imap reload"   # sends SIGHUP
 
 ## Port :993
 
-The rc.d script runs the daemon as `epistula_imap_user`. If you bind public `:993`, make sure that service user is allowed to bind the low port, or put a small TCP/TLS proxy or packet redirect in front of a high local port. The daemon does not perform an internal root-to-user privilege drop, so the deployment wrapper must not start it as root just to acquire the port.
+The rc.d script runs the daemon as `epistula_imap_user`. If you bind public `:993`, make sure that service user is allowed to bind the low port, or use a packet-level redirect to a high local port. TCP/TLS proxies are unsuitable: this listener does not accept PROXY headers and its per-IP connection/login limits see only the proxy address, grouping every user into one limit. Keep the original client source address with a packet redirect, or grant low-port access with the [mac_portacl recipe](../QUICKSTART-FREEBSD.md). The daemon does not perform an internal root-to-user privilege drop, so the deployment wrapper must not start it as root just to acquire the port.
 
 ## Smoke test after install
 
@@ -43,7 +43,7 @@ The rc.d script runs the daemon as `epistula_imap_user`. If you bind public `:99
 service epistula_imap start
 curl -s http://127.0.0.1:8783/healthz   # expect 200
 openssl s_client -connect localhost:993 -servername imap.example.invalid -quiet < /dev/null \
-    | head -2                            # expect "* OK ... IMAP4rev2 ..."
+    | head -2                            # expect "* OK ... IMAP4rev1 ..."
 ```
 
 Then exercise auth from a known mailbox (provision via `epistula-database admin mailbox-add` first):

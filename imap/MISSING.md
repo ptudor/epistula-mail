@@ -44,5 +44,5 @@ implemented here.
   graceful drain and `service epistula_imap reload` the certificate swap.
   `drain_timeout_seconds` (default 30) bounds the drain.
 - Binding a public `:993` needs an explicit low-port strategy (an OS
-  capability such as `mac_portacl`, a packet redirect, or a front proxy). The
+  capability such as `mac_portacl`, or a packet-level redirect). The
   daemon never runs as root and performs no privilege drop.

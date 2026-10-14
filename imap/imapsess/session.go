@@ -673,9 +673,10 @@ func (s *Session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 	// "LIST () ... RETURN (SUBSCRIBED)"), we still emit all folders but
 	// annotate each with \Subscribed if a subscription row exists.
 	query := `
-		SELECT f.name, f.special_use,
+		SELECT f.id, f.name, f.special_use,
 		       EXISTS(SELECT 1 FROM folder_subscriptions s
-		               WHERE s.mailbox_id = f.mailbox_id AND s.folder_id = f.id) AS subscribed
+		               WHERE s.mailbox_id = f.mailbox_id AND s.folder_id = f.id) AS subscribed,
+ EXISTS(SELECT 1 FROM folders child WHERE child.mailbox_id=f.mailbox_id AND starts_with(child.name,f.name||'/')) AS children
 		  FROM folders f
 		 WHERE f.mailbox_id = $1`
 	if options != nil && options.SelectSubscribed {
@@ -690,21 +691,47 @@ func (s *Session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 	}
 	defer rows.Close()
 
+	type listedFolder struct {
+		id                   int64
+		name                 string
+		specialUse           *string
+		subscribed, children bool
+	}
+	var folders []listedFolder
 	for rows.Next() {
-		var (
-			name       string
-			specialUse *string
-			subscribed bool
-		)
-		if err := rows.Scan(&name, &specialUse, &subscribed); err != nil {
+		var f listedFolder
+		if err := rows.Scan(&f.id, &f.name, &f.specialUse, &f.subscribed, &f.children); err != nil {
 			return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "list scan failed"}
 		}
+		folders = append(folders, f)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, f := range folders {
+		name, specialUse, subscribed := f.name, f.specialUse, f.subscribed
 		if !patternMatches(name, patterns, ref) {
 			continue
 		}
 		data := &imap.ListData{
 			Mailbox: name,
 			Delim:   '/',
+		}
+		// LSUB uses SelectSubscribed without return options; preserve its attrs.
+		if options == nil || !options.SelectSubscribed || options.ReturnChildren {
+			if f.children {
+				data.Attrs = append(data.Attrs, imap.MailboxAttrHasChildren)
+			} else {
+				data.Attrs = append(data.Attrs, imap.MailboxAttrHasNoChildren)
+			}
+		}
+		if options != nil && options.ReturnStatus != nil {
+			data.Status, err = s.folderStatus(ctx, name, f.id, options.ReturnStatus)
+			if err != nil {
+				return err
+			}
 		}
 		if specialUse != nil {
 			data.Attrs = append(data.Attrs, imap.MailboxAttr(*specialUse))
@@ -720,7 +747,7 @@ func (s *Session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 			return err
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 func patternMatches(name string, patterns []string, ref string) bool {
@@ -765,6 +792,11 @@ func (s *Session) Status(mailbox string, options *imap.StatusOptions) (statusDat
 	if err != nil {
 		return nil, err
 	}
+
+	return s.folderStatus(ctx, mailbox, folderID, options)
+}
+
+func (s *Session) folderStatus(ctx context.Context, mailbox string, folderID int64, options *imap.StatusOptions) (*imap.StatusData, error) {
 
 	var uidValidity, uidNext, highestModSeq int64
 	if err := s.be.Pool.QueryRow(ctx,

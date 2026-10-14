@@ -237,7 +237,6 @@ type imapListener struct {
 func advertisedCaps() imap.CapSet {
 	return imap.CapSet{
 		imap.CapIMAP4rev1: {},
-		imap.CapIMAP4rev2: {},
 		imap.CapNamespace: {},
 		imap.CapUIDPlus:   {},
 		imap.CapESearch:   {},
@@ -249,6 +248,8 @@ func advertisedCaps() imap.CapSet {
 		// Session.List honours options.SelectSubscribed /
 		// options.ReturnSubscribed and emits \Subscribed.
 		imap.CapListExtended: {},
+		imap.CapListStatus:   {},
+		imap.CapChildren:     {},
 		// Session.List emits the folders.special_use attribute.
 		imap.CapSpecialUse: {},
 	}

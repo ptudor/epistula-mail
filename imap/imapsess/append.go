@@ -16,6 +16,16 @@ import (
 	"github.com/ptudor/epistula-mail/database/storage"
 )
 
+// AppendLimit lets the protocol layer reject an oversized literal before
+// issuing its continuation. Append retains its own defensive size check.
+func (s *Session) AppendLimit() uint32 {
+	limit := s.be.MaxAppendBytes
+	if limit <= 0 {
+		limit = 52_428_800
+	}
+	return uint32(min(limit, int64(math.MaxUint32)))
+}
+
 // Append reads the IMAP literal, runs it through the shared ingest
 // parser, writes raw + attachment blobs, and persists the message via
 // storage.Ingest — the same code path Postfix-side deliver uses, so

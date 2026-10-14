@@ -136,16 +136,18 @@ emitted by the go-imap server library itself rather than named there —
 `caps_ro5x007_test.go` asserts the real CAPABILITY line on the wire, so this
 table and the running server cannot drift silently. Note the extension set
 appears **post-authentication**; a pre-auth `CAPABILITY` legitimately shows
-only the login-relevant subset (`IMAP4rev2 IMAP4rev1 SASL-IR LITERAL-
+only the login-relevant subset (`IMAP4rev1 SASL-IR LITERAL-
 AUTH=PLAIN`).
 
 | Capability | RFC | Notes |
 |------------|-----|-------|
 | `IMAP4rev1` | 3501 | Required for legacy client compatibility. |
-| `IMAP4rev2` | 9051 | Current standard. |
+| `IMAP4rev2` / `SEARCHRES` | 9051 / 5182 | Not offered until saved search results are implemented. |
 | `AUTH=PLAIN` | 4616 | Only mechanism advertised. Refused pre-TLS. |
 | `IDLE` | 2177 | Wakes via PG LISTEN/NOTIFY on `mail_arrived`. |
 | `LIST-EXTENDED` | 5258 | |
+| `LIST-STATUS` / `CHILDREN` | 5819 / 3348 | LIST returns requested status counts and child attributes. |
+| `APPENDLIMIT=52428800` | 7889 | Reflects configured max_append_bytes; refuses oversized literals before upload. |
 | `SPECIAL-USE` | 6154 | `\Sent`, `\Drafts`, `\Trash`, `\Junk` annotations, from `folders.special_use` — set by `CREATE … (USE (…))` or, for delivered/imported folders, by `epistula-database admin folder-set-special-use`. Both accept the same set (`storage.CanonicalSpecialUse`). |
 | `MOVE` | 6851 | Atomic move between folders. |
 | `UIDPLUS` | 4315 | APPENDUID / COPYUID responses. |
