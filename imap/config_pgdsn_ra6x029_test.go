@@ -172,3 +172,17 @@ func writeTestKeyPair(t *testing.T, certPath, keyPath string) {
 		t.Fatalf("write key: %v", err)
 	}
 }
+
+func TestProductionRejectsUnreadableCert(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("requires non-root permissions")
+	}
+	cfg := productionFixture(t)
+	cfg.Postgres.DSN = "postgres://localhost/mail?sslmode=verify-full"
+	if err := os.Chmod(cfg.Server.TLSCert, 0000); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.validateProduction(); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("validation: %v", err)
+	}
+}

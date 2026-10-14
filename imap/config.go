@@ -499,12 +499,10 @@ func (c *Config) validateProduction() error {
 	if c.Server.TLSCert == "" || c.Server.TLSKey == "" {
 		return errors.New("server.tls_cert and server.tls_key are required")
 	}
-	if _, err := os.Stat(c.Server.TLSCert); err != nil {
-		return fmt.Errorf("server.tls_cert not readable: %w", err)
+	if _, err := tls.LoadX509KeyPair(c.Server.TLSCert, c.Server.TLSKey); err != nil {
+		return fmt.Errorf("server TLS key pair: %w", err)
 	}
-	if _, err := os.Stat(c.Server.TLSKey); err != nil {
-		return fmt.Errorf("server.tls_key not readable: %w", err)
-	}
+
 	if !isLoopbackAddr(c.Admin.ListenAddr) {
 		return fmt.Errorf("admin.listen_addr %q must bind loopback (127.0.0.1/[::1]/localhost) — the metrics listener is unauthenticated and must never be exposed beyond the host", c.Admin.ListenAddr)
 	}

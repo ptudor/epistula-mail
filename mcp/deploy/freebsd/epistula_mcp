@@ -1,4 +1,6 @@
 #!/bin/sh
+# rc.subr consumes service variables; su expands its positional arguments later.
+# shellcheck disable=SC2034,SC2016
 #
 # FreeBSD rc.d service for epistula-mcp — the mail store exposed over MCP. Runs the
 # Streamable HTTP transport on loopback (127.0.0.1:8786 by default) so a
@@ -26,14 +28,14 @@
 name="epistula_mcp"
 rcvar="${name}_enable"
 
-load_rc_config $name
+load_rc_config "$name"
 
-: ${epistula_mcp_enable:="NO"}
-: ${epistula_mcp_config:="/usr/local/etc/epistula/epistula-mcp.toml"}
-: ${epistula_mcp_addr:="127.0.0.1:8786"}
-: ${epistula_mcp_user:="epistula-mcp"}
-: ${epistula_mcp_logfile:="/var/log/epistula-mcp.log"}
-: ${epistula_mcp_rundir:="/var/run/epistula-mcp"}
+: "${epistula_mcp_enable:="NO"}"
+: "${epistula_mcp_config:="/usr/local/etc/epistula/epistula-mcp.toml"}"
+: "${epistula_mcp_addr:="127.0.0.1:8786"}"
+: "${epistula_mcp_user:="epistula-mcp"}"
+: "${epistula_mcp_logfile:="/var/log/epistula-mcp.log"}"
+: "${epistula_mcp_rundir:="/var/run/epistula-mcp"}"
 
 epistula_mcp_program="/usr/local/bin/epistula-mcp"
 
@@ -53,7 +55,7 @@ epistula_mcp_start() {
 		return 1
 	fi
 	if [ -f "${pidfile}" ] && pgrep -F "${pidfile}" "epistula-mcp" >/dev/null 2>&1; then
-		echo "epistula-mcp already running? (pid=$(cat ${pidfile}))."
+		echo "epistula-mcp already running? (pid=$(cat "${pidfile}"))."
 		return 1
 	fi
 	install -d -o "${epistula_mcp_user}" -g "${epistula_mcp_user}" -m 0755 "${epistula_mcp_rundir}"
@@ -63,7 +65,7 @@ epistula_mcp_start() {
 	chown "${epistula_mcp_user}:${epistula_mcp_user}" "${epistula_mcp_logfile}" || return 1
 	chmod 640 "${epistula_mcp_logfile}" || return 1
 	echo "Starting epistula-mcp."
-	/usr/sbin/daemon -f \
+	/usr/sbin/daemon -f -H \
 		-P "${supervisor_pidfile}" -p "${pidfile}" \
 		-u "${epistula_mcp_user}" -o "${epistula_mcp_logfile}" \
 		"${epistula_mcp_program}" -config "${epistula_mcp_config}" -http "${epistula_mcp_addr}"
@@ -74,8 +76,8 @@ epistula_mcp_stop() {
 	# that its pidfile names a live daemon(8): a stale pidfile must not send
 	# TERM to, or wait on, a reused unrelated PID. With the supervisor gone,
 	# signal a surviving child directly.
-	_child="$(cat ${pidfile} 2>/dev/null)"
-	_supervisor="$(cat ${supervisor_pidfile} 2>/dev/null)"
+	_child="$(cat "${pidfile}" 2>/dev/null)"
+	_supervisor="$(cat "${supervisor_pidfile}" 2>/dev/null)"
 	if [ -n "${_supervisor}" ] && pgrep -F "${supervisor_pidfile}" daemon >/dev/null 2>&1; then
 		echo "Stopping epistula-mcp."
 		kill -TERM "${_supervisor}" 2>/dev/null
@@ -91,7 +93,8 @@ epistula_mcp_stop() {
 	# child briefly while it unwinds and keeps its pidfiles locked until it
 	# exits, so a `restart` whose start ran in that window failed with
 	# "process already running" and left the service down.
-	wait_for_pids ${_child} ${_supervisor}
+	if [ -n "${_child}" ]; then wait_for_pids "${_child}"; fi
+	if [ -n "${_supervisor}" ]; then wait_for_pids "${_supervisor}"; fi
 }
 
 run_rc_command "$1"

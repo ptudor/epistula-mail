@@ -121,3 +121,12 @@ Omitted, zero and negative tool list/search limits use the API's configured defa
 The message tool returns bounded inspection metadata with explicit continuation. Supply `attachment_after`/`annotation_after` from `next_attachment`/`next_annotation` to inspect later parts/models. For a long summary, supply `annotation_model` and that model's `summary_next_offset` as `summary_offset` (UTF-8 bytes). All models remain accessible and primary/ranking information remains available. `metadata_truncated` identifies more attachment/model pages; individual summaries carry their own continuation. Use message_text for remaining body text. API consumers that omit the inspection parameters still get the full document.
 
 The attachment tool fetches one attachment's file by message id and the `part_number` the message tool lists. A PNG, JPEG, GIF or WebP image is returned as an MCP image, a UTF-8 `text/*` file as an embedded text resource, and anything else (PDFs included) as an embedded blob resource with its MIME type. What the model sees of a blob is up to the MCP client: some save it to disk and report the path, others may not pass it to the model at all. Check with your client. A file over `max_attachment_bytes` (default 10 MiB) is refused, not truncated. The read token needs `read_content`, which it already has for message bodies.
+
+For the rc.d defaults, use this `newsyslog.conf` entry to rotate the log and
+send HUP (signal 1) to the supervisor, which reopens its output file:
+
+```text
+/var/log/epistula-mcp.log epistula-mcp:epistula-mcp 640 7 1000 * Z /var/run/epistula-mcp/supervisor.pid 1
+```
+
+Keep the child pidfile for service status and application reloads.

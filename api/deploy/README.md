@@ -82,3 +82,12 @@ Message inspection is additive: `/v1/messages/{id}?metadata=inspection&text_limi
 Inspection model pages use stable model-name order; `primary` still identifies the globally preferred non-retired model. Calls read current sidecars rather than retaining a snapshot between calls, so restart a traversal if concurrent additions before a cursor must be included. Each MCP call still makes one request. `/text` also projects its byte range in PostgreSQL before transfer.
 
 Export write inactivity is enforced for each 8 KiB write/flush unit, including inside large rows. The default 30-minute budget accommodates worker inference pauses and is independent of total export duration. Configure it above the worker's longest legitimate pause. Flush failures abort the stream and release capacity; unsupported deadline enforcement refuses export. The explicit `0s` override still disables enforcement and requires an external bound.
+
+For the rc.d defaults, use this `newsyslog.conf` entry to rotate the log and
+send HUP (signal 1) to the supervisor, which reopens its output file:
+
+```text
+/var/log/epistula_api.log epistula-api:epistula-api 640 7 1000 * Z /var/run/epistula-api/epistula_api.supervisor.pid 1
+```
+
+Keep the child pidfile for service status and application reloads.

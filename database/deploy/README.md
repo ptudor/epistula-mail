@@ -74,3 +74,12 @@ a 90-day delivery audit retention policy. Schedule the same command with `-yes`
 in place of `-dry-run` daily once that retention period meets local requirements.
 Deletion commits in batches of at most 1,000 rows; interruption retains completed
 batches and rerunning continues safely. Message content and outcome strings are unchanged.
+
+For the rc.d defaults, use this `newsyslog.conf` entry to rotate the log and
+send HUP (signal 1) to the supervisor, which reopens its output file:
+
+```text
+/var/log/epistula_database.log epistula-database:epistula-database 640 7 1000 * Z /var/run/epistula-database/epistula_database.supervisor.pid 1
+```
+
+Keep the child pidfile for service status and application reloads.

@@ -1,4 +1,6 @@
 #!/bin/sh
+# rc.subr consumes service variables; su expands its positional arguments later.
+# shellcheck disable=SC2034,SC2016
 
 # PROVIDE: epistula_api
 # REQUIRE: LOGIN postgresql
@@ -34,14 +36,14 @@
 name="epistula_api"
 rcvar="${name}_enable"
 
-load_rc_config $name
+load_rc_config "$name"
 
-: ${epistula_api_enable:="NO"}
-: ${epistula_api_user:="epistula-api"}
-: ${epistula_api_group:="epistula-api"}
-: ${epistula_api_config:="/usr/local/etc/epistula/epistula-api.toml"}
-: ${epistula_api_pidfile:="/var/run/epistula-api/${name}.pid"}
-: ${epistula_api_logfile:="/var/log/${name}.log"}
+: "${epistula_api_enable:="NO"}"
+: "${epistula_api_user:="epistula-api"}"
+: "${epistula_api_group:="epistula-api"}"
+: "${epistula_api_config:="/usr/local/etc/epistula/epistula-api.toml"}"
+: "${epistula_api_pidfile:="/var/run/epistula-api/${name}.pid"}"
+: "${epistula_api_logfile:="/var/log/${name}.log"}"
 
 # Privilege drop is rc.subr's job here, via ${name}_user / ${name}_group
 # (epistula_api_user / epistula_api_group above) -- NOT daemon(8)'s -u.
@@ -54,17 +56,18 @@ load_rc_config $name
 # ${pidfile}, which rc.subr targets for stop. No -r, so no restart-on-stop
 # hazard; syslog (-S/-T) is unnecessary (the app logs via slog to ${logfile}).
 pidfile="${epistula_api_pidfile}"
+supervisor_pidfile="${pidfile%.pid}.supervisor.pid"
 procname="/usr/local/bin/epistula-api"
 command="/usr/sbin/daemon"
 # -f detaches daemon(8)'s own inherited stdio. Without it `service epistula_api start`
 # over ssh never returns — the supervisor holds the pipe until the process exits.
 # It does not replace -o/-S below: those route the child's output, -f the parent's.
-command_args="-c -f -p ${pidfile} \
+command_args="-c -f -H -P \"${supervisor_pidfile}\" -p ${pidfile} \
               -o ${epistula_api_logfile} \
               ${procname} serve -config ${epistula_api_config}"
 
 start_precmd="${name}_prestart"
-stop_postcmd="${name}_poststop"
+stop_cmd="${name}_stop"
 
 epistula_api_prestart()
 {
@@ -72,9 +75,9 @@ epistula_api_prestart()
         echo "${name}: config not found: ${epistula_api_config}" >&2
         return 1
     fi
-    if ! /usr/local/bin/epistula-api check-config -config "${epistula_api_config}" >/dev/null 2>&1; then
+    if ! su -m "${epistula_api_user}" -c 'exec "$1" check-config -config "$2"' sh "${procname}" "${epistula_api_config}" >/dev/null 2>&1; then
         echo "${name}: check-config failed; not starting" >&2
-        /usr/local/bin/epistula-api check-config -config "${epistula_api_config}" >&2
+        su -m "${epistula_api_user}" -c 'exec "$1" check-config -config "$2"' sh "${procname}" "${epistula_api_config}" >&2
         return 1
     fi
     # rc.subr drops to ${epistula_api_user} before running daemon(8), so the
@@ -96,9 +99,22 @@ epistula_api_prestart()
     chmod 640 "${epistula_api_logfile}" 2>/dev/null || true
 }
 
-epistula_api_poststop()
+epistula_api_stop()
 {
-    rm -f "${pidfile}" "${pidfile}.supervisor"
+    # Validate both identities before signalling or waiting on pidfile contents.
+    _child="$(check_pidfile "${pidfile}" "${procname}")"
+    _supervisor="$(check_pidfile "${supervisor_pidfile}" "${command}")"
+    if [ -n "${_child}" ]; then
+        kill -TERM "${_child}" 2>/dev/null
+    elif [ -n "${_supervisor}" ]; then
+        kill -TERM "${_supervisor}" 2>/dev/null
+    else
+        echo "${name} not running."
+        return 0
+    fi
+    # daemon(8) owns and removes its pidfiles; a restart must wait for that.
+    if [ -n "${_child}" ]; then wait_for_pids "${_child}"; fi
+    if [ -n "${_supervisor}" ]; then wait_for_pids "${_supervisor}"; fi
 }
 
 run_rc_command "$1"

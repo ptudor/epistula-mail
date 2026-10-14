@@ -63,3 +63,12 @@ Every admitted LOGIN performs the same ordered set of supported stored Argon2 co
 The daemon reserves the largest class's actual scratch-memory cost for the entire sequential set under the existing global budget. Startup logs only cost parameters/lengths and refuses a class it cannot admit. At most 32 classes and 256 distinct supported historical encodings are admitted; excessive catalogs refuse authentication uniformly. After catalog refresh, a live-added class above the budget causes the same busy response for every account. Raise the budget appropriately or reset outlier passwords with `epistula-database admin mailbox-passwd -name NAME` under the chosen current Argon2 configuration. Password resets converge historical classes; existing hashes are never automatically rewritten. All classes' work must fit the configured pre-authentication time allowance; canceled sessions stop before the next KDF.
 
 A deployment using one cost class pays one KDF per login. Mixed deployments pay the sum of their distinct class costs and refresh the bounded cost catalog at most once per 30 seconds, while preserving uniform work for each cache interval. The isolated `TestAuthenticationMixedCostTCPDistributions` fixture can be run on the deployment host with MAIL_DATABASE_TEST_PG and MAIL_VERIFY_AUTH_SAMPLES=20; it reports randomized repeated failure distributions alongside deterministic work/admission tests.
+
+For the rc.d defaults, use this `newsyslog.conf` entry to rotate the log and
+send HUP (signal 1) to the supervisor, which reopens its output file:
+
+```text
+/var/log/epistula_imap.log epistula-imap:epistula-imap 640 7 1000 * Z /var/run/epistula-imap/epistula_imap.supervisor.pid 1
+```
+
+Keep the child pidfile for service status and application reloads.
