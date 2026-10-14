@@ -88,10 +88,12 @@ jobs:
         with:
           go-version-file: .go-version
           cache-dependency-path: '**/go.sum'
+      - name: Check module toolchain pins
+        run: sh scripts/check-toolchains.sh
       - name: Check workflow and shell syntax
         run: |
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
-          shellcheck -s sh packaging/*.sh scripts/*.sh
+          shellcheck -s sh -e SC1091 packaging/*.sh scripts/*.sh */deploy/freebsd/epistula_*
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           version: v2.18.1

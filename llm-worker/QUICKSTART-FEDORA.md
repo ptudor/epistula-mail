@@ -118,7 +118,7 @@ Build it **CGO-disabled** so it uses Go's pure resolver (this keeps the systemd
 sandbox in step 6 from needing extra socket families for glibc NSS):
 
 ```sh
-# On a build host with Go >= 1.25 (go.mod pins the toolchain), from the project root:
+# On a build host with Go >= 1.26 with GOTOOLCHAIN=auto (go.mod selects Go 1.27.2), from the project root:
 CGO_ENABLED=0 make build-linux        # produces ./epistula-llm-worker-linux-amd64
 ```
 
@@ -129,7 +129,7 @@ sudo install -m 755 epistula-llm-worker-linux-amd64 "${BIN}"
 "${BIN}" version
 ```
 
-> No Go ≥ 1.25 anywhere? `sudo dnf install -y golang git make` and build on the
+> No Go ≥ 1.26 anywhere? `sudo dnf install -y golang git make` and build on the
 > box; with `GOTOOLCHAIN=auto` (the default) `go` fetches the pinned toolchain.
 > Build static there too: `CGO_ENABLED=0 make build && sudo install -m 755 epistula-llm-worker "${BIN}"`.
 

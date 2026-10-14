@@ -2,6 +2,8 @@ module github.com/ptudor/epistula-mail/mcp
 
 go 1.26.0
 
+toolchain go1.27.2
+
 // The official MCP Go SDK (stable v1.x, maintained with the Go team).
 //
 // This project is a THIN PROXY over epistula-api's /v1 HTTP contract. It deliberately
