@@ -40,10 +40,11 @@ the outcome. A temporary failure uses a sysexits code that tells Postfix to retr
 
 ## Configure the pipe transport
 
-Add the supplied [master.cf fragment](master.cf) to Postfix's `master.cf`, adjusting
-the executable, configuration path, and delivery identity to the installation.
-Linux packages install the executable under `/usr/bin`; the FreeBSD fragment uses
-`/usr/local/bin`. Postfix pipe delivery needs the same storage access as the writer.
+Add the supplied [Linux package fragment](master-linux.cf) or
+[FreeBSD fragment](master.cf) to Postfix's `master.cf`.
+Postfix `pipe(8)` runs with exactly the configured uid and gid and clears
+supplementary groups. The Linux spool is owned by `epistula-database:epistula`
+with mode 2770, so delivery writes as the owner and IMAP writes via the group.
 
 Set the per-transport recipient limit to one:
 

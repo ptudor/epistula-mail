@@ -60,12 +60,56 @@ done
 epistula-mcp -version | grep '^epistula-mcp '
 test "$(stat -c %a /var/spool/epistula-database)" = 2770
 test "$(stat -c %G /var/spool/epistula-database)" = epistula
+test "$(stat -c %U /var/spool/epistula-database)" = epistula-database
+# Match pipe(8), which discards the shared supplementary storage group.
+setpriv --reuid=epistula-database --regid=epistula-database --clear-groups -- \
+    sh -c 'mkdir /var/spool/epistula-database/.probe && rmdir /var/spool/epistula-database/.probe'
 for service in epistula-database epistula-imap epistula-api; do
     runuser -u "$service" -- test -r /var/spool/epistula-database
 done
 for service in epistula-database epistula-imap; do
     runuser -u "$service" -- test -w /var/spool/epistula-database
 done
+
+# Exercise durable delivery with pipe(8)'s exact identity in this disposable
+# container. Keep the packaged operator configuration unchanged.
+if [ "$format" = deb ]; then
+    apt-get install -y --no-install-recommends postgresql
+    for bindir in /usr/lib/postgresql/*/bin; do
+        PATH="$bindir:$PATH"
+    done
+    export PATH
+else
+    dnf install -y --setopt=install_weak_deps=False postgresql-server
+fi
+install -d -m 0700 -o postgres -g postgres /tmp/epistula-package-pg
+runuser -u postgres -- initdb -D /tmp/epistula-package-pg/data -A trust
+runuser -u postgres -- pg_ctl -D /tmp/epistula-package-pg/data \
+    -l /tmp/epistula-package-pg/server.log -o '-h 127.0.0.1 -p 55432' -w start
+trap 'runuser -u postgres -- pg_ctl -D /tmp/epistula-package-pg/data -m immediate -w stop' EXIT
+cat > /tmp/epistula-package-deliver.toml <<'EOF'
+production = false
+[postgres]
+dsn = "postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable"
+[storage]
+root = "/var/spool/epistula-database"
+group_writable = true
+EOF
+chown root:epistula-database /tmp/epistula-package-deliver.toml
+chmod 0640 /tmp/epistula-package-deliver.toml
+pipe_database() {
+    setpriv --reuid=epistula-database --regid=epistula-database --clear-groups -- \
+        epistula-database "$@" -config /tmp/epistula-package-deliver.toml
+}
+pipe_database migrate up
+pipe_database admin domain-add -name example.invalid
+printf 'package-test-password\n' | pipe_database admin mailbox-add -name package-test -password-stdin
+pipe_database admin alias-add -domain example.invalid -localpart package-test -mailbox package-test
+printf 'From: sender@example.invalid\r\nTo: package-test@example.invalid\r\nSubject: Package test\r\n\r\nbody\r\n' \
+    | pipe_database deliver -recipient package-test@example.invalid -sender sender@example.invalid
+test -n "$(find /var/spool/epistula-database/package-test/raw -name '*.eml' -print -quit)"
+runuser -u postgres -- pg_ctl -D /tmp/epistula-package-pg/data -m fast -w stop
+trap - EXIT
 
 # Reinstall through the package manager with a locally edited configuration.
 # conffile retention uses the same package-manager mechanism on version upgrades.

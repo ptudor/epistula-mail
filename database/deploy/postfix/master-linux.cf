@@ -1,0 +1,9 @@
+# Linux package transport. Set in main.cf:
+# epistula-database_destination_recipient_limit = 1
+# pipe(8) uses exactly the named uid/gid and clears supplementary groups.
+epistula-database  unix  -       n       n       -       -       pipe
+  flags=DRX user=epistula-database:epistula-database
+  argv=/usr/bin/epistula-database deliver
+       -config=/etc/epistula/epistula-database.toml
+       -recipient=${recipient}
+       -sender=${sender}

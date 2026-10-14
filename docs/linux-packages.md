@@ -11,13 +11,18 @@ and the component's private group with mode 0640. Package upgrades preserve
 edited configuration. No package enables or starts a service automatically.
 
 The shared blob root is `/var/spool/epistula-database`. Packages create it with
-setgid mode 2770 and group `epistula` when it is absent. Existing mail ownership
-is not rewritten. Database and IMAP configurations use `group_writable = true`;
+setgid mode 2770 and group `epistula` when it is absent. The database package
+assigns its still-root-owned spool to `epistula-database`, preserving other
+owners' trees and replacement symlinks. Tenant ownership is not rewritten.
+Database and IMAP configurations use `group_writable = true`;
 API reads the same root. The blob root must be mounted consistently on all three
 components' hosts. Service accounts and state survive package removal.
 
 The database service runs `serve` for health and metrics. Configure Postfix to
 invoke `epistula-database deliver` under the database account for delivery.
+Use the [Linux pipe transport](../database/deploy/postfix/master-linux.cf).
+Postfix `pipe(8)` clears supplementary groups and uses exactly the configured
+uid and gid; spool ownership gives delivery access with that identity.
 The worker's service runs on the model host. MCP uses a loopback HTTP listener
 in its packaged unit; client-launched stdio use needs only its executable and
 the scoped API credentials.
@@ -44,5 +49,5 @@ APT does not check those automatically. Verify the signed checksum manifest
 before installing either format, following [releases.md](releases.md).
 
 `make test-packages` exercises installation, signature checks, edited configuration
-retention, storage-group permissions, and removal in disposable Debian and Fedora
-containers. It does not provide live mail-delivery acceptance.
+retention, delivery with Postfix's uid/gid and cleared supplementary groups,
+storage-group permissions, and removal in disposable Debian and Fedora containers.

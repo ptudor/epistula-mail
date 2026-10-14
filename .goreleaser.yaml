@@ -132,6 +132,10 @@ nfpms:
         dst: /usr/share/doc/epistula-database/README.md
       - src: docs/linux-packages.md
         dst: /usr/share/doc/epistula-database/linux-packages.md
+      - src: database/deploy/postfix/master-linux.cf
+        dst: /usr/share/doc/epistula-database/postfix/master-linux.cf
+      - src: database/deploy/postfix/INSTALL.md
+        dst: /usr/share/doc/epistula-database/postfix/INSTALL.md
       - src: THIRD_PARTY_NOTICES.md
         dst: /usr/share/doc/epistula-database/copyright
     scripts:
