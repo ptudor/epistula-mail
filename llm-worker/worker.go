@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -30,7 +31,12 @@ type Worker struct {
 	// content. Fast rounds skip one until its retryAt; complete rounds retry
 	// all of them and start the map afresh. Rounds run one at a time on one
 	// goroutine, so it needs no lock. nil is an empty map.
-	deferrals map[int64]deferral
+	deferrals map[deferralKey]deferral
+}
+
+type deferralKey struct {
+	messageID      int64
+	classification bool
 }
 
 // deferral is a message whose last attempt failed for a reason of its own,
@@ -173,8 +179,8 @@ func (w *Worker) runRound(ctx context.Context, round roundKind) (RunStats, error
 }
 
 // deferred reports whether a fast round should leave msgID alone for now.
-func (w *Worker) deferred(msgID int64) bool {
-	d, ok := w.deferrals[msgID]
+func (w *Worker) deferred(msgID int64, classification bool) bool {
+	d, ok := w.deferrals[deferralKey{msgID, classification}]
 	return ok && w.clock().Before(d.retryAt)
 }
 
@@ -189,25 +195,27 @@ func (w *Worker) clock() time.Time {
 // failure of the message's own (not an upstream outage, which says nothing
 // about the message and is handled by aborting the pass) defers it: 5
 // minutes, doubling per failure, never past the complete round interval.
-func (w *Worker) noteOutcome(msgID int64, err error) {
-	if err == nil {
-		delete(w.deferrals, msgID)
+func (w *Worker) noteOutcome(msgID int64, classification bool, err error) {
+	key := deferralKey{msgID, classification}
+	var status *HTTPStatusError
+	if err == nil || (classification && errors.As(err, &status) && status.StatusCode == http.StatusUnprocessableEntity) {
+		delete(w.deferrals, key)
 		return
 	}
 	if isInfraFailure(err) || isCanceled(err) {
 		return
 	}
 	if w.deferrals == nil {
-		w.deferrals = map[int64]deferral{}
+		w.deferrals = map[deferralKey]deferral{}
 	}
-	d := w.deferrals[msgID]
+	d := w.deferrals[key]
 	d.attempts++
 	delay := firstRetryDelay << min(d.attempts-1, 16)
 	if limit := time.Duration(w.cfg.Worker.CompleteRoundIntervalSec) * time.Second; limit > 0 && delay > limit {
 		delay = limit
 	}
 	d.retryAt = w.clock().Add(delay)
-	w.deferrals[msgID] = d
+	w.deferrals[key] = d
 }
 
 // isCanceled reports whether err is the pass being canceled, which is not the
@@ -226,6 +234,7 @@ func (w *Worker) annotatePass(ctx context.Context, vocab *vocabCache, round roun
 	if w.cfg.Worker.SkipAnnotated {
 		notAnnotatedBy = w.cfg.Worker.AnnotationModel
 	}
+	attempted := make(map[int64]struct{})
 	consecutiveInfra := 0
 	filter := exportFilter{NotAnnotatedBy: notAnnotatedBy, PassRequired: round == roundFast}
 	err := w.exportResuming(ctx, filter, func(msg Message) error {
@@ -240,16 +249,26 @@ func (w *Worker) annotatePass(ctx context.Context, vocab *vocabCache, round roun
 			consecutiveInfra = 0
 			return nil
 		}
-		if round == roundFast && w.deferred(msg.ID) {
+		if round == roundFast && w.deferred(msg.ID, false) {
 			stats.Deferred++
 			return nil
 		}
+		if _, seen := attempted[msg.ID]; seen {
+			stats.Deferred++
+			return nil
+		}
+		attempted[msg.ID] = struct{}{}
 		var v *archiveVocabulary
 		if w.cfg.Classify.Enabled {
 			v = vocab.get(ctx, msg.Mailbox)
 		}
-		classified, err := w.processMessage(ctx, msg, v)
-		w.noteOutcome(msg.ID, err)
+		annotated, classified, err := w.processMessage(ctx, msg, v)
+		if annotated {
+			stats.Annotated++
+			metricMessagesAnnotated.Add(1)
+			w.noteOutcome(msg.ID, false, nil)
+		}
+		w.noteOutcome(msg.ID, annotated, err)
 		if classified {
 			stats.Classified++
 			metricMessagesClassified.Add(1)
@@ -276,11 +295,12 @@ func (w *Worker) annotatePass(ctx context.Context, vocab *vocabCache, round roun
 			} else {
 				consecutiveInfra = 0
 			}
+			if w.cfg.Worker.BatchLimit > 0 && stats.Annotated >= int64(w.cfg.Worker.BatchLimit) {
+				return errStop
+			}
 			return nil
 		}
 		consecutiveInfra = 0
-		stats.Annotated++
-		metricMessagesAnnotated.Add(1)
 		if w.cfg.Worker.BatchLimit > 0 && stats.Annotated >= int64(w.cfg.Worker.BatchLimit) {
 			return errStop
 		}
@@ -313,9 +333,9 @@ func (w *Worker) shouldSkip(msg Message) bool {
 }
 
 // processMessage annotates one message and, when v is non-nil, classifies it
-// in the same request. classified reports whether a classification was
-// stored.
-func (w *Worker) processMessage(ctx context.Context, msg Message, v *archiveVocabulary) (classified bool, err error) {
+// in the same request. Each boolean records the corresponding successful PUT
+// (annotation also counts simulated dry-run work, as before).
+func (w *Worker) processMessage(ctx context.Context, msg Message, v *archiveVocabulary) (annotated, classified bool, err error) {
 	var (
 		ann  LLMAnnotation
 		resp *chatResponse
@@ -337,7 +357,7 @@ func (w *Worker) processMessage(ctx context.Context, msg Message, v *archiveVoca
 		})
 	})
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	put := normalizeAnnotation(w.cfg, ann)
 	if resp != nil && resp.Usage != nil {
@@ -352,7 +372,7 @@ func (w *Worker) processMessage(ctx context.Context, msg Message, v *archiveVoca
 			"category", valueOrEmpty(put.Category),
 			"archive_category", ann.ArchiveCategory,
 			"summary_chars", len(valueOrEmpty(put.Summary)))
-		return false, nil
+		return true, false, nil
 	}
 	// The PUT gets the same bounded retry as inference does (RA6X-042). A
 	// epistula-api 429 or 503 used to fail the message outright, so a brief
@@ -361,10 +381,10 @@ func (w *Worker) processMessage(ctx context.Context, msg Message, v *archiveVoca
 	if err := w.withRetry(ctx, func() error {
 		return w.mail.PutAnnotation(ctx, msg.ID, put)
 	}); err != nil {
-		return false, err
+		return false, false, err
 	}
 	if v == nil || ann.ArchiveConfidence == nil {
-		return false, nil
+		return true, false, nil
 	}
 	// Written after the annotation, so a message whose classification PUT
 	// fails is still annotated and is picked up by the classification pass
@@ -373,9 +393,9 @@ func (w *Worker) processMessage(ctx context.Context, msg Message, v *archiveVoca
 	if err := w.withRetry(ctx, func() error {
 		return w.mail.PutClassification(ctx, msg.ID, cput)
 	}); err != nil {
-		return false, fmt.Errorf("classification: %w", err)
+		return true, false, fmt.Errorf("classification: %w", err)
 	}
-	return true, nil
+	return true, true, nil
 }
 
 // classifyPass classifies, mailbox by mailbox, every message with no current
@@ -395,6 +415,7 @@ func (w *Worker) classifyPass(ctx context.Context, vocab *vocabCache, processed 
 		mailboxes = names
 	}
 	errStop := errors.New("batch limit reached")
+	attempted := make(map[int64]struct{})
 	consecutiveInfra := 0
 	for _, mailbox := range mailboxes {
 		v := vocab.get(ctx, mailbox)
@@ -408,12 +429,17 @@ func (w *Worker) classifyPass(ctx context.Context, vocab *vocabCache, processed 
 			}
 			stats.Scanned++
 			metricMessagesScanned.Add(1)
-			if round == roundFast && w.deferred(msg.ID) {
+			if round == roundFast && (w.deferred(msg.ID, false) || w.deferred(msg.ID, true)) {
 				stats.Deferred++
 				return nil
 			}
+			if _, seen := attempted[msg.ID]; seen {
+				stats.Deferred++
+				return nil
+			}
+			attempted[msg.ID] = struct{}{}
 			err := w.classifyMessage(ctx, msg, v)
-			w.noteOutcome(msg.ID, err)
+			w.noteOutcome(msg.ID, true, err)
 			if err != nil {
 				stats.Failed++
 				metricMessagesFailed.Add(1)

@@ -281,6 +281,35 @@ func newClassifyWorker(t *testing.T, s *fakeStore) *Worker {
 	return w
 }
 
+func TestClassification422KeepsAnnotationCountAndRetries(t *testing.T) {
+	s := newFakeStore()
+	for _, id := range []int64{1, 2, 4} {
+		s.queued[id] = true
+	}
+	w := newClassifyWorker(t, s)
+	rejected := false
+	w.mail.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/classification") && !rejected {
+			rejected = true
+			s.mu.Lock()
+			annotated := s.annotated[1]
+			s.mu.Unlock()
+			if !annotated {
+				t.Error("classification attempted before annotation PUT")
+			}
+			return statusResponse(http.StatusUnprocessableEntity, "", nil), nil
+		}
+		return http.DefaultTransport.RoundTrip(r)
+	})
+	stats, err := w.runRound(context.Background(), roundFast)
+	if err != nil || stats.Annotated != 3 || !rejected {
+		t.Fatalf("round: %+v %v", stats, err)
+	}
+	if s.classified[1] == "" || w.deferred(1, false) || w.deferred(1, true) {
+		t.Fatalf("classification was deferred instead of retried: %+v", stats)
+	}
+}
+
 func newFakeStore() *fakeStore {
 	s := &fakeStore{
 		messages:    map[int64]Message{},

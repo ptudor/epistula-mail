@@ -111,8 +111,8 @@ func TestProcessMessageShrinksBodyOnOverflow(t *testing.T) {
 	long := strings.Repeat("https://tracking.example.test/x?id=1 ", 800) // ~30K characters
 	msg := Message{ID: 1, Mailbox: "jdoe", Folder: "INBOX", Flags: []string{}, TextBody: &long}
 	before := metricContextOverflows.Load()
-	classified, err := w.processMessage(context.Background(), msg, testVocab)
-	if err != nil || !classified {
+	annotated, classified, err := w.processMessage(context.Background(), msg, testVocab)
+	if err != nil || !annotated || !classified {
 		t.Fatalf("processMessage = %v, %v; want success after shrinking", classified, err)
 	}
 	// 24000, 12000 and 6000 characters overflow; 3000 fits. Each size is sent

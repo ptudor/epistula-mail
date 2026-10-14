@@ -106,6 +106,19 @@ func TestCutExportStreamIsReopened(t *testing.T) {
 	}
 }
 
+func TestCutExportDoesNotRepeatContentFailures(t *testing.T) {
+	c := &cuttingStore{fakeStore: newFakeStore(), cutAt: 2}
+	c.garbled = true
+	w := newCuttingWorker(t, c)
+	stats, err := w.RunOnce(context.Background())
+	if err != nil || c.lmCalls != 3 || stats.Deferred != 2 || c.exports != 2 {
+		t.Fatalf("reconnected pass: %+v %v, calls=%d exports=%d", stats, err, c.lmCalls, c.exports)
+	}
+	if _, err := w.RunOnce(context.Background()); err != nil || c.lmCalls != 6 {
+		t.Fatalf("next complete pass must retry prior failures: %v, calls=%d", err, c.lmCalls)
+	}
+}
+
 // TestCutExportStreamStandsWhenNotResumable: a stream cut before any row, or
 // a pass without a filter that excludes finished work, keeps its error.
 func TestCutExportStreamStandsWhenNotResumable(t *testing.T) {
