@@ -907,6 +907,7 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 
 	return s.visitFetchRows(ctx, uids, options, func(r fetchRow) error {
 		sections := &messageSections{}
+		defer sections.close()
 		var envelope *imap.Envelope
 		if options.Envelope {
 			header, err := sections.topHeader(s, r)
@@ -918,7 +919,27 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 				return err
 			}
 		}
+		var bs imap.BodyStructure
+		if options.BodyStructure != nil {
+			var err error
+			bs, err = decodeBodyStructure(r.bodyStructure)
+			if err != nil {
+				s.be.Logger.Warn("FETCH bodystructure decode", "uid", r.uid, "err", err)
+				// Emit a benign single-part placeholder so the client gets
+				// something parseable rather than a broken response.
+				bs = &imap.BodyStructureSinglePart{
+					Type: "application", Subtype: "octet-stream",
+					Size: uint32(r.rawSize),
+				}
+			}
+		}
+		for _, sec := range options.BodySection {
+			if err := sections.prepare(s, r, sec); err != nil {
+				return err
+			}
+		}
 		resp := w.CreateMessage(r.seqNum)
+		defer resp.Close() // Release the response mutex on every exit.
 		// UID is implicit in IMAP4rev2 and many clients depend on it being
 		// emitted even when not explicitly requested when the command was
 		// UID FETCH. Honoring the FetchOptions flag is the common pattern;
@@ -939,16 +960,6 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 			resp.WriteEnvelope(envelope)
 		}
 		if options.BodyStructure != nil {
-			bs, err := decodeBodyStructure(r.bodyStructure)
-			if err != nil {
-				s.be.Logger.Warn("FETCH bodystructure decode", "uid", r.uid, "err", err)
-				// Emit a benign single-part placeholder so the client gets
-				// something parseable rather than a broken response.
-				bs = &imap.BodyStructureSinglePart{
-					Type: "application", Subtype: "octet-stream",
-					Size: uint32(r.rawSize),
-				}
-			}
 			resp.WriteBodyStructure(bs)
 		}
 		// One cache per message: every section of this FETCH shares the blob
@@ -956,6 +967,9 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 		// retained bytes never exceed one message (RA6X-054).
 		for _, sec := range options.BodySection {
 			if err := s.writeBodySection(resp, r, sec, sections); err != nil {
+				_ = resp.Close()
+				s.closeStaleSession()
+				s.be.Logger.Error("FETCH literal write failed; closing connection", "uid", r.uid, "err", err)
 				return err
 			}
 		}
@@ -1072,7 +1086,7 @@ func (s *Session) writeBodySection(resp *imapserver.FetchResponseWriter, r fetch
 	if len(sec.Part) == 0 &&
 		sec.Specifier == imap.PartSpecifierNone &&
 		len(sec.HeaderFields) == 0 && len(sec.HeaderFieldsNot) == 0 {
-		return s.streamRawBody(resp, r, sec)
+		return sectionsStreamRawBody(resp, r, sec, cache.stream)
 	}
 
 	// Top-level BODY[HEADER] / BODY[HEADER.FIELDS] / BODY[HEADER.FIELDS.NOT]
@@ -1212,20 +1226,33 @@ func selectEntityPayload(sec *imap.FetchItemBodySection, e rawEntity) ([]byte, b
 // streamRawBody implements the BODY[] (full message) variant by streaming
 // directly from the blob, never loading the bytes into memory.
 func (s *Session) streamRawBody(resp *imapserver.FetchResponseWriter, r fetchRow, sec *imap.FetchItemBodySection) error {
+	file, err := s.openRawBody(r)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return sectionsStreamRawBody(resp, r, sec, file)
+}
+
+func (s *Session) openRawBody(r fetchRow) (*os.File, error) {
 	bucket := blob.BucketFromTime(r.rawBlobDate)
 	rc, err := s.be.BlobStore.Open(blob.KindRaw, s.tenant, bucket, r.rawSHA256Hex)
 	if err != nil {
 		if stale := s.staleTenantErr(err); stale != nil {
-			return stale
+			return nil, stale
 		}
 		// Store corruption: the DB row exists but its blob is gone. Page
 		// the operator via ERROR + NO [SERVERBUG]; never fake an empty body.
 		s.be.Logger.Error("FETCH BODY[] open blob",
 			"mailbox", s.mailboxName, "folder", s.selectedFolderName,
 			"uid", r.uid, "sha16", safeShortSHA(r.rawSHA256Hex), "bucket", bucket, "err", err)
-		return missingBlobErr()
+		return nil, missingBlobErr()
 	}
-	defer rc.Close()
+	file, ok := rc.(*os.File)
+	if !ok {
+		rc.Close()
+		return nil, fmt.Errorf("blob reader does not support stat and section reads")
+	}
 
 	// The literal length we are about to announce comes from the DB raw_size.
 	// If the on-disk blob is a different length (truncated/corrupt store), the
@@ -1233,16 +1260,17 @@ func (s *Session) streamRawBody(resp *imapserver.FetchResponseWriter, r fetchRow
 	// client's literal into a hang. Stat the OPEN fd (race-free vs a re-stat)
 	// and refuse cleanly before writing any literal, matching missing-blob
 	// handling (R-060). *os.File satisfies the Stat interface.
-	if statter, ok := rc.(interface{ Stat() (os.FileInfo, error) }); ok {
-		if fi, statErr := statter.Stat(); statErr == nil && fi.Size() != r.rawSize {
-			s.be.Logger.Error("FETCH BODY[] blob size mismatch",
-				"mailbox", s.mailboxName, "folder", s.selectedFolderName,
-				"uid", r.uid, "sha16", safeShortSHA(r.rawSHA256Hex),
-				"db_size", r.rawSize, "disk_size", fi.Size())
-			return missingBlobErr()
-		}
+	fi, statErr := file.Stat()
+	if statErr != nil || fi.Size() != r.rawSize {
+		file.Close()
+		s.be.Logger.Error("FETCH BODY[] blob stat or size mismatch",
+			"uid", r.uid, "sha16", safeShortSHA(r.rawSHA256Hex), "db_size", r.rawSize, "err", statErr)
+		return nil, missingBlobErr()
 	}
+	return file, nil
+}
 
+func sectionsStreamRawBody(resp *imapserver.FetchResponseWriter, r fetchRow, sec *imap.FetchItemBodySection, file *os.File) error {
 	offset, size := int64(0), r.rawSize
 	if sec.Partial != nil {
 		offset = sec.Partial.Offset
@@ -1256,13 +1284,10 @@ func (s *Session) streamRawBody(resp *imapserver.FetchResponseWriter, r fetchRow
 		if size < 0 {
 			size = 0
 		}
-		if _, err := io.CopyN(io.Discard, rc, offset); err != nil {
-			return fmt.Errorf("BODY[] partial seek: %w", err)
-		}
 	}
 
 	w := resp.WriteBodySection(sec, size)
-	if _, err := io.CopyN(w, rc, size); err != nil {
+	if _, err := io.CopyN(w, io.NewSectionReader(file, offset, size), size); err != nil {
 		_ = w.Close()
 		return fmt.Errorf("BODY[] stream: %w", err)
 	}
@@ -2501,6 +2526,8 @@ var errBlobUnreadable = errors.New("imapsess: raw blob unreadable")
 // moment are bounded by one message — the same bound the ingest-time size cap
 // already enforces — rather than by the size of the fetched set.
 type messageSections struct {
+	stream *os.File // One open, stat-checked raw stream per message.
+
 	raw     []byte
 	rawErr  error
 	rawDone bool
@@ -2565,4 +2592,35 @@ func (c *messageSections) part(s *Session, r fetchRow, path []int) (rawEntity, e
 	}
 	c.parts[key] = e
 	return e, nil
+}
+
+// prepare resolves every fallible read before the FETCH writer takes the
+// connection's encoder mutex. Payload slices and MIME walks share this cache.
+func (c *messageSections) prepare(s *Session, r fetchRow, sec *imap.FetchItemBodySection) error {
+	var err error
+	switch {
+	case len(sec.Part) == 0 && sec.Specifier == imap.PartSpecifierNone && len(sec.HeaderFields) == 0 && len(sec.HeaderFieldsNot) == 0:
+		if c.stream == nil {
+			c.stream, err = s.openRawBody(r)
+		}
+	case len(sec.Part) == 0 && sec.Specifier == imap.PartSpecifierHeader:
+		_, err = c.topHeader(s, r)
+	default:
+		_, err = c.part(s, r, sec.Part)
+	}
+	if err == nil {
+		return nil
+	}
+	var protocolErr *imap.Error
+	if errors.As(err, &protocolErr) {
+		return protocolErr
+	}
+	s.be.Logger.Error("FETCH section preparation failed", "uid", r.uid, "part", partIntPath(sec.Part), "err", err)
+	return missingBlobErr()
+}
+
+func (c *messageSections) close() {
+	if c.stream != nil {
+		c.stream.Close()
+	}
 }
