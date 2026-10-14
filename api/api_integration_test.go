@@ -337,8 +337,8 @@ func TestAPIOutOfScopeIs403(t *testing.T) {
 	f := newAPIFixture(t)
 	resp := f.do(http.MethodGet, "/v1/mailboxes/bob/folders", f.metaToken, nil)
 	p := wantProblem(t, resp, http.StatusForbidden)
-	if !strings.Contains(p.Detail, "bob") {
-		t.Errorf("detail %q should name the mailbox", p.Detail)
+	if p.Detail != "Token is not authorized for this mailbox." {
+		t.Errorf("unexpected scope detail: %q", p.Detail)
 	}
 	// Out-of-scope single message is also 403 (authenticated, not authorized).
 	resp = f.do(http.MethodGet, fmt.Sprintf("/v1/messages/%d/text", f.bobMsgID), f.metaToken, nil)

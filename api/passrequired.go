@@ -97,7 +97,7 @@ func (s *server) handlePassRequiredPrune(w http.ResponseWriter, r *http.Request,
 		"($1::bool OR f.mailbox_id = ANY($2::bigint[]))",
 	}
 	if req.Mailbox != "" {
-		mailboxID, ok := s.lookupMailbox(w, r, req.Mailbox)
+		mailboxID, ok := s.lookupScopedMailbox(w, r, tok, req.Mailbox)
 		if !ok {
 			return
 		}

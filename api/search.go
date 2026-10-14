@@ -30,7 +30,7 @@ func (s *server) searchConds(w http.ResponseWriter, r *http.Request, tok *apiTok
 	}
 
 	if mbName := r.URL.Query().Get("mailbox"); mbName != "" {
-		mailboxID, found := s.lookupMailbox(w, r, mbName)
+		mailboxID, found := s.lookupScopedMailbox(w, r, tok, mbName)
 		if !found {
 			return nil, nil, false
 		}

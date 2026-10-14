@@ -298,7 +298,7 @@ func (s *server) handleFolders(w http.ResponseWriter, r *http.Request, tok *apiT
 		return
 	}
 	mailbox := r.PathValue("mailbox")
-	mailboxID, ok := s.lookupMailbox(w, r, mailbox)
+	mailboxID, ok := s.lookupScopedMailbox(w, r, tok, mailbox)
 	if !ok {
 		return
 	}
@@ -335,10 +335,14 @@ func (s *server) handleFolders(w http.ResponseWriter, r *http.Request, tok *apiT
 	writeJSON(w, http.StatusOK, map[string]any{"mailbox": mailbox, "folders": out})
 }
 
-func (s *server) lookupMailbox(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
+func (s *server) lookupScopedMailbox(w http.ResponseWriter, r *http.Request, tok *apiToken, name string) (int64, bool) {
 	var id int64
 	err := s.pool.QueryRow(r.Context(),
 		`SELECT id FROM mailboxes WHERE name = $1`, name).Scan(&id)
+	if (err == nil && !tok.InScope(id)) || (errors.Is(err, pgx.ErrNoRows) && !tok.AllMailboxes) {
+		problemForbidden(w, r, "Token is not authorized for this mailbox.")
+		return 0, false
+	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			problemNotFound(w, r, "Mailbox '"+name+"' does not exist.")
@@ -363,7 +367,7 @@ func (s *server) handleFolderMessages(w http.ResponseWriter, r *http.Request, to
 		problemNotFound(w, r, "No such endpoint (expected .../folders/{folder}/messages).")
 		return
 	}
-	mailboxID, ok := s.lookupMailbox(w, r, mailbox)
+	mailboxID, ok := s.lookupScopedMailbox(w, r, tok, mailbox)
 	if !ok {
 		return
 	}

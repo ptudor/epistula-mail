@@ -253,3 +253,5 @@ No `deliver`, `import`, `gc`, `admin`, `migrate` — those are `epistula-databas
 ```
 
 `epistula-api` is to machines what `epistula-imap` is to mail clients: a stateless reader — plus a narrow writer of one derived sidecar (tags/category/summary) — of the one schema `epistula-database` owns.
+
+Named-mailbox routes resolve names through `lookupScopedMailbox`: for a scoped token, both an absent name and a name outside its scope return the same 403 detail. An all-mailboxes token receives 404 for absent names. An absent folder in an authorized mailbox still returns 404. This avoids exposing mailbox/login names; the numeric message-id tradeoff above is unchanged (RM51X-113).

@@ -151,6 +151,7 @@ func TestPassRequiredPruneAuthorization(t *testing.T) {
 	f.prune(f.metaToken, `{"model":"m1"}`, http.StatusForbidden)
 	bobAnnotator := f.mintToken(ctx, "bob-annotator", []string{"bob"}, []string{auth.PermissionWriteAnnotation})
 	f.prune(bobAnnotator, `{"model":"m1","mailbox":"alice"}`, http.StatusForbidden)
+	f.prune(bobAnnotator, `{"model":"m1","mailbox":"nobody"}`, http.StatusForbidden)
 	if res := f.prune(bobAnnotator, `{"model":"m1"}`, http.StatusOK); res.Pruned != 1 || res.Remaining != 0 {
 		t.Fatalf("bob-scoped prune = %+v; want bob's marker only", res)
 	}

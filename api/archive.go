@@ -50,7 +50,7 @@ func (s *server) handleArchiveCategories(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	mailbox := r.PathValue("mailbox")
-	mailboxID, ok := s.lookupMailbox(w, r, mailbox)
+	mailboxID, ok := s.lookupScopedMailbox(w, r, tok, mailbox)
 	if !ok {
 		return
 	}
