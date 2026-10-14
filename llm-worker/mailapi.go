@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -36,6 +35,8 @@ func NewMailAPIClient(cfg MailAPIConfig) (*MailAPIClient, error) {
 		return nil, err
 	}
 	reqTimeout := time.Duration(cfg.RequestTimeoutSec) * time.Second
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = reqTimeout
 	return &MailAPIClient{
 		base:  base,
 		token: cfg.Token,
@@ -48,12 +49,7 @@ func NewMailAPIClient(cfg MailAPIConfig) (*MailAPIClient, error) {
 		exportClient: &http.Client{
 			Timeout:       0, // no total deadline; Export uses an idle-read watchdog
 			CheckRedirect: sameOriginRedirect,
-			Transport: &http.Transport{
-				DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: reqTimeout, // bound the wait for response headers
-				ExpectContinueTimeout: 1 * time.Second,
-			},
+			Transport:     transport,
 		},
 		requestTimeout: reqTimeout,
 	}, nil
@@ -349,7 +345,7 @@ func (c *MailAPIClient) ArchiveCategories(ctx context.Context, mailbox string) (
 	var out struct {
 		Categories []ArchiveCategory `json:"categories"`
 	}
-	path := fmt.Sprintf("%s/v1/mailboxes/%s/archive-categories", strings.TrimRight(c.base.Path, "/"), url.PathEscape(mailbox))
+	path := fmt.Sprintf("%s/v1/mailboxes/%s/archive-categories", strings.TrimRight(c.base.Path, "/"), mailbox)
 	if err := c.getJSON(ctx, path, &out); err != nil {
 		return nil, err
 	}

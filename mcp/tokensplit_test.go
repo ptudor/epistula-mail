@@ -142,6 +142,7 @@ func TestAnnotateWithoutWriteClientIsCorrectableError(t *testing.T) {
 }
 
 func TestConfigRejectsIdenticalTokens(t *testing.T) {
+	clearEnv(t)
 	path := writeTempConfig(t, `
 [mailapi]
 base_url       = "http://127.0.0.1:8784"
@@ -159,6 +160,7 @@ annotate_token = "same-secret-value"
 }
 
 func TestConfigAnnotateTokenFromFileAndEnv(t *testing.T) {
+	clearEnv(t)
 	path := writeTempConfig(t, `
 [mailapi]
 base_url       = "http://127.0.0.1:8784"
@@ -189,6 +191,7 @@ annotate_token = "file-write-secret"
 // TestConfigNoAnnotateTokenIsValid pins the default: omitting the second
 // credential is a supported, read-only configuration, not an error.
 func TestConfigNoAnnotateTokenIsValid(t *testing.T) {
+	clearEnv(t)
 	path := writeTempConfig(t, `
 [mailapi]
 base_url = "http://127.0.0.1:8784"

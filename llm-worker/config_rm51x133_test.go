@@ -9,6 +9,7 @@ import (
 )
 
 func TestExportFiltersAndURLValidation(t *testing.T) {
+	clearEnv(t)
 	for name, mutate := range map[string]func(*Config){
 		"folder without mailbox": func(c *Config) { c.MailAPI.Folder = "INBOX" },
 		"bad since":              func(c *Config) { c.MailAPI.Since = "yesterday" },
@@ -33,6 +34,7 @@ func TestExportFiltersAndURLValidation(t *testing.T) {
 }
 
 func TestTrimmedTokenAuthorization(t *testing.T) {
+	clearEnv(t)
 	t.Setenv("MAIL_LLM_MAIL_API_TOKEN", " mapi_test \n")
 	t.Setenv("MAIL_LLM_LMSTUDIO_TOKEN", " model-token ")
 	c, err := LoadConfig("")

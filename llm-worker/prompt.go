@@ -51,8 +51,18 @@ func messageBlock(msg Message, maxBodyChars int) string {
 	if msg.TextBody != nil {
 		text = truncateRunes(*msg.TextBody, maxBodyChars)
 	}
-	subject := valueOrEmpty(msg.Subject)
-	from := valueOrEmpty(msg.From)
+	subject := flattenControl(valueOrEmpty(msg.Subject))
+	if utf8.RuneCountInString(subject) > maxAttachmentNameLength {
+		subject = string([]rune(subject)[:maxAttachmentNameLength]) + "..."
+	}
+	from := flattenControl(valueOrEmpty(msg.From))
+	addresses := func(values []string) string {
+		flat := make([]string, len(values))
+		for i, value := range values {
+			flat[i] = flattenControl(value)
+		}
+		return strings.Join(flat, ", ")
+	}
 	sent := ""
 	if msg.SentDate != nil {
 		sent = msg.SentDate.Format("2006-01-02T15:04:05Z07:00")
@@ -72,8 +82,8 @@ size_bytes: %d
 attachment_count: %d
 %s
 Message text:
-%s`, msg.ID, msg.Mailbox, msg.Folder, subject, from, strings.Join(msg.To, ", "),
-		strings.Join(msg.Cc, ", "), msg.InternalDate.Format("2006-01-02T15:04:05Z07:00"),
+%s`, msg.ID, flattenControl(msg.Mailbox), flattenControl(msg.Folder), subject, from, addresses(msg.To),
+		addresses(msg.Cc), msg.InternalDate.Format("2006-01-02T15:04:05Z07:00"),
 		sent, msg.Size, msg.AttachmentCount, attachmentLines(msg.Attachments), text)
 }
 

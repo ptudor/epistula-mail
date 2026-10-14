@@ -11,6 +11,7 @@ import (
 )
 
 func TestStrictConfigUnknownKey(t *testing.T) {
+	clearEnv(t)
 	p := filepath.Join(t.TempDir(), "config.toml")
 	for _, input := range []string{"producton = true\n", "[postgres]\nstatment_timeout = '5s'\n"} {
 		if err := os.WriteFile(p, []byte(input), 0600); err != nil {
@@ -30,6 +31,7 @@ func TestStrictConfigUnknownKey(t *testing.T) {
 }
 
 func TestStrictConfigShippedFiles(t *testing.T) {
+	clearEnv(t)
 	t.Setenv("MAIL_LLM_MAIL_API_TOKEN", "mapi_test")
 	for _, p := range []string{"epistula-llm-worker.toml.example", "../packaging/epistula-llm-worker.toml"} {
 		if err := loadTOML(p, DefaultConfig()); err != nil {
@@ -46,6 +48,7 @@ func TestStrictConfigShippedFiles(t *testing.T) {
 }
 
 func TestConfigIgnoresWorkingDirectory(t *testing.T) {
+	clearEnv(t)
 	t.Chdir(t.TempDir())
 	if err := os.WriteFile("epistula-llm-worker.toml", []byte("producton = true\n"), 0600); err != nil {
 		t.Fatal(err)

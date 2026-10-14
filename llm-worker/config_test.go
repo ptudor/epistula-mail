@@ -1,6 +1,20 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+func clearEnv(t *testing.T) {
+	t.Helper()
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "MAIL_LLM_") {
+			t.Setenv(key, "")
+		}
+	}
+}
 
 // validatableDefault returns DefaultConfig with the annotation-model
 // derivation LoadConfig applies before Validate — so tests that call Validate

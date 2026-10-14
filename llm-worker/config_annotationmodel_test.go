@@ -28,7 +28,7 @@ token = "mapi_test"
 // lmstudio.model set (per QUICKSTART), the annotation key derives to
 // "lmstudio:<model>" — not the old hardcoded qwen default.
 func TestAnnotationModelDerivedFromLMStudioModel(t *testing.T) {
-	t.Setenv("MAIL_LLM_MODEL", "") // ensure no env override
+	clearEnv(t)
 	path := writeWorkerTOML(t, `base_url = "http://127.0.0.1:1234/v1"
 model = "openai/gpt-oss-20b"
 `)
@@ -44,7 +44,7 @@ model = "openai/gpt-oss-20b"
 // TestAnnotationModelExplicitWins confirms an explicit annotation_model is not
 // overridden by the derivation.
 func TestAnnotationModelExplicitWins(t *testing.T) {
-	t.Setenv("MAIL_LLM_MODEL", "")
+	clearEnv(t)
 	path := writeWorkerTOML(t, `base_url = "http://127.0.0.1:1234/v1"
 model = "openai/gpt-oss-20b"
 
@@ -64,6 +64,7 @@ annotation_model = "custom:key-x"
 // the model used for inference but does NOT clobber an explicit
 // annotation_model pinned in TOML.
 func TestAnnotationModelExplicitWinsOverEnvModel(t *testing.T) {
+	clearEnv(t)
 	t.Setenv("MAIL_LLM_MODEL", "openai/gpt-oss-20b")
 	path := writeWorkerTOML(t, `base_url = "http://127.0.0.1:1234/v1"
 model = "qwen/qwen3.6-35b-a3b"
