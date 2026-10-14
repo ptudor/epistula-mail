@@ -81,6 +81,10 @@ func (s *Store) logf(msg string, args ...any) {
 // A missing file is not a match and not an error: the caller's next step is to
 // write it.
 func (s *Store) blobMatches(path, wantSHA string, wantSize int64) (bool, error) {
+	return s.blobMatchesMode(path, wantSHA, wantSize, s.verifyMode)
+}
+
+func (s *Store) blobMatchesMode(path, wantSHA string, wantSize int64, mode VerifyMode) (bool, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -91,13 +95,13 @@ func (s *Store) blobMatches(path, wantSHA string, wantSize int64) (bool, error) 
 	if !fi.Mode().IsRegular() {
 		return false, fmt.Errorf("blob path %s is not a regular file", path)
 	}
-	if s.verifyMode == VerifyOff {
+	if mode == VerifyOff {
 		return true, nil
 	}
 	if wantSize >= 0 && fi.Size() != wantSize {
 		return false, nil
 	}
-	if s.verifyMode == VerifySize {
+	if mode == VerifySize {
 		return true, nil
 	}
 
@@ -185,4 +189,15 @@ func (s *Store) ContentMatches(kind Kind, tenant Tenant, bucket Bucket, shaHex s
 		return false, err
 	}
 	return s.blobMatches(path, shaHex, wantSize)
+}
+
+// ContentSizeMatches checks existence, regular-file type and size without
+// hashing. Callers that need digest verification must do it before taking
+// mailbox/blob locks, then use this to detect a sweep while acquiring locks.
+func (s *Store) ContentSizeMatches(kind Kind, tenant Tenant, bucket Bucket, sha string, size int64) (bool, error) {
+	path, err := s.PathFor(kind, tenant, bucket, sha)
+	if err != nil {
+		return false, err
+	}
+	return s.blobMatchesMode(path, sha, size, VerifySize)
 }

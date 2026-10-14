@@ -10,6 +10,7 @@ package imapsess
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -466,6 +467,13 @@ func (s *Session) Copy(numSet imap.NumSet, dest string) (copyData *imap.CopyData
 		return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "COPY: no matching messages"}
 	}
 
+	cancel()
+	ctx, cancel = s.copyContext(len(rows))
+	defer cancel()
+	if err := s.verifyCopyBlobs(ctx, rows); err != nil {
+		return nil, err
+	}
+
 	// COPYUID is written only after commit, so a deadlock victim can safely
 	// replay the whole thing (RA6X-021).
 	var data *imap.CopyData
@@ -506,13 +514,15 @@ type blobRef struct {
 // lockCopyBlobs implements the R-061 fix: for every raw + attachment blob the
 // source rows reference, take the per-blob advisory lock (sorted + deduped, the
 // same key derivation and ordering storage.Ingest uses), drop any gc_candidates
-// row, and verify its size and digest — failing the COPY if it is missing
-// or corrupt (EnsureBlobs-from-memory isn't possible here; the bytes
-// aren't in hand). COPY/MOVE is always intra-mailbox, so every blob stays under
+// row, and recheck its size after the preflight digest verification.
+// EnsureBlobs-from-memory is not possible here; the bytes
+// are not in hand. COPY/MOVE is always intra-mailbox, so every blob stays under
 // s.tenant. Locks release at tx commit/rollback.
-func (s *Session) lockCopyBlobs(ctx context.Context, tx pgx.Tx, rows []targetRef) error {
+func (s *Session) copyBlobRefs(ctx context.Context, qdb interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, rows []targetRef) ([]blobRef, error) {
 	if len(rows) == 0 {
-		return nil
+		return nil, nil
 	}
 	uids := make([]int64, len(rows))
 	for i, r := range rows {
@@ -521,7 +531,7 @@ func (s *Session) lockCopyBlobs(ctx context.Context, tx pgx.Tx, rows []targetRef
 
 	var refs []blobRef
 	collect := func(query string, kind blob.Kind) error {
-		q, err := tx.Query(ctx, query, s.selectedFolderID, uids)
+		q, err := qdb.Query(ctx, query, s.selectedFolderID, uids)
 		if err != nil {
 			return err
 		}
@@ -542,7 +552,7 @@ func (s *Session) lockCopyBlobs(ctx context.Context, tx pgx.Tx, rows []targetRef
 		   FROM messages WHERE folder_id = $1 AND uid = ANY($2)`,
 		blob.KindRaw); err != nil {
 		s.be.Logger.Error("COPY blob-lock: scan raw refs", "err", err)
-		return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "COPY blob lock failed"}
+		return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "COPY blob lock failed"}
 	}
 	if err := collect(
 		`SELECT DISTINCT encode(a.sha256, 'hex'), a.blob_date, a.size_bytes
@@ -550,7 +560,15 @@ func (s *Session) lockCopyBlobs(ctx context.Context, tx pgx.Tx, rows []targetRef
 		  WHERE m.folder_id = $1 AND m.uid = ANY($2)`,
 		blob.KindAttachment); err != nil {
 		s.be.Logger.Error("COPY blob-lock: scan attachment refs", "err", err)
-		return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "COPY blob lock failed"}
+		return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "COPY blob lock failed"}
+	}
+	return refs, nil
+}
+
+func (s *Session) lockCopyBlobs(ctx context.Context, tx pgx.Tx, rows []targetRef) error {
+	refs, err := s.copyBlobRefs(ctx, tx, rows)
+	if err != nil {
+		return err
 	}
 	if len(refs) == 0 {
 		return nil
@@ -562,29 +580,23 @@ func (s *Session) lockCopyBlobs(ctx context.Context, tx pgx.Tx, rows []targetRef
 	for i, r := range refs {
 		keys[i] = storage.BlobAdvisoryLockKey(string(s.tenant), string(r.kind), string(r.bucket), r.sha)
 	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-	var prev int64
-	for i, k := range keys {
-		if i > 0 && k == prev {
-			continue
-		}
-		prev = k
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, k); err != nil {
-			s.be.Logger.Error("COPY blob-lock: acquire", "err", err)
-			return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "COPY blob lock failed"}
-		}
+	if err := storage.AcquireBlobLocks(ctx, tx, keys); err != nil {
+		s.be.Logger.Error("COPY blob-lock: acquire", "err", err)
+		return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "COPY blob lock failed"}
 	}
 
-	// Holding the locks: resurrect any candidates and verify the blobs survive.
+	// Holding the locks: resurrect all candidates in one statement.
+	shas, kinds, buckets := make([][]byte, len(refs)), make([]string, len(refs)), make([]string, len(refs))
+	for i, r := range refs {
+		shas[i], _ = hex.DecodeString(r.sha)
+		kinds[i], buckets[i] = string(r.kind), string(r.bucket)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM gc_candidates WHERE tenant=$1 AND (sha256,kind,bucket) IN
+	 (SELECT * FROM unnest($2::bytea[], $3::text[], $4::text[]))`, string(s.tenant), shas, kinds, buckets); err != nil {
+		return fmt.Errorf("clear COPY GC candidates: %w", err)
+	}
 	for _, r := range refs {
-		if _, err := tx.Exec(ctx,
-			`DELETE FROM gc_candidates
-			  WHERE tenant = $1 AND sha256 = decode($2, 'hex') AND kind = $3 AND bucket = $4`,
-			string(s.tenant), r.sha, string(r.kind), string(r.bucket)); err != nil {
-			s.be.Logger.Error("COPY blob-lock: clear candidate", "err", err)
-			return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "COPY blob lock failed"}
-		}
-		exists, err := s.be.BlobStore.ContentMatches(r.kind, s.tenant, r.bucket, r.sha, r.size)
+		exists, err := s.be.BlobStore.ContentSizeMatches(r.kind, s.tenant, r.bucket, r.sha, r.size)
 		if err != nil {
 			s.be.Logger.Error("COPY blob-lock: stat blob", "err", err,
 				"sha16", safeShortSHA(r.sha), "kind", r.kind, "bucket", r.bucket)
@@ -613,6 +625,10 @@ func (s *Session) lockCopyBlobs(ctx context.Context, tx pgx.Tx, rows []targetRef
 // accounting and tripping the quota check on bytes it is simultaneously
 // freeing (RO5X-011).
 func (s *Session) copyInTx(ctx context.Context, tx pgx.Tx, rows []targetRef, dest string, quotaOffset int64) (*imap.CopyData, error) {
+	if _, err := tx.Exec(ctx, `SELECT set_config('statement_timeout',$1,true)`, fmt.Sprintf("%dms", s.setupTimeout().Milliseconds())); err != nil {
+		return nil, err
+	}
+
 	// Canonical lock order (lockorder.go): mailbox, blob advisory locks,
 	// folders, messages. The accounting UPDATE at the end of this function
 	// needs the mailbox row, so it is taken HERE rather than there — otherwise
@@ -999,6 +1015,13 @@ func (s *Session) Move(w *imapserver.MoveWriter, numSet imap.NumSet, dest string
 		return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "MOVE: no matching messages"}
 	}
 
+	cancel()
+	ctx, cancel = s.copyContext(len(rows))
+	defer cancel()
+	if err := s.verifyCopyBlobs(ctx, rows); err != nil {
+		return err
+	}
+
 	// The bytes the delete half is about to free. Handed to copyInTx as the
 	// quota offset so the increment and the decrement land in ONE statement:
 	// COPY/MOVE are always intra-mailbox (the destination folder is resolved
@@ -1157,4 +1180,34 @@ func sourceUIDsOf(rows []targetRef) []int64 {
 		out = append(out, r.uid)
 	}
 	return out
+}
+
+// Target resolution retains the normal query bound. The atomic COPY/MOVE
+// transaction gets that base budget plus 10 ms per selected message.
+func (s *Session) copyContext(count int) (context.Context, context.CancelFunc) {
+	base := s.sessCtx
+	if base == nil {
+		base = context.Background()
+	}
+	return context.WithTimeout(base, s.setupTimeout()+time.Duration(count)*10*time.Millisecond)
+}
+
+// Hash before taking any mailbox/blob lock; under the locks only stat/size
+// must be repeated because a sweep can unlink but cannot alter blob content.
+func (s *Session) verifyCopyBlobs(ctx context.Context, rows []targetRef) error {
+	refs, err := s.copyBlobRefs(ctx, s.be.Pool, rows)
+	if err != nil {
+		return err
+	}
+	for _, r := range refs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		ok, err := s.be.BlobStore.ContentMatches(r.kind, s.tenant, r.bucket, r.sha, r.size)
+		if err != nil || !ok {
+			s.be.Logger.Error("COPY source blob missing or corrupt", "sha16", safeShortSHA(r.sha), "kind", r.kind, "bucket", r.bucket, "err", err)
+			return missingBlobErr()
+		}
+	}
+	return nil
 }

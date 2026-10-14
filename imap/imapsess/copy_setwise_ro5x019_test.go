@@ -2,15 +2,21 @@ package imapsess
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ptudor/epistula-mail/database/blob"
 )
@@ -203,57 +209,114 @@ func TestSetWiseCopyPreservesCopyUIDContract(t *testing.T) {
 // anything like the 60 s delivery watchdog.
 func TestSetWiseCopyHoldsFolderLockBriefly(t *testing.T) {
 	sess := mutationFixture(t)
-	seedForCopy(t, sess, 500)
-
-	// Create the destination up front so the contending statement can target
-	// the same row the COPY will lock.
-	if err := sess.Create("Archive/2026", nil); err != nil {
-		t.Fatalf("Create dest: %v", err)
-	}
+	defer sess.Close()
+	seedForCopy(t, sess, 2000)
+	sess.be.StmtTimeout = 10 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	var destFolderID int64
-	if err := sess.be.Pool.QueryRow(ctx,
-		`SELECT id FROM folders WHERE mailbox_id = $1 AND name = 'Archive/2026'`,
-		sess.mailboxID).Scan(&destFolderID); err != nil {
-		t.Fatalf("dest folder: %v", err)
+	// Each attachment has a distinct digest and 1 MiB logical size. Sparse
+	// files keep the test's physical disk allocation small.
+	data := make([]byte, 1<<20)
+	for i := 0; i < 2000; i++ {
+		binary.LittleEndian.PutUint64(data, uint64(i))
+		sum := sha256.Sum256(data)
+		uid := int64(i + 4)
+		when := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Minute)
+		path, err := sess.be.BlobStore.PathFor(blob.KindAttachment, sess.tenant, blob.BucketFromTime(when), hex.EncodeToString(sum[:]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+			t.Fatal(err)
+		}
+		file, err := os.Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = file.Truncate(int64(len(data))); err != nil {
+			file.Close()
+			t.Fatal(err)
+		}
+		_, err = file.Write(data[:8])
+		file.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = sess.be.Pool.Exec(ctx, `UPDATE attachments a SET sha256=$1,size_bytes=$2
+		 FROM messages m WHERE a.message_id=m.id AND m.folder_id=$3 AND m.uid=$4`, sum[:], len(data), sess.selectedFolderID, uid); err != nil {
+			t.Fatal(err)
+		}
 	}
-
+	tracer := new(copyBlobStatementCounter)
+	cfg := sess.be.Pool.Config()
+	cfg.ConnConfig.Tracer = tracer
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	sess.be.Pool = pool
+	if err := sess.Create("Archive/2026", nil); err != nil {
+		t.Fatal(err)
+	}
+	locked, release := make(chan struct{}), make(chan struct{})
+	sess.copyRaceHook = func() { close(locked); <-release }
 	done := make(chan error, 1)
+	started := time.Now()
 	go func() {
 		all := imap.UIDSet{}
 		all.AddRange(1, 0)
 		_, err := sess.Copy(all, "Archive/2026")
 		done <- err
 	}()
-
-	// Give the COPY a moment to get going, then run the delivery path's
-	// UID-allocation statement against the same folder row and time it.
-	time.Sleep(100 * time.Millisecond)
-	start := time.Now()
-	var uid, modseq int64
-	err := sess.be.Pool.QueryRow(ctx,
-		`UPDATE folders SET uidnext = uidnext + 1, highest_modseq = highest_modseq + 1
-		  WHERE id = $1 RETURNING uidnext - 1, highest_modseq`,
-		destFolderID,
-	).Scan(&uid, &modseq)
-	blocked := time.Since(start)
-
-	if err != nil {
-		t.Fatalf("contending delivery-style allocation: %v", err)
+	select {
+	case <-locked:
+	case err := <-done:
+		t.Fatalf("COPY failed before acquiring locks: %v", err)
+	case <-ctx.Done():
+		t.Fatal("COPY did not acquire locks")
 	}
-	if copyErr := <-done; copyErr != nil {
-		t.Fatalf("Copy: %v", copyErr)
+	waited := make(chan time.Duration, 1)
+	contendErr := make(chan error, 1)
+	mailboxID := sess.mailboxID
+	go func() {
+		start := time.Now()
+		var id int64
+		err := pool.QueryRow(ctx, `SELECT id FROM mailboxes WHERE id=$1 FOR UPDATE`, mailboxID).Scan(&id)
+		waited <- time.Since(start)
+		contendErr <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
-
-	t.Logf("contending UID allocation waited %v behind a 503-message COPY", blocked)
-	// The delivery watchdog is 60s. Per-row locking made this scale with the
-	// message count; set-wise it should be a small fraction of a second.
-	if blocked > 10*time.Second {
-		t.Errorf("delivery-style allocation blocked for %v behind the COPY; "+
-			"the destination folder row lock is being held too long (RO5X-019)", blocked)
+	elapsed := time.Since(started)
+	blocked := <-waited
+	if err := <-contendErr; err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("2003-message COPY with 2000 x 1 MiB attachments: elapsed=%s, mailbox lock wait=%s", elapsed, blocked)
+	if elapsed > 10*time.Second || blocked > 10*time.Second {
+		t.Fatalf("COPY/lock wait too slow: %s/%s", elapsed, blocked)
+	}
+	if tracer.locks.Load() != 1 || tracer.candidates.Load() != 1 {
+		t.Fatalf("lock/candidate round trips: %d/%d", tracer.locks.Load(), tracer.candidates.Load())
 	}
 }
+
+type copyBlobStatementCounter struct{ locks, candidates atomic.Int64 }
+
+func (c *copyBlobStatementCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(d.SQL, "pg_advisory_xact_lock") {
+		c.locks.Add(1)
+	}
+	if strings.HasPrefix(strings.TrimSpace(d.SQL), "DELETE FROM gc_candidates") {
+		c.candidates.Add(1)
+	}
+	return ctx
+}
+func (*copyBlobStatementCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // TestSetWiseMoveStillAtomic keeps MOVE's semantics: copy + delete in one tx,
 // with the source emptied and the destination complete.
