@@ -1,6 +1,6 @@
 # Verification — REVIEW_MYTHOS51_XHIGH
 
-Verified 2026-10-14 against review baseline `be04ae7` and the resulting fix series through `abd92d2` (the verification report itself is committed afterward).
+Verified 2026-10-14 against review baseline `be04ae7` and the resulting fix series through the FreeBSD deployment follow-up `25b0a69` (the final report update is committed afterward).
 
 ## Result
 
@@ -8,13 +8,14 @@ All 157 findings pass verification. No finding remains failed or unintentionally
 
 - **PASS:** 157
 - **FAIL:** 0
-- **New regressions found:** 0 after the verification fixes below
+- **New regressions found:** 1 during live deployment, fixed before completion
 
-Verification found three actionable gaps in the original fix log and corrected them:
+Verification found four actionable gaps in the original fix log and corrected them:
 
 - **RM51X-005:** replaced the ineffective directory marker/memo with a bounded open-handle/mtime identity cache. It avoids redundant ancestry syncs while detecting peer changes and prune/recreate replacement. The post-link and dedup fsyncs remain.
 - **RM51X-071 / RM51X-093:** made connection-class startup failures retryable after the listener opens. Readiness and LOGIN stay unavailable until maintenance and authentication-catalog checks succeed; real maintenance/configuration results remain fatal.
 - **RM51X-096:** added the standard charset-label fallback, including the GB2312-to-GBK mapping, to the shared word decoder.
+- **RM51X-027 / RM51X-148:** corrected FreeBSD `su -c` positional argument handling. The dummy `sh` shifted the executable/config arguments on FreeBSD, causing three prestart checks to fail and the MCP readability check to inspect the wrong path. Live service-account checks and startup now pass on Junia.
 
 ## Regression and constraint checks
 
@@ -27,7 +28,15 @@ The final tree passed these checks:
 
 The review's explicit preservation constraints were rechecked. The series retains delivery-log `SET NULL` audit history and schema columns; raw blobs/headers and persisted MIME JSON; content-addressed layout and lock ordering; the pre-commit blob durability invariant; import-only folder-scoped dedup; maintenance/exclusive-lease behavior; archive journal and purge contracts; IDLE wire and retry behavior; successful FETCH wire shape, Seen ordering, and one-message cache bound; atomic MOVE/COPYUID and advisory-lock order; API response/status/offset contracts; packaging paths, service names, group, mode `2770`, and the FreeBSD spool layout; Go language floor; and existing configuration key names/defaults.
 
-Runtime verification that requires Linux package containers or FreeBSD services was unavailable on this macOS host. Those rows pass from artifact inspection, shell/plist validation, package snapshot checks, and targeted unit/subprocess coverage, and are marked below. The Linux package container remains the only implemented test that could not be executed because no supported container runtime is installed.
+The FreeBSD service checks that were initially unavailable on the macOS development host were subsequently run on Junia during deployment. Protected-config validation, service startup, repeated restart behavior, supervisor/child pidfiles, log ownership/modes, listener binding, protocol/authentication behavior and readiness all passed. Linux package-container and non-FreeBSD service-manager checks remain platform-limited as marked below; the Linux package container is the only implemented test that could not run because no supported container runtime is installed.
+
+## Junia deployment verification
+
+- Installed all four FreeBSD/amd64 binaries built from `0c1ef98`; their SHA-256 hashes match the staged artifacts. Installed rc.d behavior includes follow-up `25b0a69` while retaining Junia's established service names and config paths. No live configuration value changed.
+- Applied migrations 023 and 024. All 24 migrations report applied; the four new indexes are ready/valid, both superseded indexes are absent, and `archive_moves.from_folder_id` / `to_folder_id` exist.
+- Database, IMAP, API, MCP and Postfix are running. Database/IMAP/API readiness returns `ready`; IMAP completes TLS CAPABILITY/LOGOUT; unauthenticated API and MCP requests return 401; a read-only database admin command succeeds; the Postfix queue is empty.
+- The API passed 20 consecutive rc.d restarts with one child and supervisor remaining. Database, IMAP and MCP each passed a restart, and all four service logs retain service-account ownership and mode 0640. No deployment-time error/fatal/panic entry remains in their recent logs.
+- The prior installation is retained at `/usr/local/libexec/mailstack-backup-pre-0c1ef98` for rollback.
 
 ## Per-finding results
 
@@ -61,7 +70,7 @@ Runtime verification that requires Linux package containers or FreeBSD services 
 | RM51X-024 | PASS | Non-positive SQL/connection durations and sub-second HTTP/shutdown bounds are rejected. |
 | RM51X-025 | PASS | Delivery's internal invariant failures now defer; no `EX_SOFTWARE` return remains in the delivery path. |
 | RM51X-026 | PASS | Hook environment is allowlisted and cancellation kills the process group within bounded wait; database secrets do not leak. |
-| RM51X-027 | PASS (platform-limited) | rc.d prestart runs validation as each service account with safe argument passing; shell validation passed. FreeBSD service startup was unavailable. |
+| RM51X-027 | PASS | Corrected FreeBSD positional passing runs database/IMAP/API prestart validation as each service account; all three live Junia checks and starts pass. |
 | RM51X-028 | PASS | Documentation now matches wildcard/catchall behavior and actual outcomes; parser limit and resolver tests agree. |
 | RM51X-029 | PASS | The permitted documentation option clearly states literal extension handling and the transport alternative's tradeoffs. |
 | RM51X-030 | PASS | Schema and operator documentation now describe the actual store-wide maintenance barrier; locking behavior is unchanged. |
@@ -196,16 +205,16 @@ Runtime verification that requires Linux package containers or FreeBSD services 
 | RM51X-144 | PASS | MCP and worker config tests clear all relevant environment overrides; complete suites pass under poisoned variables. |
 | RM51X-145 | PASS | Fedora instructions use the protected TOML secret location and no longer recommend a service environment file. |
 | RM51X-146 | PASS (platform-limited) | Postinstall conditionally transfers only a still-root-owned default spool, retaining group/mode/path/service/FreeBSD layout; the Linux transport and cleared-group delivery assertions are present. Signed packages build, but the container test could not run here. |
-| RM51X-147 | PASS (platform-limited) | MCP uses sysexits 78/71 and service artifacts suppress permanent restart loops; subprocess exit matrix and plist/shell checks pass. No live service manager test ran. |
-| RM51X-148 | PASS (platform-limited) | FreeBSD install permissions and service-user readability checks are consistent and shell-valid. A prepared FreeBSD host was unavailable. |
+| RM51X-147 | PASS (platform-limited) | MCP uses sysexits 78/71 and service artifacts suppress permanent restart loops; subprocess exit matrix and plist/shell checks pass, and the FreeBSD service starts/restarts without `daemon -r`. systemd/launchd runtime checks were unavailable. |
+| RM51X-148 | PASS | The corrected FreeBSD service-user check reads the protected MCP config on Junia; the service starts, binds loopback and rejects unauthenticated requests with 401. |
 | RM51X-149 | PASS | All modules select Go 1.27.2 while keeping the 1.26 language floor; mismatch CI check passes. A full signed snapshot produced all expected binaries, archives, and Linux packages with verified checksums/signatures/notices. |
-| RM51X-150 | PASS (platform-limited) | rc.d artifacts use supervisor pidfiles and validated shutdown waits, and docs target the supervisor for rotation. Shell/static manual checks pass; live FreeBSD restart was unavailable. |
+| RM51X-150 | PASS | Junia completed 20 consecutive API restarts and one database/IMAP/MCP restart; each left exactly one child and one validated `daemon` supervisor pidfile. |
 | RM51X-151 | PASS (platform-limited) | Fedora instructions point to the actual build artifact; clean linux/amd64 cross-build/install and embedded Go/version metadata pass. Fedora execution was unavailable. |
 | RM51X-152 | PASS | Changelog dependency version matches all module pins exactly once. |
 | RM51X-153 | PASS | Deployment guidance now matches supported transport attributes, ports, delays, token rules, and config ownership. |
 | RM51X-154 | PASS | Both example and package TOMLs contain all supported keys with correct defaults; automated tag coverage passes and defaults are unchanged. |
 | RM51X-155 | PASS (platform-limited) | launchd uses a dedicated account, restrictive umask, readable protected config, and owned log; plist lint/static account checks pass. Service was not installed locally. |
-| RM51X-156 | PASS (platform-limited) | FreeBSD rc.d creates and repairs logfile owner/mode before startup; shell checks pass. FreeBSD 13 runtime was unavailable. |
+| RM51X-156 | PASS | After live FreeBSD starts/restarts, all four logs are owned by their service accounts with mode 0640. |
 | RM51X-157 | PASS | CI ShellCheck includes all four rc.d scripts with deliberate exclusions; the recorded official ShellCheck and `sh -n` runs pass. |
 
 ## Skipped-item disposition
