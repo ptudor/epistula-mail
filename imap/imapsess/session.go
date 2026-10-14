@@ -90,6 +90,9 @@ type Backend struct {
 	authProfiles        []authProfile
 	authProfilesUntil   time.Time
 	malformedAuthWarned sync.Map
+	startupMu           sync.Mutex
+	startupCheck        func(context.Context) error
+	startupReady        bool
 
 	// PreAuthTimeout bounds how long a connection may sit between TLS
 	// handshake and successful LOGIN (the preauth_timeout config key).
@@ -114,6 +117,31 @@ type Backend struct {
 
 // ActiveSessions returns the number of sessions currently open.
 func (b *Backend) ActiveSessions() int64 { return b.active.Load() }
+
+// ConfigureStartupCheck installs the database checks that must succeed before
+// LOGIN is admitted. A daemon that starts while Postgres is unavailable keeps
+// its listener up and retries this check from readiness probes and LOGIN.
+func (b *Backend) ConfigureStartupCheck(check func(context.Context) error, ready bool) {
+	b.startupMu.Lock()
+	defer b.startupMu.Unlock()
+	b.startupCheck = check
+	b.startupReady = ready
+}
+
+// EnsureStartupReady runs a deferred startup check at most once at a time and
+// remembers success. Failures are not cached so recovery needs no restart.
+func (b *Backend) EnsureStartupReady(ctx context.Context) error {
+	b.startupMu.Lock()
+	defer b.startupMu.Unlock()
+	if b.startupReady || b.startupCheck == nil {
+		return nil
+	}
+	if err := b.startupCheck(ctx); err != nil {
+		return err
+	}
+	b.startupReady = true
+	return nil
+}
 
 // Storage returns a *storage.DB that wraps Backend.Pool so APPEND can
 // invoke the shared Ingest path. The DB does not own the pool — Backend
@@ -420,8 +448,12 @@ func (s *Session) Login(username, password string) (err error) {
 		s.be.Logger.Info("login failed", "reason", reason, "username", loggableUsername(username), "ip", s.remoteIP)
 		return &imap.Error{Type: imap.StatusResponseTypeNo, Code: imap.ResponseCodeAuthenticationFailed, Text: "credentials required"}
 	}
-	// Throttle check FIRST — short-circuits before the password hash
-	// comparison so a locked-out attacker can't keep us busy.
+	if err := s.be.EnsureStartupReady(s.sessCtx); err != nil {
+		s.be.Logger.Warn("Login: startup checks pending", "err", err)
+		return &imap.Error{Type: imap.StatusResponseTypeNo, Code: imap.ResponseCodeUnavailable, Text: "backend unavailable"}
+	}
+	// The client throttle still runs before any account lookup or password
+	// hash work, so a locked-out attacker cannot keep the verifier busy.
 	if s.remoteIP != "" && s.be.LoginLimiter != nil && !s.be.LoginLimiter.Allow(s.remoteIP) {
 		s.be.Logger.Warn("login throttled", "ip", s.remoteIP, "username", loggableUsername(username))
 		metricLimiterRejections.WithLabelValues("login_throttle").Inc()

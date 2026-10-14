@@ -25,6 +25,85 @@ func TestMaintenanceServerProcess(t *testing.T) {
 	}
 }
 
+func TestServerListensWhilePostgresIsUnavailable(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadDatabaseAddr := probe.Addr().String()
+	probe.Close()
+
+	imapProbe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	imapAddr := imapProbe.Addr().String()
+	imapProbe.Close()
+
+	cfg := filepath.Join(t.TempDir(), "imap.toml")
+	dsn := "postgres://" + deadDatabaseAddr + "/none?sslmode=disable&connect_timeout=1"
+	text := fmt.Sprintf("production=false\n[server]\nlisten_addr=%q\naccept_insecure_for_dev=true\ndrain_timeout_seconds=1\n[admin]\nlisten_addr='127.0.0.1:0'\n[postgres]\ndsn=%q\nmax_open_conns=2\nmax_idle_conns=0\nidle_conn_pool_size=1\nstatement_timeout='1s'\n[storage]\nroot=%q\n", imapAddr, dsn, t.TempDir())
+	if err := os.WriteFile(cfg, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMaintenanceServerProcess$")
+	cmd.Env = append(os.Environ(), "MAIL_TEST_MAINTENANCE_SERVER="+cfg)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	defer func() {
+		if !waited {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+
+	var conn net.Conn
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err = net.DialTimeout("tcp", imapAddr, 100*time.Millisecond)
+		if err == nil {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatal("server did not listen while Postgres was unavailable", err)
+	}
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	reader := bufio.NewReader(conn)
+	if line, err := reader.ReadString('\n'); err != nil || !strings.HasPrefix(line, "* OK") {
+		t.Fatal("greeting", line, err)
+	}
+	if _, err := fmt.Fprint(conn, "a LOGIN alice password\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(line, "a ") {
+			if !strings.Contains(line, "NO [UNAVAILABLE]") {
+				t.Fatalf("LOGIN while Postgres is down: %s", line)
+			}
+			break
+		}
+	}
+	conn.Close()
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	waited = true
+}
+
 func TestAuthenticatedServerBlocksOfflineMaintenance(t *testing.T) {
 	db, dsn := pgtest.Open(t)
 	ctx := context.Background()

@@ -17,6 +17,7 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ptudor/epistula-mail/database/blob"
@@ -61,7 +62,10 @@ func runServe(args []string) int {
 		defer idlePool.Close()
 	}
 
-	lease, lerr := maintenance.Acquire(ctx, cfg.Storage.Root, pool, false, false)
+	// Take the filesystem lease before consulting Postgres. This prevents an
+	// offline maintenance command from starting even when Postgres is briefly
+	// unavailable during daemon startup.
+	lease, lerr := maintenance.AcquireLock(cfg.Storage.Root, false, false)
 	if lerr != nil {
 		slog.Error("offline maintenance barrier", "err", lerr)
 		return EX_OSERR
@@ -102,14 +106,33 @@ func runServe(args []string) int {
 		),
 	}
 
-	if err := imapsess.AuditAuthProfiles(ctx, pool, backend.AuthBudget, slog.Default()); err != nil {
-		slog.Error("authentication cost audit", "err", err)
-		return EX_CONFIG
+	startupCheck := func(checkCtx context.Context) error {
+		if err := maintenance.CheckOnline(checkCtx, pool); err != nil {
+			return err
+		}
+		return imapsess.AuditAuthProfiles(checkCtx, pool, backend.AuthBudget, slog.Default())
 	}
+	startupReady := true
+	if err := maintenance.CheckOnline(ctx, pool); err != nil {
+		if !retryableStartupError(ctx, pool, err) {
+			slog.Error("offline maintenance barrier", "err", err)
+			return EX_OSERR
+		}
+		startupReady = false
+		slog.Warn("offline maintenance check deferred until Postgres recovers", "err", err)
+	} else if err := imapsess.AuditAuthProfiles(ctx, pool, backend.AuthBudget, slog.Default()); err != nil {
+		if !retryableStartupError(ctx, pool, err) {
+			slog.Error("authentication cost audit", "err", err)
+			return EX_CONFIG
+		}
+		startupReady = false
+		slog.Warn("authentication cost audit deferred until Postgres recovers", "err", err)
+	}
+	backend.ConfigureStartupCheck(startupCheck, startupReady)
 
 	registerBackendMetrics(backend)
 
-	adminSrv, adminErrCh := startAdminListener(cfg, pool)
+	adminSrv, adminErrCh := startAdminListener(cfg, pool, backend.EnsureStartupReady)
 	imapLn, err := startIMAPListener(ctx, cfg, backend)
 	if err != nil {
 		slog.Error("IMAP listener failed to start", "err", err)
@@ -421,6 +444,25 @@ func openIdlePool(ctx context.Context, cfg *Config) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
+// retryableStartupError separates a temporarily unreachable/slow Postgres
+// from real maintenance state and authentication-policy errors. The latter
+// retain their startup-fatal exit codes.
+func retryableStartupError(ctx context.Context, pool *pgxpool.Pool, err error) bool {
+	if err == nil || errors.Is(err, maintenance.ErrOffline) || errors.Is(ctx.Err(), context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || pgconn.Timeout(err) || pgconn.SafeToRetry(err) {
+		return true
+	}
+	var connectErr *pgconn.ConnectError
+	if errors.As(err, &connectErr) {
+		return true
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	return pool.Ping(probeCtx) != nil
+}
+
 func mustParseDuration(s string, fallback time.Duration) time.Duration {
 	if d, err := time.ParseDuration(s); err == nil {
 		return d
@@ -428,7 +470,7 @@ func mustParseDuration(s string, fallback time.Duration) time.Duration {
 	return fallback
 }
 
-func startAdminListener(cfg *Config, pool *pgxpool.Pool) (*http.Server, <-chan error) {
+func startAdminListener(cfg *Config, pool *pgxpool.Pool, startupCheck ...func(context.Context) error) (*http.Server, <-chan error) {
 	mux := http.NewServeMux()
 	if cfg.Admin.ExposeMetrics {
 		mux.Handle("/metrics", metricsHandler())
@@ -441,7 +483,7 @@ func startAdminListener(cfg *Config, pool *pgxpool.Pool) (*http.Server, <-chan e
 	// epistula-api. Mapping both to the same always-200 handler left monitoring
 	// unable to tell "process alive" from "backend usable" (RO5X-010).
 	mux.HandleFunc("/health", healthHandler)
-	mux.HandleFunc("/healthz", readyHandler(pool, cfg.Storage.Root))
+	mux.HandleFunc("/healthz", readyHandler(pool, cfg.Storage.Root, startupCheck...))
 
 	srv := &http.Server{
 		Addr:         cfg.Admin.ListenAddr,
@@ -481,7 +523,7 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 // blob-store root. Copied from epistula-api/serve.go so all three daemons report
 // readiness identically. 503 with a plain-text reason on failure, so an
 // operator reading a monitoring alert learns which half is broken.
-func readyHandler(pool *pgxpool.Pool, storageRoot string) http.HandlerFunc {
+func readyHandler(pool *pgxpool.Pool, storageRoot string, startupCheck ...func(context.Context) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -490,6 +532,16 @@ func readyHandler(pool *pgxpool.Pool, storageRoot string) http.HandlerFunc {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			fmt.Fprintf(w, "not ready: postgres: %v\n", err)
 			return
+		}
+		for _, check := range startupCheck {
+			if check == nil {
+				continue
+			}
+			if err := check(ctx); err != nil {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				fmt.Fprintln(w, "not ready: startup checks pending")
+				return
+			}
 		}
 		fi, err := os.Stat(storageRoot)
 		if err != nil {

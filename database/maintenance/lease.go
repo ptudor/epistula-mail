@@ -18,10 +18,15 @@ import (
 
 var ErrOffline = errors.New("mail store is in offline maintenance")
 
-// Acquire takes no extra database connection and creates no lockfile. Keep
-// the returned lease until every request/session, blob read and write ends.
-// Read-only scans may allow an absent root because they cannot create a tenant.
-func Acquire(ctx context.Context, root string, pool *pgxpool.Pool, exclusive, allowMissing bool) (*Lease, error) {
+// AcquireLock takes the filesystem half of the maintenance barrier. It creates
+// no lockfile. Keep the returned lease until every request/session, blob read
+// and write ends. Read-only scans may allow an absent root because they cannot
+// create a tenant.
+//
+// Long-running daemons may take this lock before Postgres is reachable, then
+// call CheckOnline before admitting database-backed work. One-shot commands
+// should normally use Acquire, which performs both checks together.
+func AcquireLock(root string, exclusive, allowMissing bool) (*Lease, error) {
 	f, err := os.Open(root)
 	if err != nil && !(allowMissing && !exclusive && errors.Is(err, os.ErrNotExist)) {
 		return nil, fmt.Errorf("open storage root for maintenance barrier: %w", err)
@@ -42,17 +47,36 @@ func Acquire(ctx context.Context, root string, pool *pgxpool.Pool, exclusive, al
 			return nil, fmt.Errorf("%w: stop IMAP/API, Postfix and all blob/import/reparse/GC processes and wait for them to exit: %v", ErrOffline, err)
 		}
 	}
+	return lease, nil
+}
+
+// CheckOnline performs the database half of the shared maintenance barrier.
+// The caller must already hold the shared filesystem lease, so an exclusive
+// maintenance command cannot begin between this check and later work.
+func CheckOnline(ctx context.Context, pool *pgxpool.Pool) error {
+	qctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var names string
+	if err := pool.QueryRow(qctx, `SELECT COALESCE(string_agg(name, ', ' ORDER BY name), '') FROM mailboxes WHERE maintenance_at IS NOT NULL`).Scan(&names); err != nil {
+		return fmt.Errorf("check offline maintenance: %w", err)
+	}
+	if names != "" {
+		return fmt.Errorf("%w: %s", ErrOffline, names)
+	}
+	return nil
+}
+
+// Acquire takes both halves of the maintenance barrier. Exclusive callers do
+// not consult the durable flag because they are the commands that manage it.
+func Acquire(ctx context.Context, root string, pool *pgxpool.Pool, exclusive, allowMissing bool) (*Lease, error) {
+	lease, err := AcquireLock(root, exclusive, allowMissing)
+	if err != nil {
+		return nil, err
+	}
 	if !exclusive {
-		qctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		var names string
-		if err := pool.QueryRow(qctx, `SELECT COALESCE(string_agg(name, ', ' ORDER BY name), '') FROM mailboxes WHERE maintenance_at IS NOT NULL`).Scan(&names); err != nil {
+		if err := CheckOnline(ctx, pool); err != nil {
 			lease.Close()
-			return nil, fmt.Errorf("check offline maintenance: %w", err)
-		}
-		if names != "" {
-			lease.Close()
-			return nil, fmt.Errorf("%w: %s", ErrOffline, names)
+			return nil, err
 		}
 	}
 	return lease, nil
