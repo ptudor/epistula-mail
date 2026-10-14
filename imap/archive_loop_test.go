@@ -34,8 +34,8 @@ func TestArchiveConfigDefaults(t *testing.T) {
 	if interval != time.Minute || settle != 5*time.Minute || retention != 24*time.Hour {
 		t.Fatalf("durations = %v %v %v", interval, settle, retention)
 	}
-	if !cfg.Archive.PurgeAllCopies {
-		t.Fatal("purge_all_copies should default on: a deleted message must not survive as a copy")
+	if cfg.Archive.PurgeAllCopies {
+		t.Fatal("purge_all_copies should default off: retained copies must survive Trash purge")
 	}
 }
 

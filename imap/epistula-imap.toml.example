@@ -105,8 +105,8 @@ min_confidence   = 0.6
 # How long a deleted message can still be recovered from Trash.
 trash_retention  = "24h"
 # Also destroy every other copy of a deleted message's content in the mailbox
-# (an import or a COPY can leave identical copies in other folders).
-purge_all_copies = true
+# This opt-in also destroys kept copies and newer Trash copies; default false.
+purge_all_copies = false
 batch_size       = 500
 
 [logging]

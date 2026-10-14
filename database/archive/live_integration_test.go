@@ -97,7 +97,7 @@ func TestSortOnceFilesSettledClassifiedArchive(t *testing.T) {
 }
 
 // TestPurgeOnceDestroysExpiredTrash: only messages that have been in the
-// \Trash folder past the retention period are destroyed, with their copies.
+// \Trash folder past the retention period are destroyed by default.
 func TestPurgeOnceDestroysExpiredTrash(t *testing.T) {
 	db, _ := pgtest.Open(t)
 	ctx := testContext(t)
@@ -110,20 +110,26 @@ func TestPurgeOnceDestroysExpiredTrash(t *testing.T) {
 	expired := f.message(trash, msgOpt{content: "gone"})
 	f.age(expired, 25*time.Hour)
 	copyOfExpired := f.message(archiveRoot, msgOpt{content: "gone"})
+	keepFolder := f.folder(mb, "Archive/Keep", "")
+	keptCopy := f.message(keepFolder, msgOpt{content: "gone"})
+	freshCopy := f.message(trash, msgOpt{content: "gone"})
+	f.age(freshCopy, time.Hour)
 	fresh := f.message(trash, msgOpt{})
 	f.age(fresh, time.Hour)
 	oldInbox := f.message(inbox, msgOpt{})
 	f.age(oldInbox, 1000*time.Hour)
 
-	stats, err := archive.PurgeOnce(ctx, db, archive.PurgeOptions{Retention: 24 * time.Hour, AllCopies: true, BatchSize: 1})
+	stats, err := archive.PurgeOnce(ctx, db, archive.PurgeOptions{Retention: 24 * time.Hour, AllCopies: false, BatchSize: 1})
 	if err != nil {
 		t.Fatalf("PurgeOnce: %v", err)
 	}
-	if stats.Messages != 2 || stats.Copies != 1 {
-		t.Fatalf("stats = %+v; want 2 messages including 1 copy", stats)
+	if stats.Messages != 1 || stats.Copies != 0 {
+		t.Fatalf("stats = %+v; want 1 expired message and no copies", stats)
 	}
 	f.mustBeGone(expired)
-	f.mustBeGone(copyOfExpired)
+	f.mustBeIn(copyOfExpired, "Archive")
+	f.mustBeIn(keptCopy, "Archive/Keep")
+	f.mustBeIn(freshCopy, "Deleted Messages")
 	f.mustBeIn(fresh, "Deleted Messages")
 	f.mustBeIn(oldInbox, "INBOX")
 

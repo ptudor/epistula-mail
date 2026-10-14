@@ -40,7 +40,7 @@ messages to Trash". No key has to be remapped.
 | Classifier | epistula-llm-worker `[classify]` | Adds the archive category to the same model request as the annotation, so a backfill reads each message once. Writes `PUT /v1/messages/{id}/classification`. |
 | Classification | epistula-api, `message_classifications` | Stores the choice after checking it against the mailbox's *active* list. Separate from annotations and written under its own permission, so re-summarizing, or epistula-mcp's `annotate` tool, can never re-file mail. |
 | Live sorter | epistula-imap `[archive] sort_enabled` | Every minute: messages in `\Archive` that have settled (5 min, so a client's Undo still works), are classified at ≥ `min_confidence`, and are not marked `\Deleted` move to their category folder. Everything else stays in `\Archive`, which is the unsorted pile. |
-| Trash purge | epistula-imap `[archive] purge_enabled` | Messages in `\Trash` longer than `trash_retention` are destroyed, with every other copy of the same content in the mailbox (`purge_all_copies`). |
+| Trash purge | epistula-imap `[archive] purge_enabled` | Messages in `\Trash` longer than `trash_retention` are destroyed. Other copies survive by default (`purge_all_copies = false`). |
 | Reorganization | `epistula-database admin archive-plan / archive-apply / archive-undo` | One-time refiling of an imported archive into the category tree, in journaled batches that can be undone. |
 
 Every server-side move is an in-place rewrite (`storage.MoveMessages`). The
@@ -269,8 +269,9 @@ What the server does with a delete, in detail (`delete_archives`):
 
 When a message is purged, its row goes, and with it (by cascade) its
 attachment rows, annotations, classification and journal entries. With
-`purge_all_copies`, so does every other message in the mailbox with the same
-raw content. The raw and attachment files leave disk at the next `gc` cycle:
+`purge_all_copies = true` (explicit opt-in; default false), so does every other
+message in the mailbox with the same raw content, including kept Archive/Sent/Drafts
+copies and newer Trash copies. Leave it false to preserve those copies. The raw and attachment files leave disk at the next `gc` cycle:
 
 ```sh
 epistula-database gc -phase mark    # at least twice, some hours apart

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- IMAP Trash purge now defaults `purge_all_copies` to false, preserving copies
+  in other folders and newer Trash rows. Existing explicit `true` settings
+  retain their destructive all-copy behavior; review them before enabling purge.
+
 - All five services reject unknown TOML keys with their key paths and line
   numbers. Previously tolerated misspellings now fail configuration loading.
   Configuration discovery uses only `/usr/local/etc/epistula/<service>.toml`

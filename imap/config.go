@@ -149,7 +149,8 @@ type ArchiveConfig struct {
 	// from Trash before it is destroyed.
 	TrashRetention string `toml:"trash_retention"`
 	// PurgeAllCopies also destroys every other copy of a purged message's
-	// content in the same mailbox.
+	// content in the same mailbox, regardless of folder or age. Default false:
+	// copies intentionally kept elsewhere survive ordinary Trash purges.
 	PurgeAllCopies bool `toml:"purge_all_copies"`
 	// BatchSize is how many messages one transaction files or destroys.
 	BatchSize int `toml:"batch_size"`
@@ -214,7 +215,7 @@ func DefaultConfig() *Config {
 			SettleDelay:    "5m",
 			MinConfidence:  0.6,
 			TrashRetention: "24h",
-			PurgeAllCopies: true,
+			PurgeAllCopies: false,
 			BatchSize:      500,
 		},
 		Logging: LoggingConfig{Level: "info", Format: "text"},
