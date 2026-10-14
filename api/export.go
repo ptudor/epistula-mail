@@ -72,13 +72,14 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request, tok *apiTo
 		// Bounded by retained BYTES, not just row count (RA6X-040). A batch
 		// cut short here resumes from its own cursor below, so the stream
 		// stays complete and ordered.
-		items, truncated, err := s.scanDatePageBounded(r, query, args, maxBytes)
+		budget := newPageBudget(maxBytes)
+		items, truncated, err := s.scanDatePageBudget(r, query, args, budget)
 		if err != nil {
 			return nil, false, err
 		}
 		if len(items) > 0 {
 			var attachmentTruncated bool
-			items, attachmentTruncated, err = s.attachAttachments(r.Context(), items)
+			items, attachmentTruncated, err = s.attachAttachments(r.Context(), items, budget)
 			if err != nil {
 				return nil, false, err
 			}
@@ -86,7 +87,7 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request, tok *apiTo
 		}
 		if includeAnnotations && len(items) > 0 {
 			var annotationTruncated bool
-			items, annotationTruncated, err = s.attachAnnotations(r.Context(), items)
+			items, annotationTruncated, err = s.attachAnnotationsBudget(r.Context(), items, budget)
 			if err != nil {
 				return nil, false, err
 			}
@@ -171,7 +172,7 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request, tok *apiTo
 // only a count, so an archive named "RECIBO DE PAGO.rar" passed as a genuine
 // receipt. The rows count against the page budget like the message itself; a
 // batch cut short here resumes from its own cursor.
-func (s *server) attachAttachments(ctx context.Context, items []messageItem) ([]messageItem, bool, error) {
+func (s *server) attachAttachments(ctx context.Context, items []messageItem, budget *pageBudget) ([]messageItem, bool, error) {
 	ids := make([]int64, len(items))
 	pos := make(map[int64]int, len(items))
 	for i := range items {
@@ -187,6 +188,7 @@ func (s *server) attachAttachments(ctx context.Context, items []messageItem) ([]
 		return nil, false, err
 	}
 	defer rows.Close()
+	truncated := false
 	for rows.Next() {
 		var id int64
 		var a attachmentItem
@@ -195,19 +197,20 @@ func (s *server) attachAttachments(ctx context.Context, items []messageItem) ([]
 			return nil, false, err
 		}
 		i := pos[id]
-		items[i].Attachments = append(items[i].Attachments, a)
+		n := budget.grow(i, attachmentBytes(&a))
+		if n < len(items) {
+			clear(items[n:])
+			items = items[:n]
+			truncated = true
+		}
+		if i < n {
+			items[i].Attachments = append(items[i].Attachments, a)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, false, err
 	}
-	budget := newPageBudget(s.maxPageBytes())
-	for i := range items {
-		if !budget.admit(itemBytes(&items[i])) {
-			clear(items[i:]) // release bodies backing the deferred tail
-			return items[:i], true, nil
-		}
-	}
-	return items, false, nil
+	return items, truncated, nil
 }
 
 // exportWriteStall is the configured rolling write-progress budget for an

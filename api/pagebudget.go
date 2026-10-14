@@ -38,6 +38,7 @@ type pageBudget struct {
 	limit int64
 	used  int64
 	rows  int
+	costs []int64
 }
 
 func newPageBudget(limit int64) *pageBudget {
@@ -56,7 +57,28 @@ func (b *pageBudget) admit(n int64) bool {
 	}
 	b.rows++
 	b.used += n
+	b.costs = append(b.costs, n)
 	return true
+}
+
+// grow charges sidecars to an already admitted message and trims the suffix
+// until the same aggregate budget fits. The first complete row always remains.
+func (b *pageBudget) grow(i int, n int64) int {
+	if i >= b.rows {
+		return b.rows
+	}
+	b.costs[i] += n
+	b.used += n
+	for b.rows > 1 && b.used > b.limit {
+		b.rows--
+		b.used -= b.costs[b.rows]
+	}
+	b.costs = b.costs[:b.rows]
+	return b.rows
+}
+
+func attachmentBytes(a *attachmentItem) int64 {
+	return int64(len(a.PartNumber)+len(a.ContentType)+len(a.SHA256)) + strLen(a.Filename) + strLen(a.ContentID) + strLen(a.Disposition)
 }
 
 // itemBytes estimates the memory one scanned message retains. Only the
@@ -76,8 +98,7 @@ func itemBytes(m *messageItem) int64 {
 	n += strLen(m.TextBody)
 	for i := range m.Attachments {
 		a := &m.Attachments[i]
-		n += int64(len(a.PartNumber)+len(a.ContentType)+len(a.SHA256)) +
-			strLen(a.Filename) + strLen(a.ContentID) + strLen(a.Disposition)
+		n += attachmentBytes(a)
 	}
 	return n
 }

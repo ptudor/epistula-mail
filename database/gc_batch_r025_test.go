@@ -49,10 +49,14 @@ func TestGCSweepBatchesAcrossLimit(t *testing.T) {
 		t.Fatalf("seeded %d candidates, want 1200", before)
 	}
 
-	if code := gcSweep(ctx, db, store, time.Hour); code != EX_OK {
+	traced, counter := traceSweepMaintenance(t, db)
+	if code := gcSweep(ctx, traced, store, time.Hour); code != EX_OK {
 		t.Fatalf("gcSweep exit=%d, want EX_OK", code)
 	}
 
+	if n := counter.Load(); n != 1 {
+		t.Fatalf("maintenance queries=%d", n)
+	}
 	var after int
 	if err := db.Pool().QueryRow(ctx, `SELECT count(*) FROM gc_candidates`).Scan(&after); err != nil {
 		t.Fatalf("count after: %v", err)

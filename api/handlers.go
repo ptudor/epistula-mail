@@ -171,47 +171,26 @@ func parseFields(r *http.Request) (fieldSet, error) {
 
 // loadAnnotations fetches the annotation sidecar rows for a page of
 // message ids in one query. With the annotation_models registry present, rows
-// come back ranked by model priority (see loadAnnotationsRanked); without it,
+// come back ranked by model priority; without it,
 // in stable model-name order.
 func (s *server) loadAnnotations(ctx context.Context, ids []int64) (map[int64][]annotationItem, error) {
-	if !s.annotationsAvailable || len(ids) == 0 {
-		return map[int64][]annotationItem{}, nil
-	}
-	if s.modelPriorityAvailable {
-		return s.loadAnnotationsRanked(ctx, ids)
-	}
-	rows, err := s.pool.Query(ctx,
-		`SELECT message_id, model, tags, category, summary, tokens_in, tokens_out, created_at
-		   FROM message_annotations
-		  WHERE message_id = ANY($1)
-		  ORDER BY message_id, model`, ids)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	out := make(map[int64][]annotationItem)
-	for rows.Next() {
-		var (
-			msgID int64
-			a     annotationItem
-		)
-		if err := rows.Scan(&msgID, &a.Model, &a.Tags, &a.Category, &a.Summary,
-			&a.TokensIn, &a.TokensOut, &a.CreatedAt); err != nil {
-			return nil, err
-		}
-		out[msgID] = append(out[msgID], a)
-	}
-	return out, rows.Err()
+	err := s.scanAnnotations(ctx, ids, func(id int64, a annotationItem) { out[id] = append(out[id], a) })
+	return out, err
 }
 
-// loadAnnotationsRanked is loadAnnotations when the annotation_models registry
-// is present. Each message's annotations are ordered (non-retired first,
-// priority DESC, newest first); the top of each group is flagged Primary
-// unless it is retired — so a consumer reads annotations[0] (or primary==true)
-// for the preferred summary and keeps the rest as alternatives.
-func (s *server) loadAnnotationsRanked(ctx context.Context, ids []int64) (map[int64][]annotationItem, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT a.message_id, a.model, a.tags, a.category, a.summary, a.tokens_in, a.tokens_out,
+// scanAnnotations streams a whole batch in message-id order, preserving model
+// ranking and primary selection without retaining sidecars for trimmed rows.
+func (s *server) scanAnnotations(ctx context.Context, ids []int64, visit func(int64, annotationItem)) error {
+	if !s.annotationsAvailable || len(ids) == 0 {
+		return nil
+	}
+	query := `SELECT message_id, model, tags, category, summary, tokens_in, tokens_out, created_at
+		   FROM message_annotations
+		  WHERE message_id = ANY($1)
+		  ORDER BY message_id, model`
+	if s.modelPriorityAvailable {
+		query = `SELECT a.message_id, a.model, a.tags, a.category, a.summary, a.tokens_in, a.tokens_out,
 		        a.created_at, COALESCE(am.priority, 0), (am.retired_at IS NOT NULL)
 		   FROM message_annotations a
 		   LEFT JOIN annotation_models am ON am.model = a.model
@@ -220,39 +199,38 @@ func (s *server) loadAnnotationsRanked(ctx context.Context, ids []int64) (map[in
 		           (am.retired_at IS NOT NULL),
 		           COALESCE(am.priority, 0) DESC,
 		           a.created_at DESC,
-		           a.model`, ids)
+		           a.model`
+	}
+	rows, err := s.pool.Query(ctx, query, ids)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
-	out := make(map[int64][]annotationItem)
 	var lastID int64
 	haveLast := false
 	for rows.Next() {
-		var (
-			msgID   int64
-			a       annotationItem
-			retired bool
-			prio    int
-		)
-		if err := rows.Scan(&msgID, &a.Model, &a.Tags, &a.Category, &a.Summary,
-			&a.TokensIn, &a.TokensOut, &a.CreatedAt, &prio, &retired); err != nil {
-			return nil, err
+		var id int64
+		var a annotationItem
+		var priority int
+		var retired bool
+		dest := []any{&id, &a.Model, &a.Tags, &a.Category, &a.Summary, &a.TokensIn, &a.TokensOut, &a.CreatedAt}
+		if s.modelPriorityAvailable {
+			dest = append(dest, &priority, &retired)
 		}
-		// Ranked path always sets Priority (incl. 0) so the wire distinguishes
-		// "ranked at zero" from the unranked path's nil (R-067). prio is a fresh
-		// per-iteration variable, so &prio is a distinct address each row.
-		a.Priority = &prio
-		// First row of each message group is the top-ranked; mark it primary
-		// unless it is retired.
-		if !haveLast || msgID != lastID {
-			a.Primary = !retired
-			lastID = msgID
-			haveLast = true
+		if err := rows.Scan(dest...); err != nil {
+			return err
 		}
-		out[msgID] = append(out[msgID], a)
+		if s.modelPriorityAvailable {
+			a.Priority = &priority
+			if !haveLast || id != lastID {
+				a.Primary = !retired
+				lastID = id
+				haveLast = true
+			}
+		}
+		visit(id, a)
 	}
-	return out, rows.Err()
+	return rows.Err()
 }
 
 // ---- GET /v1/mailboxes ----
@@ -704,30 +682,44 @@ func (s *server) scanMessageItemsBounded(ctx context.Context, query string, args
 	return items, false, rows.Err()
 }
 
-// attachAnnotations decorates a page of items with their sidecar rows.
-// attachAnnotations bounds whole message documents, preserving every sidecar.
-// Load one message's annotations at a time so model multiplicity in later
-// messages cannot defeat the page budget before it is checked. The first
-// complete document is always admitted; a deferred document is cursor-paged.
+// attachAnnotations seeds a budget for metadata/list callers. Export threads
+// its existing budget through message, attachment, and annotation scanning.
 func (s *server) attachAnnotations(ctx context.Context, items []messageItem) ([]messageItem, bool, error) {
 	budget := newPageBudget(s.maxPageBytes())
+	truncated := false
 	for i := range items {
-		annots, err := s.loadAnnotations(ctx, []int64{items[i].ID})
-		if err != nil {
-			return nil, false, err
+		if !budget.admit(itemBytes(&items[i])) {
+			clear(items[i:])
+			items = items[:i]
+			truncated = true
+			break
 		}
-		list := annots[items[i].ID]
-		n := itemBytes(&items[i])
-		for j := range list {
-			n += annotationBytes(&list[j])
-		}
-		if !budget.admit(n) {
-			clear(items[i:]) // release bodies backing the deferred tail
-			return items[:i], true, nil
-		}
-		items[i].Annotations = list
 	}
-	return items, false, nil
+	items, more, err := s.attachAnnotationsBudget(ctx, items, budget)
+	return items, truncated || more, err
+}
+
+func (s *server) attachAnnotationsBudget(ctx context.Context, items []messageItem, budget *pageBudget) ([]messageItem, bool, error) {
+	ids := make([]int64, len(items))
+	pos := make(map[int64]int, len(items))
+	for i := range items {
+		ids[i] = items[i].ID
+		pos[items[i].ID] = i
+	}
+	truncated := false
+	err := s.scanAnnotations(ctx, ids, func(id int64, a annotationItem) {
+		i := pos[id]
+		n := budget.grow(i, annotationBytes(&a))
+		if n < len(items) {
+			clear(items[n:])
+			items = items[:n]
+			truncated = true
+		}
+		if i < n {
+			items[i].Annotations = append(items[i].Annotations, a)
+		}
+	})
+	return items, truncated, err
 }
 
 // textParam rejects text PostgreSQL cannot represent before a query is issued.

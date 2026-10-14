@@ -595,7 +595,15 @@ func gcMark(ctx context.Context, db *storage.DB, store *blob.Store, grace time.D
 // storage.BlobAdvisoryLockKey for the full protocol.
 func gcSweep(ctx context.Context, db *storage.DB, store *blob.Store, grace time.Duration) int {
 	start := time.Now()
-	cutoff := time.Now().Add(-grace)
+	// runGC holds the shared root flock; maintenance changes require its
+	// exclusive side, so this fact is stable for the whole sweep. Deployments
+	// without reliable flock (for example some NFS mounts) need per-candidate
+	// maintenance checks instead.
+	sweepInMaintenance, err := anyMailboxInMaintenance(ctx, db.Pool())
+	if err != nil {
+		slog.Error("gc sweep maintenance check", "err", err)
+		return EX_TEMPFAIL
+	}
 
 	// generation_marked is the DB-clock epoch of the *last* mark run that found
 	// the blob unreferenced (gcMark reads it via SELECT now(), R-045); it and
@@ -644,21 +652,21 @@ func gcSweep(ctx context.Context, db *storage.DB, store *blob.Store, grace time.
 			rows, err = db.Pool().Query(ctx,
 				`SELECT tenant, encode(sha256, 'hex'), sha256, kind, bucket, first_seen_at
 				   FROM gc_candidates
-				  WHERE first_seen_at < $1
+				  WHERE first_seen_at < now() - make_interval(secs => $1)
 				    AND generation_marked > floor(extract(epoch FROM first_seen_at))::bigint
 				    AND (first_seen_at, tenant, sha256, kind, bucket) > ($3, $4, $5, $6, $7)
 				  ORDER BY first_seen_at, tenant, sha256, kind, bucket
 				  LIMIT $2`,
-				cutoff, sweepBatchSize, curSeen, curTenant, curSHA, curKind, curBucket)
+				grace.Seconds(), sweepBatchSize, curSeen, curTenant, curSHA, curKind, curBucket)
 		} else {
 			rows, err = db.Pool().Query(ctx,
 				`SELECT tenant, encode(sha256, 'hex'), sha256, kind, bucket, first_seen_at
 				   FROM gc_candidates
-				  WHERE first_seen_at < $1
+				  WHERE first_seen_at < now() - make_interval(secs => $1)
 				    AND generation_marked > floor(extract(epoch FROM first_seen_at))::bigint
 				  ORDER BY first_seen_at, tenant, sha256, kind, bucket
 				  LIMIT $2`,
-				cutoff, sweepBatchSize)
+				grace.Seconds(), sweepBatchSize)
 		}
 		if err != nil {
 			slog.Error("gc sweep query", "err", err)
@@ -728,16 +736,11 @@ func gcSweep(ctx context.Context, db *storage.DB, store *blob.Store, grace time.
 				// account's mail sitting under its new name before the row
 				// catches up (RA6X-013).
 				//
-				// Re-decided here under the blob lock rather than reused from
-				// the caller, because mark and sweep must run identical
-				// resolution logic and maintenance can start between passes.
+				// Account identities can still change; resolve them under the blob
+				// lock even though the root lease keeps maintenance state stable.
 				ref, rerr := resolveMailboxID(ctx, tx, c.tenant)
 				if rerr != nil {
 					return fmt.Errorf("resolve tenant: %w", rerr)
-				}
-				sweepInMaintenance, rerr := anyMailboxInMaintenance(ctx, tx)
-				if rerr != nil {
-					return fmt.Errorf("maintenance check: %w", rerr)
 				}
 				if ref.quiesced || (!ref.ok && sweepInMaintenance) {
 					outcome = "skipped_maintenance"

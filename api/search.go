@@ -120,16 +120,19 @@ func (s *server) scanDatePage(r *http.Request, query string, args []any) ([]mess
 // row still arrives exactly once and in the same order. Nothing is dropped and
 // no body is truncated — only the size of one in-memory batch changes.
 func (s *server) scanDatePageBounded(r *http.Request, query string, args []any, maxBytes int64) ([]messageItem, bool, error) {
+	var budget *pageBudget
+	if maxBytes > 0 {
+		budget = newPageBudget(maxBytes)
+	}
+	return s.scanDatePageBudget(r, query, args, budget)
+}
+
+func (s *server) scanDatePageBudget(r *http.Request, query string, args []any, budget *pageBudget) ([]messageItem, bool, error) {
 	rows, err := s.pool.Query(r.Context(), query, args...)
 	if err != nil {
 		return nil, false, err
 	}
 	defer rows.Close()
-
-	var budget *pageBudget
-	if maxBytes > 0 {
-		budget = newPageBudget(maxBytes)
-	}
 
 	items := []messageItem{}
 	truncated := false
