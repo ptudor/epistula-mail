@@ -603,6 +603,10 @@ func repairDerived(
 			string(tenant), string(blob.KindAttachment), string(bucket), shaHex))
 	}
 	sort.Slice(lockKeys, func(i, j int) bool { return lockKeys[i] < lockKeys[j] })
+	attachmentParams := make([]storage.AttachmentParams, len(atts))
+	for i, a := range atts {
+		attachmentParams[i] = a.params
+	}
 
 	return db.RunTx(ctx, func(tx pgx.Tx) error {
 		// A maintenance repair is a writer too. Pin durable mailbox identity
@@ -671,6 +675,15 @@ func repairDerived(
 			return pgx.ErrNoRows
 		}
 
+		enqueue := contentChanged
+		if !enqueue {
+			same, err := sameStoredAttachmentContent(ctx, tx, messageID, attachmentParams)
+			if err != nil {
+				return err
+			}
+			enqueue = !same
+		}
+
 		// Replace the attachment rows wholesale. Reconciling them one by one
 		// would need a stable key, and part numbers are exactly what the MIME
 		// fixes change — so the old rows are the thing being corrected, not a
@@ -696,7 +709,7 @@ func repairDerived(
 				return fmt.Errorf("insert attachment %s: %w", a.params.PartNumber, err)
 			}
 		}
-		if contentChanged {
+		if enqueue {
 			if _, err := tx.Exec(ctx, `INSERT INTO annotation_pass_required(message_id) VALUES($1) ON CONFLICT DO NOTHING`, messageID); err != nil {
 				return fmt.Errorf("enqueue repaired message: %w", err)
 			}
@@ -704,6 +717,41 @@ func repairDerived(
 
 		return nil
 	})
+}
+
+// sameStoredAttachmentContent checks the fields the worker consumes before a
+// repair replaces attachment rows, including changes that keep part numbers.
+func sameStoredAttachmentContent(ctx context.Context, tx pgx.Tx, id int64, parsed []storage.AttachmentParams) (bool, error) {
+	remaining := make(map[string]storage.AttachmentParams, len(parsed))
+	for _, a := range parsed {
+		remaining[a.PartNumber] = a
+	}
+	rows, err := tx.Query(ctx, `SELECT part_number, COALESCE(filename,''), content_type,
+ COALESCE(content_id,''), COALESCE(disposition,''), size_bytes, encode(sha256,'hex')
+ FROM attachments WHERE message_id=$1`, id)
+	if err != nil {
+		return false, fmt.Errorf("compare repaired attachments: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var part, filename, contentType, contentID, disposition, sha string
+		var size int64
+		if err := rows.Scan(&part, &filename, &contentType, &contentID, &disposition, &size, &sha); err != nil {
+			return false, err
+		}
+		a, ok := remaining[part]
+		if !ok || a.Filename != filename || a.ContentType != contentType || a.ContentID != contentID || a.Disposition != disposition || a.Size != size {
+			return false, nil
+		}
+		if a.SHA256Hex != sha {
+			return false, nil
+		}
+		delete(remaining, part)
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return len(remaining) == 0, nil
 }
 
 // nullIfEmpty renders an empty string as SQL NULL, matching how ingest writes

@@ -128,6 +128,27 @@ func TestReparseQueuesChangedProjectionOnly(t *testing.T) {
 		if _, err := db.Pool().Exec(ctx, `DELETE FROM annotation_pass_required`); err != nil {
 			t.Fatal(err)
 		}
+	} // A BODYSTRUCTURE rewrite can replace changed attachment metadata while
+	// keeping the same body and part numbers. It must enqueue that change too.
+	if _, err := db.Pool().Exec(ctx, `UPDATE messages SET bodystructure='{}'; UPDATE attachments SET filename='stale-name.bin'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reparseAll(ctx, db, store, ingest.New(ingest.DefaultLimits()), reparseParams{BatchSize: 10}); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := db.Pool().QueryRow(ctx, `SELECT count(*) FROM annotation_pass_required`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("attachment rewrite marker=%d err=%v", n, err)
+	}
+	// Structure-only repair with identical bodies/attachments adds no marker.
+	if _, err := db.Pool().Exec(ctx, `DELETE FROM annotation_pass_required; UPDATE messages SET bodystructure='{}'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reparseAll(ctx, db, store, ingest.New(ingest.DefaultLimits()), reparseParams{BatchSize: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Pool().QueryRow(ctx, `SELECT count(*) FROM annotation_pass_required`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("structure-only marker=%d err=%v", n, err)
 	}
 }
 func TestMaintenanceWalkClosedPoolIsTemporary(t *testing.T) {
