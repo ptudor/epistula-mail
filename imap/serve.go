@@ -68,6 +68,7 @@ func runServe(args []string) int {
 	}
 	lease.HoldUntilExit()
 	store := blob.NewStore(cfg.Storage.Root)
+	store.SetLogger(slog.Default())
 	store.SetGroupWritable(cfg.Storage.GroupWritable)
 	if cfg.Production {
 		if err := store.CheckPermissions(); err != nil {

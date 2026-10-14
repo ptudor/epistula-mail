@@ -74,6 +74,7 @@ func openBlobStoreReadOnly(cfg *Config) (*blob.Store, int) {
 
 func openBlobStoreMode(cfg *Config, deliverPath, initialize bool) (*blob.Store, int) {
 	store := blob.NewStore(cfg.Storage.Root)
+	store.SetLogger(slog.Default())
 	store.SetGroupWritable(cfg.Storage.GroupWritable)
 	if initialize {
 		if err := store.Init(); err != nil {

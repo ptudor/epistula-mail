@@ -96,6 +96,7 @@ func runServe(args []string) int {
 	}
 	lease.HoldUntilExit()
 	store := blob.NewStore(cfg.Storage.Root)
+	store.SetLogger(slog.Default())
 	if cfg.Production {
 		if err := store.CheckPermissions(); err != nil {
 			slog.Error("blob store permissions", "err", err)

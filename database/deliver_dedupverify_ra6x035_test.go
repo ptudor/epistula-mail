@@ -4,8 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/ptudor/epistula-mail/database/blob"
 )
 
 // TestDuplicateDeliveryVerifiesItsStoredBlob is the RA6X-035 delivery-boundary
@@ -98,4 +101,26 @@ func onlyRawBlobPath(t *testing.T, root string) string {
 func dsnOf(t *testing.T, cfg *Config) string {
 	t.Helper()
 	return cfg.Postgres.DSN
+}
+
+func TestDeliveryLogsCorruptOrphanBlob(t *testing.T) {
+	cfg, _, teardown := deliverFixture(t)
+	defer teardown()
+	raw := []byte("From: sender@ra6x008.invalid\r\nSubject: orphan repair\r\n\r\nbody\r\n")
+	store := blob.NewStore(cfg.Storage.Root)
+	_, path := writeTestBlob(t, store, "ra6x008", blob.BucketFromTime(time.Now()), raw)
+	if err := os.WriteFile(path, []byte("corrupt"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	records := captureSlog(t, func() {
+		if code := deliverBytes(t, cfg, "ra6x008@ra6x008.invalid", "sender@ra6x008.invalid", string(raw)); code != EX_OK {
+			t.Fatalf("delivery: %d", code)
+		}
+	})
+	for _, r := range records {
+		if msg, ok := r["msg"].(string); ok && strings.Contains(msg, "repaired a corrupt existing blob") {
+			return
+		}
+	}
+	t.Fatalf("missing repair log: %v", records)
 }

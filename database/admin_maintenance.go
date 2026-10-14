@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -219,6 +220,7 @@ func verifyTenantBlobsOn(ctx context.Context, qdb renameQuerier, mailboxID int64
 		return nil, 0, fmt.Errorf("invalid destination tenant %q: %w", destTenant, err)
 	}
 	store := blob.NewStore(storageRoot)
+	store.SetLogger(slog.Default())
 
 	const maxReported = 100
 	var missing []string
