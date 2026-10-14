@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/net/html"
 	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/htmlindex"
 	"golang.org/x/text/encoding/ianaindex"
 	"golang.org/x/text/transform"
 )
@@ -61,6 +62,11 @@ func lookupEncoding(charset string) (encoding.Encoding, error) {
 		return enc, nil
 	}
 	if enc, err := ianaindex.IANA.Encoding(charset); err == nil && enc != nil {
+		return enc, nil
+	}
+	// MIME in the wild commonly labels simplified Chinese as GB2312. The
+	// WHATWG alias table maps that label to the compatible GBK decoder.
+	if enc, err := htmlindex.Get(charset); err == nil && enc != nil {
 		return enc, nil
 	}
 	return nil, nil

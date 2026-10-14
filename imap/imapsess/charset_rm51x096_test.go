@@ -85,6 +85,6 @@ func TestGB2312EnvelopeDecoderSupport(t *testing.T) {
 		t.Fatalf("GB2312 lost the address: %+v", got)
 	}
 	if got[0].Name != "中文" {
-		t.Skip("RM51X-096: ingest's existing charset reader does not decode GB2312; adding a charset mapping is outside its fix specification")
+		t.Fatalf("GB2312 name = %q, want 中文", got[0].Name)
 	}
 }
