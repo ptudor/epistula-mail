@@ -137,7 +137,7 @@ func runLoop(ctx context.Context, worker *Worker, state *atomicRunState) <-chan 
 				round, started = roundComplete, time.Now()
 				stats, err = worker.runRound(ctx, round)
 			}
-			sched.finished(round, started, err)
+			sched.finished(round, started, stats, err)
 			state.lastFinished.Store(time.Now().Unix())
 			state.running.Store(false)
 			state.setError(err)

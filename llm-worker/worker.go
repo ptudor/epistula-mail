@@ -63,6 +63,8 @@ const (
 var errPassQueueUnavailable = errors.New("epistula-api has no annotation pass queue (epistula-database migration 022)")
 
 type RunStats struct {
+	// Complete means every requested stream reached EOF without an abort.
+	Complete  bool
 	Scanned   int64
 	Skipped   int64
 	Annotated int64
@@ -126,9 +128,10 @@ func (w *Worker) runRound(ctx context.Context, round roundKind) (RunStats, error
 	}
 	vocab := newVocabCache(w.mail)
 	stats, err := w.annotatePass(ctx, vocab, round)
-	if err == nil && w.cfg.Classify.Enabled {
-		var cstats RunStats
-		cstats, err = w.classifyPass(ctx, vocab, stats.Annotated, round)
+	if (err == nil || stats.Complete) && w.cfg.Classify.Enabled {
+		cstats, cerr := w.classifyPass(ctx, vocab, stats.Annotated, round)
+		err = errors.Join(err, cerr)
+		stats.Complete = stats.Complete && cstats.Complete
 		stats.Scanned += cstats.Scanned
 		stats.Skipped += cstats.Skipped
 		stats.Classified += cstats.Classified
@@ -138,6 +141,9 @@ func (w *Worker) runRound(ctx context.Context, round roundKind) (RunStats, error
 	}
 	if round == roundFast && isPassQueueUnavailable(err) {
 		return stats, errPassQueueUnavailable
+	}
+	if vocab.err != nil {
+		stats.Complete = false
 	}
 	if err == nil && vocab.err != nil {
 		// Annotation went ahead without the category; the next pass's
@@ -280,6 +286,7 @@ func (w *Worker) annotatePass(ctx context.Context, vocab *vocabCache, round roun
 		}
 		return nil
 	})
+	stats.Complete = err == nil
 	if errors.Is(err, errStop) {
 		err = nil
 	}
@@ -443,6 +450,7 @@ func (w *Worker) classifyPass(ctx context.Context, vocab *vocabCache, processed 
 			return stats, err
 		}
 	}
+	stats.Complete = vocab.err == nil
 	if stats.InfraFailed > 0 {
 		return stats, fmt.Errorf("classification pass incomplete: %d message(s) left unclassified by upstream failures", stats.InfraFailed)
 	}

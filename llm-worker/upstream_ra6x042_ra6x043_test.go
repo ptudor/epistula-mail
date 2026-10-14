@@ -159,6 +159,27 @@ func TestRunOnceAbortsOnSystemicLMStatuses(t *testing.T) {
 // not a successful pass, even when the outage was brief enough not to trip the
 // breaker.
 func TestInfraFailuresBelowThresholdStillFailThePass(t *testing.T) {
+	t.Run("classification and scheduling after EOF", func(t *testing.T) {
+		s := newFakeStore()
+		w := newClassifyWorker(t, s)
+		var calls atomic.Int64
+		w.llm.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if calls.Add(1) == 2 {
+				return statusResponse(http.StatusServiceUnavailable, "", nil), nil
+			}
+			return http.DefaultTransport.RoundTrip(r)
+		})
+		stats, err := w.RunOnce(context.Background())
+		if err == nil || !stats.Complete || stats.InfraFailed != 1 || stats.Classified == 0 || s.classified[3] == "" {
+			t.Fatalf("completed stream should still classify and report its error: %+v %v", stats, err)
+		}
+		sched := newRoundSchedule(6 * time.Hour)
+		now := time.Now()
+		sched.finished(roundComplete, now, stats, err)
+		if next := sched.next(now.Add(time.Minute)); next != roundFast {
+			t.Fatalf("next = %s", next)
+		}
+	})
 	srv := exportServer(t, 6)
 	defer srv.Close()
 

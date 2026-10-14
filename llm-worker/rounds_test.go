@@ -145,11 +145,11 @@ func TestRoundSchedule(t *testing.T) {
 	if got := s.next(t0); got != roundComplete {
 		t.Fatalf("first round = %s; want complete", got)
 	}
-	s.finished(roundComplete, t0, errors.New("epistula-api down"))
+	s.finished(roundComplete, t0, RunStats{}, errors.New("epistula-api down"))
 	if got := s.next(t0.Add(time.Minute)); got != roundComplete {
 		t.Fatalf("after a failed complete round = %s; want complete again", got)
 	}
-	s.finished(roundComplete, t0.Add(time.Minute), nil)
+	s.finished(roundComplete, t0.Add(time.Minute), RunStats{Complete: true}, nil)
 	if got := s.next(t0.Add(2 * time.Minute)); got != roundFast {
 		t.Fatalf("after a complete round = %s; want fast", got)
 	}
@@ -163,11 +163,11 @@ func TestRoundSchedule(t *testing.T) {
 	if got := s.next(t0.Add(3 * time.Minute)); got != roundComplete {
 		t.Fatalf("without the queue = %s; want complete", got)
 	}
-	s.finished(roundComplete, t0.Add(3*time.Minute), nil)
+	s.finished(roundComplete, t0.Add(3*time.Minute), RunStats{Complete: true}, nil)
 	if got := s.next(t0.Add(4 * time.Minute)); got != roundFast {
 		t.Fatalf("after a complete round the queue is tried again; got %s", got)
 	}
-	s.finished(roundFast, t0.Add(4*time.Minute), nil)
+	s.finished(roundFast, t0.Add(4*time.Minute), RunStats{Complete: true}, nil)
 	if !s.queueLost() {
 		t.Fatal("after the queue worked again, losing it should be reported again")
 	}

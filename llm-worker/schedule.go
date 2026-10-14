@@ -44,9 +44,9 @@ func (s *roundSchedule) queueLost() bool {
 }
 
 // finished records a round's outcome.
-func (s *roundSchedule) finished(round roundKind, started time.Time, err error) {
+func (s *roundSchedule) finished(round roundKind, started time.Time, stats RunStats, err error) {
 	switch {
-	case round == roundComplete && err == nil:
+	case round == roundComplete && stats.Complete && stats.InfraFailed < consecutiveInfraFailureAbort:
 		s.lastComplete = started
 		s.queue = true
 	case round == roundFast && err == nil:
