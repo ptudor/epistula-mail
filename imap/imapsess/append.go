@@ -66,6 +66,12 @@ func (s *Session) Append(mailbox string, r imap.LiteralReader, options *imap.App
 	// folder deleted or renamed between here and the commit be silently
 	// recreated under its old name, with the message landing in the new one.
 	lookupCtx, lookupCancel := s.queryCtx()
+	if mailbox == "INBOX" {
+		if err := s.ensureInbox(lookupCtx); err != nil {
+			lookupCancel()
+			return nil, err
+		}
+	}
 	destFolderID, lerr := s.lookupFolder(lookupCtx, mailbox)
 	lookupCancel()
 	if lerr != nil {

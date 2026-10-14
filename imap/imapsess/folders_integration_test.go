@@ -44,14 +44,13 @@ func TestCreateDeleteRenameFolder(t *testing.T) {
 		t.Fatal("APPEND did not account quota")
 	}
 
-	// RENAME bumps uidvalidity.
+	// RENAME preserves uidvalidity.
 	var validityBefore int64
 	if err := sess.be.Pool.QueryRow(ctx,
 		`SELECT uidvalidity FROM folders WHERE id = $1`, folderID,
 	).Scan(&validityBefore); err != nil {
 		t.Fatalf("uidvalidity: %v", err)
 	}
-	time.Sleep(1100 * time.Millisecond) // uidvalidity is unix-seconds; ensure a bump
 	if err := sess.Rename("Projects/2026", "Projects/Archive", nil); err != nil {
 		t.Fatalf("RENAME: %v", err)
 	}
@@ -65,8 +64,8 @@ func TestCreateDeleteRenameFolder(t *testing.T) {
 	if name != "Projects/Archive" {
 		t.Errorf("renamed folder name = %q", name)
 	}
-	if validityAfter <= validityBefore {
-		t.Errorf("uidvalidity %d -> %d, want a bump on RENAME", validityBefore, validityAfter)
+	if validityAfter != validityBefore {
+		t.Errorf("uidvalidity %d -> %d, want no change on RENAME", validityBefore, validityAfter)
 	}
 
 	// RENAME onto an existing name → NO [ALREADYEXISTS].

@@ -42,6 +42,9 @@ func TestFolderWriteDeclarationAndInboxPrefix(t *testing.T) {
 	if got := folderNames(t, s); !reflect.DeepEqual(got, []string{"INBOX", "INBOX/Foo"}) {
 		t.Fatal(got)
 	}
+	if _, err := s.Append("inbox/Foo", newLiteral([]byte(appendRawMsg)), nil); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.Select("inbox/Foo", nil); err != nil {
 		t.Fatal(err)
 	}

@@ -313,8 +313,14 @@ func adminMailboxAdd(args []string) int {
 	if *quota > 0 {
 		quotaArg = *quota
 	}
+	tx, err := db.Pool().Begin(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "begin: %v\n", err)
+		return EX_TEMPFAIL
+	}
+	defer tx.Rollback(ctx)
 	var id int64
-	err = db.Pool().QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO mailboxes (name, quota_bytes, password_hash) VALUES ($1, $2, $3) RETURNING id`,
 		mailboxName, quotaArg, hash,
 	).Scan(&id)
@@ -324,6 +330,14 @@ func adminMailboxAdd(args []string) int {
 			return EX_USAGE
 		}
 		fmt.Fprintf(os.Stderr, "insert: %v\n", err)
+		return EX_TEMPFAIL
+	}
+	if _, _, err := storage.EnsureFolder(ctx, tx, id, "INBOX", nil); err != nil {
+		fmt.Fprintf(os.Stderr, "create INBOX: %v\n", err)
+		return EX_TEMPFAIL
+	}
+	if err := tx.Commit(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "commit: %v\n", err)
 		return EX_TEMPFAIL
 	}
 	fmt.Printf("created mailbox %q (id=%d)\n", mailboxName, id)

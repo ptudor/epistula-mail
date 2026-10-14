@@ -81,14 +81,13 @@ func TestRenameMovesDescendants(t *testing.T) {
 		}
 	}
 
-	// Every renamed row gets a fresh, distinct uidvalidity (R-062), so
-	// clients discard cached state for the whole subtree.
+	// Every renamed row retains its identity and cached message UIDs.
 	seen := map[int64]bool{}
 	for _, n := range []string{"Old", "Old/2026", "Old/2026/Q1"} {
 		v := folderUIDValidity(t, sess, n)
 		oldName := "Archive" + n[len("Old"):]
-		if v == before[oldName] {
-			t.Errorf("%q kept uidvalidity %d across the rename", n, v)
+		if v != before[oldName] {
+			t.Errorf("%q changed uidvalidity to %d across the rename", n, v)
 		}
 		if seen[v] {
 			t.Errorf("uidvalidity %d reused within one rename", v)

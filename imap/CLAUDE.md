@@ -250,7 +250,8 @@ No `import`, no `gc`, no `deliver` — those are epistula-database's responsibil
 - **Disk blob missing for `FETCH BODY[]`**: send `<tag> NO [SERVERBUG] message body unavailable`, log at ERROR with sha256, mailbox, UID. This indicates store corruption — operator-paging condition.
 - **TLS cert expired**: fail closed. The daemon refuses new connections. Existing connections continue until they disconnect naturally. Reload via SIGHUP after renewing.
 - **Mailbox over quota during APPEND**: respond `NO [OVERQUOTA]` per RFC 9208.
-- **APPEND to a mailbox that does not exist**: respond `NO [TRYCREATE]` per RFC
+- **INBOX always exists**: mailbox creation creates it atomically. SELECT, STATUS, LIST and APPEND defensively create it for older accounts when absent.
+- **APPEND to any other mailbox that does not exist**: respond `NO [TRYCREATE]` per RFC
   3501 §6.3.11 / RFC 9051 §6.3.12 — the folder is *not* auto-created, so a
   client typo cannot leave a permanent folder in everyone's LIST. (COPY/MOVE
   still auto-create their destination; that is deliberate and matches

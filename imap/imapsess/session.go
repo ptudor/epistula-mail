@@ -653,6 +653,11 @@ func (s *Session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 
 	ctx, cancel := s.queryCtx()
 	defer cancel()
+	if patternMatches("INBOX", patterns, ref) {
+		if err := s.ensureInbox(ctx); err != nil {
+			return err
+		}
+	}
 
 	// When SelectSubscribed is set (LSUB and "LIST (SUBSCRIBED) ..."):
 	//   - WHERE clause restricts to folders this mailbox is subscribed to
@@ -745,6 +750,11 @@ func (s *Session) Status(mailbox string, options *imap.StatusOptions) (statusDat
 	}
 	ctx, cancel := s.queryCtx()
 	defer cancel()
+	if canonicalFolderName(mailbox) == "INBOX" {
+		if err := s.ensureInbox(ctx); err != nil {
+			return nil, err
+		}
+	}
 
 	folderID, err := s.lookupFolder(ctx, mailbox)
 	if err != nil {
@@ -823,6 +833,11 @@ func (s *Session) Select(mailbox string, options *imap.SelectOptions) (selectDat
 	}
 	ctx, cancel := s.queryCtx()
 	defer cancel()
+	if canonicalFolderName(mailbox) == "INBOX" {
+		if err := s.ensureInbox(ctx); err != nil {
+			return nil, err
+		}
+	}
 
 	folderID, data, snapshot, err := s.readSelection(ctx, mailbox)
 	if err != nil {
@@ -2121,7 +2136,7 @@ func (s *Session) Rename(mailbox, newName string, options *imap.RenameOptions) (
 	// Every descendant's NEW name must also be legal (RA6X-009): renaming a
 	// short parent to a longer one lengthens every descendant, so a rename
 	// within the limit itself can push a child past it.
-	if verr := s.checkDescendantNames(ctx, mailbox, newName); verr != nil {
+	if verr := s.checkDescendantNames(ctx, s.be.Pool, mailbox, newName); verr != nil {
 		return verr
 	}
 
@@ -2136,10 +2151,7 @@ func (s *Session) Rename(mailbox, newName string, options *imap.RenameOptions) (
 	// pre-check inside it, so a rename that would clash with an existing name
 	// fails atomically before any row is touched.
 	//
-	// Every renamed row gets a fresh uidvalidity per R-062 — clients must
-	// discard cached state for all of them — from the shared
-	// folder_uidvalidity_seq rather than time.Now().Unix(), so a rename in the
-	// same second a folder was created cannot collide on the old value.
+	// RENAME preserves the identity and UIDVALIDITY of every moved folder.
 	var renamed int64
 	err = s.be.Storage().RunTx(ctx, func(tx pgx.Tx) error {
 		// 0. Level 1 of the canonical lock order, first in the transaction.
@@ -2150,6 +2162,21 @@ func (s *Session) Rename(mailbox, newName string, options *imap.RenameOptions) (
 		//    without its parent (OPS-001).
 		if err := lockMailbox(ctx, tx, s.mailboxID); err != nil {
 			return fmt.Errorf("lock mailbox: %w", err)
+		}
+
+		var lockedID int64
+		var lockedName string
+		if err := tx.QueryRow(ctx, `SELECT id, name FROM folders WHERE id=$1 AND mailbox_id=$2 FOR UPDATE`, folderID, s.mailboxID).Scan(&lockedID, &lockedName); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errFolderGone
+			}
+			return err
+		}
+		if lockedName != mailbox {
+			return errFolderGone
+		}
+		if verr := s.checkDescendantNames(ctx, tx, lockedName, newName); verr != nil {
+			return verr
 		}
 
 		// 1. Refuse if the target name, or any name a descendant would move
@@ -2182,14 +2209,14 @@ func (s *Session) Rename(mailbox, newName string, options *imap.RenameOptions) (
 		// 3. The parent.
 		tag, err := tx.Exec(ctx,
 			`UPDATE folders
-			    SET name = $1, uidvalidity = mail_next_uidvalidity()
+			    SET name = $1
 			  WHERE id = $2 AND mailbox_id = $3`,
 			newName, folderID, s.mailboxID)
 		if err != nil {
 			return fmt.Errorf("rename parent: %w", err)
 		}
 		if tag.RowsAffected() == 0 {
-			return errRenameTargetExists // vanished under us
+			return errFolderGone
 		}
 		renamed = tag.RowsAffected()
 
@@ -2210,10 +2237,9 @@ func (s *Session) Rename(mailbox, newName string, options *imap.RenameOptions) (
 		//    in Go would just be a second guess at PostgreSQL's semantics.
 		dtag, err := tx.Exec(ctx,
 			`UPDATE folders
-			    SET name = $1 || substring(name from char_length($2::text) + 1),
-			        uidvalidity = mail_next_uidvalidity()
+			    SET name = $1 || substring(name from char_length($2::text) + 1)
 			  WHERE mailbox_id = $3 AND name LIKE $4 ESCAPE '\'`,
-			newName, mailbox, s.mailboxID, escapeLike(mailbox)+`/%`)
+			newName, lockedName, s.mailboxID, escapeLike(lockedName)+`/%`)
 		if err != nil {
 			return fmt.Errorf("rename descendants: %w", err)
 		}
@@ -2221,6 +2247,13 @@ func (s *Session) Rename(mailbox, newName string, options *imap.RenameOptions) (
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, errFolderGone) {
+			return &imap.Error{Type: imap.StatusResponseTypeNo, Code: imap.ResponseCodeNonExistent, Text: "RENAME: no such mailbox"}
+		}
+		var ie *imap.Error
+		if errors.As(err, &ie) {
+			return ie
+		}
 		if errors.Is(err, errRenameTargetExists) {
 			return &imap.Error{
 				Type: imap.StatusResponseTypeNo,
@@ -2308,6 +2341,19 @@ func validateFolderName(name string) *imap.Error {
 			return &imap.Error{Type: imap.StatusResponseTypeBad, Text: "mailbox name is required"}
 		}
 		return &imap.Error{Type: imap.StatusResponseTypeNo, Code: imap.ResponseCodeCannot, Text: err.Error()}
+	}
+	return nil
+}
+
+// ensureInbox repairs accounts created before mailbox-add began creating INBOX.
+func (s *Session) ensureInbox(ctx context.Context) error {
+	_, err := s.be.Storage().LookupFolder(ctx, s.mailboxID, "INBOX")
+	if errors.Is(err, storage.ErrNotFound) {
+		_, err = s.be.Storage().LookupOrCreateFolder(ctx, s.mailboxID, "INBOX")
+	}
+	if err != nil {
+		s.be.Logger.Error("ensure INBOX", "err", err)
+		return responseCannot("INBOX unavailable")
 	}
 	return nil
 }
@@ -2504,8 +2550,10 @@ func (s *Session) staleTenantErr(cause error) error {
 // itself within the limit can push a child past it — and the rename would then
 // either commit a name the store should never hold, or fail deep inside the
 // descendant UPDATE with an error the client cannot act on.
-func (s *Session) checkDescendantNames(ctx context.Context, oldName, newName string) *imap.Error {
-	rows, err := s.be.Pool.Query(ctx,
+func (s *Session) checkDescendantNames(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, oldName, newName string) *imap.Error {
+	rows, err := q.Query(ctx,
 		`SELECT name FROM folders WHERE mailbox_id = $1 AND name LIKE $2 ESCAPE '\'`,
 		s.mailboxID, escapeLike(oldName)+`/%`)
 	if err != nil {
