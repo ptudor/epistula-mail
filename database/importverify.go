@@ -98,7 +98,7 @@ func runImportVerify(args []string) int {
 	defer lease.Close()
 
 	start := time.Now()
-	missing, walked := 0, 0
+	missing, walked, readErrors := 0, 0, 0
 	err = maildir.Walk(*maildirPath, func(e maildir.Entry) error {
 		walked++
 		// Bounded by the configured maximum (RA6X-034). Verification reads
@@ -106,7 +106,9 @@ func runImportVerify(args []string) int {
 		// the case that used to exhaust memory mid-pass.
 		data, err := readBounded(e.Path, cfg.Limits.MaxMessageBytes)
 		if err != nil {
-			return fmt.Errorf("read %s: %w", e.Path, err)
+			readErrors++
+			slog.Error("source file unreadable", "path", e.Path, "err", err)
+			return nil
 		}
 		sum := sha256.Sum256(data)
 		shaHex := hex.EncodeToString(sum[:])
@@ -122,7 +124,7 @@ func runImportVerify(args []string) int {
 	})
 	if err != nil {
 		slog.Error("walk", "err", err)
-		return EX_OSERR
+		return maintenanceWalkExit(err)
 	}
 
 	// Reverse direction: every PG row for this folder must have its raw blob
@@ -182,16 +184,68 @@ func runImportVerify(args []string) int {
 		return EX_TEMPFAIL
 	}
 
+	rows.Close()
+	attachmentBad, attachmentCount, err := verifyFolderAttachments(ctx, db, store, tenant, folderID)
+	if err != nil {
+		slog.Error("verify attachments", "err", err)
+		return EX_TEMPFAIL
+	}
+
 	slog.Info("import-verify complete",
 		"maildir_walked", walked,
 		"maildir_missing_in_pg", missing,
+		"maildir_read_errors", readErrors,
+		"attachment_rows", attachmentCount,
+		"attachment_blob_mismatch", attachmentBad,
 		"pg_rows", rowsCount,
 		"pg_blob_missing", blobMissing,
 		"pg_blob_mismatch", blobMismatch,
 		"elapsed", time.Since(start).Truncate(time.Second),
 	)
-	if missing > 0 || blobMissing > 0 || blobMismatch > 0 {
+	if readErrors > 0 || attachmentBad > 0 || missing > 0 || blobMissing > 0 || blobMismatch > 0 {
 		return EX_DATAERR
 	}
 	return EX_OK
+}
+
+// Materialize each page before file verification so no cursor is held while hashing.
+func verifyFolderAttachments(ctx context.Context, db *storage.DB, store *blob.Store, tenant blob.Tenant, folderID int64) (bad, count int, err error) {
+	var last int64
+	type attachment struct {
+		id   int64
+		sha  string
+		date time.Time
+		size int64
+	}
+	for {
+		rows, err := db.Pool().Query(ctx, `SELECT a.id,encode(a.sha256,'hex'),a.blob_date,a.size_bytes FROM attachments a JOIN messages m ON m.id=a.message_id WHERE m.folder_id=$1 AND a.id>$2 ORDER BY a.id LIMIT 5000`, folderID, last)
+		if err != nil {
+			return bad, count, err
+		}
+		var page []attachment
+		for rows.Next() {
+			var a attachment
+			if err := rows.Scan(&a.id, &a.sha, &a.date, &a.size); err != nil {
+				rows.Close()
+				return bad, count, err
+			}
+			page = append(page, a)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return bad, count, err
+		}
+		if len(page) == 0 {
+			return bad, count, nil
+		}
+		for _, a := range page {
+			last = a.id
+			count++
+			ok, err := store.ContentMatches(blob.KindAttachment, tenant, blob.BucketFromTime(a.date), a.sha, a.size)
+			if err != nil || !ok {
+				bad++
+				slog.Error("attachment blob missing or corrupt", "attachment_id", a.id, "sha16", a.sha[:16], "err", err)
+			}
+		}
+	}
 }

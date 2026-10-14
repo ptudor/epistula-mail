@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/ptudor/epistula-mail/database/blob"
@@ -167,6 +168,30 @@ func runImportBlobs(args []string) int {
 	resumeKey := state.resumeKey()
 	stats := importStats{startedAt: time.Now()}
 	defer func() { stats.report() }()
+
+	var scanErr error
+	unknownSeen := map[string]bool{}
+	store.SetOnUnknownSubtree(func(name string) {
+		if unknownSeen[name] {
+			return
+		}
+		unknownSeen[name] = true
+		stats.unknownSubtrees++
+		path := filepath.Join(store.Root(), name)
+		slog.Error("import-blobs unknown subtree", "path", path)
+		if err := journal.fail(path, "unknown_subtree", fmt.Errorf("unrecognized tenant subtree")); err != nil {
+			scanErr = err
+		}
+	})
+	store.SetOnMisplacedBlob(func(_ blob.Kind, _ blob.Tenant, _ string, path string) {
+		stats.misplacedBlobs++
+		slog.Error("import-blobs misplaced blob", "path", path)
+		if err := journal.fail(path, "misplaced_blob", fmt.Errorf("blob is outside its canonical shard")); err != nil {
+			scanErr = err
+		}
+	})
+	defer store.SetOnUnknownSubtree(nil)
+	defer store.SetOnMisplacedBlob(nil)
 
 	// Per-tenant resolution cache: tenant name → its mailbox + target folder.
 	// ok=false records a tenant subtree with no backing mailbox row, warned
@@ -340,7 +365,11 @@ func runImportBlobs(args []string) int {
 		if !*dryRun && !*retryFailures {
 			_ = state.save(*checkpointPath)
 		}
-		return EX_OSERR
+		return maintenanceWalkExit(err)
+	}
+	if scanErr != nil {
+		slog.Error("import-blobs scan journal", "err", scanErr)
+		return EX_IOERR
 	}
 	// A tenant record expands to its entire subtree. Only clear it after a
 	// successful full walk; individual parse failures retain their own records.

@@ -286,7 +286,7 @@ func runImport(args []string) int {
 		if !*dryRun && !*retryFailures {
 			_ = state.save(*checkpointPath)
 		}
-		return EX_OSERR
+		return maintenanceWalkExit(err)
 	}
 
 	// Never persist a checkpoint for a dry-run: it would overwrite the real
@@ -352,6 +352,8 @@ type importStats struct {
 	// and blobs under a tenant subtree with no backing mailbox row.
 	skippedForeignTenant int64
 	skippedNoMailbox     int64
+	unknownSubtrees      int64
+	misplacedBlobs       int64
 }
 
 func (s importStats) report() {
@@ -363,6 +365,8 @@ func (s importStats) report() {
 		"skipped_checkpoint", s.skippedCheckpoint,
 		"skipped_foreign_tenant", s.skippedForeignTenant,
 		"skipped_no_mailbox", s.skippedNoMailbox,
+		"unknown_subtrees", s.unknownSubtrees,
+		"misplaced_blobs", s.misplacedBlobs,
 		"dry_run_ok", s.dryRunOK,
 		"elapsed", time.Since(s.startedAt).Truncate(time.Second),
 	)

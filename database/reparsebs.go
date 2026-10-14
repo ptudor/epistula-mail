@@ -417,10 +417,8 @@ func reparseAll(ctx context.Context, db *storage.DB, store *blob.Store, parser *
 			if msg.SentDateLocal != "" {
 				nextSentLocal = msg.SentDateLocal
 			}
-			changed := !jsonEquivalent(r.current, next) ||
-				msg.TextBody != r.textBody ||
-				msg.HTMLBody != r.htmlBody ||
-				!sameAttachmentParts(r.attParts, msg.Attachments) ||
+			contentChanged := msg.TextBody != r.textBody || msg.HTMLBody != r.htmlBody || !sameAttachmentParts(r.attParts, msg.Attachments)
+			changed := !jsonEquivalent(r.current, next) || contentChanged ||
 				sentLocalDiffers(r.sentLocal, msg.SentDateLocal)
 			if !changed {
 				st.Unchanged++
@@ -441,7 +439,7 @@ func reparseAll(ctx context.Context, db *storage.DB, store *blob.Store, parser *
 				continue
 			}
 			if uerr := repairDerived(ctx, db, store, tenant, r.blobDate, r.id,
-				next, msg, nextSentLocal); uerr != nil {
+				next, msg, nextSentLocal, contentChanged); uerr != nil {
 				if errors.Is(uerr, pgx.ErrNoRows) {
 					// Expunged between the scan and the update; nothing to do.
 					if err := resolved(); err != nil {
@@ -550,8 +548,8 @@ func sentLocalDiffers(stored *time.Time, parsed string) bool {
 	return stored.Format("2006-01-02") != parsed
 }
 
-// repairDerived rewrites everything a re-parse produces for one message, in one
-// transaction (RA6X-005/010/048/049).
+// repairDerived rewrites BODYSTRUCTURE, text/HTML, attachment rows and
+// sent_date_local for one message in one transaction (RA6X-005/010/048/049).
 //
 // The pass used to rewrite `bodystructure` alone, which was enough while a
 // re-parse could only change the structure. It no longer is: the MIME fixes
@@ -573,6 +571,7 @@ func repairDerived(
 	nextBS []byte,
 	msg *ingest.Message,
 	sentLocal any,
+	contentChanged bool,
 ) error {
 	bucket := blob.BucketFromTime(blobDate.UTC())
 
@@ -697,6 +696,12 @@ func repairDerived(
 				return fmt.Errorf("insert attachment %s: %w", a.params.PartNumber, err)
 			}
 		}
+		if contentChanged {
+			if _, err := tx.Exec(ctx, `INSERT INTO annotation_pass_required(message_id) VALUES($1) ON CONFLICT DO NOTHING`, messageID); err != nil {
+				return fmt.Errorf("enqueue repaired message: %w", err)
+			}
+		}
+
 		return nil
 	})
 }

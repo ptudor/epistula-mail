@@ -83,3 +83,9 @@ send HUP (signal 1) to the supervisor, which reopens its output file:
 ```
 
 Keep the child pidfile for service status and application reloads.
+
+`reparse-bodystructure` updates BODYSTRUCTURE, text/HTML, attachment rows and
+`sent_date_local`; it leaves the other header-derived convenience columns alone.
+Changed body projections or attachment part lists enqueue an annotation pass.
+UIDs and UIDVALIDITY stay unchanged: after repair, force clients to discard cached
+BODYSTRUCTURE/part numbering and resynchronize the affected folders.

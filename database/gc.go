@@ -519,12 +519,12 @@ func gcMark(ctx context.Context, db *storage.DB, store *blob.Store, grace time.D
 	for _, k := range []blob.Kind{blob.KindRaw, blob.KindAttachment} {
 		if err := store.Walk(k, visit); err != nil {
 			slog.Error("gc mark walk", "kind", k, "err", err)
-			return EX_OSERR
+			return maintenanceWalkExit(err)
 		}
 		// Flush the tail of this kind before moving to the next.
 		if err := flush(); err != nil {
 			slog.Error("gc mark flush", "kind", k, "err", err)
-			return EX_OSERR
+			return maintenanceWalkExit(err)
 		}
 	}
 
