@@ -274,19 +274,9 @@ func (s *Session) Expunge(w *imapserver.ExpungeWriter, uids *imap.UIDSet) (err e
 		// come from the client's view after commit.
 		candidateQuery := `SELECT uid,raw_size FROM messages WHERE folder_id=$1 AND '\Deleted'=ANY(flags) ORDER BY uid`
 
-		// UID EXPUNGE: the subset filter is applied in Go via uidSetContains
-		// so dynamic ranges ("5:*", "*") resolve against the folder's highest
-		// UID per RFC 9051 — and a hostile "1:4000000000" never materializes
-		// as an enumerated list.
-		var maxUID int64
-		if uids != nil {
-			if err := tx.QueryRow(ctx,
-				`SELECT COALESCE(MAX(uid), 0) FROM messages WHERE folder_id = $1`,
-				s.selectedFolderID,
-			).Scan(&maxUID); err != nil {
-				return fmt.Errorf("max uid: %w", err)
-			}
-		}
+		// UID EXPUNGE expands dynamic ranges against the client's known view.
+		// Comparison stays in Go, without materializing huge hostile ranges.
+		maxUID := int64(s.view.maxUID())
 
 		rows, err := tx.Query(ctx, candidateQuery, s.selectedFolderID)
 		if err != nil {
@@ -336,7 +326,11 @@ func (s *Session) Expunge(w *imapserver.ExpungeWriter, uids *imap.UIDSet) (err e
 		archived := map[int64]struct{}{}
 		if target != nil {
 			var err error
-			archived, delUIDs, err = s.archiveInsteadOfExpunge(ctx, tx, target, delUIDs)
+			var changed bool
+			archived, delUIDs, changed, err = s.archiveInsteadOfExpunge(ctx, tx, target, delUIDs)
+			if err == nil && changed {
+				notifyFolderChanged(ctx, tx, s.be.Logger, s.selectedFolderID)
+			}
 			if err != nil {
 				return err
 			}

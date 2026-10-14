@@ -85,13 +85,14 @@ func (s *Session) deleteArchiveTarget(ctx context.Context, tx pgx.Tx) (*deleteAr
 
 // archiveInsteadOfExpunge handles the last copies among the expunge
 // candidates (uids in the selected folder) and returns the UIDs that left the
-// folder by being archived, and the UIDs still to be destroyed.
+// folder by being archived, the UIDs still to be destroyed, and whether any
+// rows changed (including in-place flag clearing).
 //
 // The candidates are locked here, and \Deleted is re-checked under the lock,
 // so a `STORE -FLAGS (\Deleted)` that commits first still rescues its message
 // (RO5X-001). One that commits after finds the row archived. That is not a
 // loss: the message still exists.
-func (s *Session) archiveInsteadOfExpunge(ctx context.Context, tx pgx.Tx, target *deleteArchiveTarget, uids []int64) (map[int64]struct{}, []int64, error) {
+func (s *Session) archiveInsteadOfExpunge(ctx context.Context, tx pgx.Tx, target *deleteArchiveTarget, uids []int64) (map[int64]struct{}, []int64, bool, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT m.id, m.uid
 		  FROM messages m
@@ -103,7 +104,7 @@ func (s *Session) archiveInsteadOfExpunge(ctx context.Context, tx pgx.Tx, target
 		   FOR UPDATE OF m`,
 		s.selectedFolderID, uids, s.mailboxID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("find last copies: %w", err)
+		return nil, nil, false, fmt.Errorf("find last copies: %w", err)
 	}
 	uidOf := map[int64]int64{}
 	var ids []int64
@@ -111,14 +112,14 @@ func (s *Session) archiveInsteadOfExpunge(ctx context.Context, tx pgx.Tx, target
 		var id, uid int64
 		if err := rows.Scan(&id, &uid); err != nil {
 			rows.Close()
-			return nil, nil, fmt.Errorf("scan last copy: %w", err)
+			return nil, nil, false, fmt.Errorf("scan last copy: %w", err)
 		}
 		uidOf[id] = uid
 		ids = append(ids, id)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("find last copies: %w", err)
+		return nil, nil, false, fmt.Errorf("find last copies: %w", err)
 	}
 
 	archived := map[int64]struct{}{}
@@ -135,13 +136,13 @@ func (s *Session) archiveInsteadOfExpunge(ctx context.Context, tx pgx.Tx, target
 				`UPDATE folders SET highest_modseq = highest_modseq + 1 WHERE id = $1 RETURNING highest_modseq`,
 				s.selectedFolderID,
 			).Scan(&modSeq); err != nil {
-				return nil, nil, fmt.Errorf("bump modseq: %w", err)
+				return nil, nil, false, fmt.Errorf("bump modseq: %w", err)
 			}
 			if _, err := tx.Exec(ctx,
 				`UPDATE messages SET flags = array_remove(flags, '\Deleted'), mod_seq = $2 WHERE id = ANY($1)`,
 				ids, modSeq,
 			); err != nil {
-				return nil, nil, fmt.Errorf("clear deleted flag: %w", err)
+				return nil, nil, false, fmt.Errorf("clear deleted flag: %w", err)
 			}
 		} else {
 			items := make([]storage.MoveItem, len(ids))
@@ -150,11 +151,11 @@ func (s *Session) archiveInsteadOfExpunge(ctx context.Context, tx pgx.Tx, target
 			}
 			moved, err := storage.ArchiveMessages(ctx, tx, s.mailboxID, items, target.root.Name)
 			if err != nil {
-				return nil, nil, fmt.Errorf("archive: %w", err)
+				return nil, nil, false, fmt.Errorf("archive: %w", err)
 			}
 			// The rows were locked above, so all of them moved.
 			if len(moved) != len(ids) {
-				return nil, nil, fmt.Errorf("archive: moved %d of %d locked messages", len(moved), len(ids))
+				return nil, nil, false, fmt.Errorf("archive: moved %d of %d locked messages", len(moved), len(ids))
 			}
 			for _, m := range moved {
 				archived[uidOf[m.ID]] = struct{}{}
@@ -168,5 +169,5 @@ func (s *Session) archiveInsteadOfExpunge(ctx context.Context, tx pgx.Tx, target
 			remaining = append(remaining, uid)
 		}
 	}
-	return archived, remaining, nil
+	return archived, remaining, len(ids) > 0, nil
 }

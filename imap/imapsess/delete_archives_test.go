@@ -2,6 +2,8 @@ package imapsess
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -260,5 +262,53 @@ func TestDeleteArchivesUIDExpungeSubset(t *testing.T) {
 	}
 	if got := folderOfMessageWithSHA(t, s, 3); len(got) != 1 || got[0] != "Archive" {
 		t.Fatal(got)
+	}
+}
+
+func TestDeleteArchivesNotifiesIdleFlagClear(t *testing.T) {
+	s := mutationFixture(t)
+	defer s.Close()
+	s.be.DeleteArchives = true
+	if _, err := s.be.Pool.Exec(context.Background(), `UPDATE folders SET name='Archive',special_use='\Archive' WHERE id=$1`, s.selectedFolderID); err != nil {
+		t.Fatal(err)
+	}
+	s.selectedFolderName = "Archive"
+	br, conn := featureWire(t, s)
+	if got := featureCommand(t, br, conn, "s1", "SELECT Archive"); !strings.Contains(got, "s1 OK") {
+		t.Fatal(got)
+	}
+	fmt.Fprint(conn, "i1 IDLE\r\n")
+	if line, err := br.ReadString('\n'); err != nil || !strings.HasPrefix(line, "+") {
+		t.Fatalf("IDLE %q %v", line, err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var ready bool
+		if err := s.be.Pool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND query='LISTEN mail_arrived' AND state='idle')`).Scan(&ready); err != nil {
+			t.Fatal(err)
+		}
+		if ready {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("IDLE listener did not subscribe")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := s.Expunge(nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(line, "FETCH (") && strings.Contains(line, "FLAGS") {
+			if strings.Contains(line, `\Deleted`) {
+				t.Fatal(line)
+			}
+			break
+		}
 	}
 }

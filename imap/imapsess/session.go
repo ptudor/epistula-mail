@@ -1067,11 +1067,17 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 		if options.Envelope {
 			header, err := sections.topHeader(s, r)
 			if err != nil {
-				return err
+				var protocolErr *imap.Error
+				if errors.As(err, &protocolErr) {
+					return protocolErr
+				}
+				s.be.Logger.Error("FETCH envelope blob unreadable", "mailbox", s.mailboxName, "folder", s.selectedFolderName, "uid", r.uid, "sha16", safeShortSHA(r.rawSHA256Hex), "err", err)
+				return missingBlobErr()
 			}
 			envelope, err = buildRawEnvelope(r, header)
 			if err != nil {
-				return err
+				s.be.Logger.Error("FETCH envelope header invalid", "uid", r.uid, "sha16", safeShortSHA(r.rawSHA256Hex), "err", err)
+				return missingBlobErr()
 			}
 		}
 		var bs imap.BodyStructure
@@ -1465,6 +1471,10 @@ func (s *Session) loadRawBlob(r fetchRow) ([]byte, error) {
 	out := bytes.NewBuffer(buf)
 	if _, err := io.Copy(out, rc); err != nil {
 		return nil, err
+	}
+	if int64(out.Len()) != r.rawSize {
+		s.be.Logger.Error("FETCH blob size mismatch", "mailbox", s.mailboxName, "folder", s.selectedFolderName, "uid", r.uid, "sha16", safeShortSHA(r.rawSHA256Hex), "db_size", r.rawSize, "disk_size", out.Len())
+		return nil, errBlobUnreadable
 	}
 	return out.Bytes(), nil
 }

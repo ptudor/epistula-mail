@@ -364,3 +364,21 @@ func TestUIDExpungeHugeRangeStaysBounded(t *testing.T) {
 		t.Error("non-\\Deleted messages must survive UID EXPUNGE")
 	}
 }
+
+func TestUIDExpungeStarUsesClientView(t *testing.T) {
+	s := mutationFixture(t)
+	defer s.Close()
+	if _, err := s.Select("INBOX", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.be.Pool.Exec(context.Background(), `INSERT INTO messages (folder_id,uid,raw_sha256,raw_blob_date,raw_size,internal_date,headers,bodystructure,flags) SELECT folder_id,9,raw_sha256,raw_blob_date,raw_size,internal_date,headers,bodystructure,flags FROM messages WHERE folder_id=$1 AND uid=3`, s.selectedFolderID); err != nil {
+		t.Fatal(err)
+	}
+	uids := imap.UIDSet{{Start: 3, Stop: 0}}
+	if err := s.Expunge(nil, &uids); err != nil {
+		t.Fatal(err)
+	}
+	if messageExists(t, s, s.selectedFolderID, 3) || !messageExists(t, s, s.selectedFolderID, 9) {
+		t.Fatal("EXPUNGE crossed the client view boundary")
+	}
+}

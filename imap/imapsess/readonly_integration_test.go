@@ -1,10 +1,13 @@
 package imapsess
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -141,3 +144,60 @@ func TestFetchMissingBlobReturnsServerBug(t *testing.T) {
 		t.Errorf("missing blob response = %v [%v], want NO [SERVERBUG]", imapErr.Type, imapErr.Code)
 	}
 }
+
+func TestFetchTruncatedPartAndMissingEnvelopeReturnServerBug(t *testing.T) {
+	s, store := appendFixture(t)
+	defer s.Close()
+	mustCreateFolder(t, s, "INBOX")
+	if _, err := s.Append("INBOX", newLiteral([]byte(appendRawMsg)), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Select("INBOX", nil); err != nil {
+		t.Fatal(err)
+	}
+	var sha string
+	var date time.Time
+	if err := s.be.Pool.QueryRow(context.Background(), `SELECT encode(raw_sha256,'hex'),raw_blob_date FROM messages`).Scan(&sha, &date); err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.PathFor(blob.KindRaw, s.tenant, blob.BucketFromTime(date), sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs protocolLogBuffer
+	s.be.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	if err := os.Truncate(path, int64(len(appendRawMsg)-10)); err != nil {
+		t.Fatal(err)
+	}
+	br, conn := featureWire(t, s)
+	if got := featureCommand(t, br, conn, "s1", "SELECT INBOX"); !strings.Contains(got, "s1 OK") {
+		t.Fatal(got)
+	}
+	if got := featureCommand(t, br, conn, "f1", "FETCH 1 (BODY.PEEK[1])"); !strings.Contains(got, "f1 NO [SERVERBUG]") {
+		t.Fatal(got)
+	}
+	if !strings.Contains(logs.String(), "db_size=") || !strings.Contains(logs.String(), "disk_size=") {
+		t.Fatal(logs.String())
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := featureCommand(t, br, conn, "f2", "FETCH 1 (ENVELOPE)"); !strings.Contains(got, "f2 NO [SERVERBUG]") {
+		t.Fatal(got)
+	}
+	if !strings.Contains(logs.String(), "FETCH envelope blob unreadable") || !strings.Contains(logs.String(), "sha16=") {
+		t.Fatal(logs.String())
+	}
+}
+
+type protocolLogBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *protocolLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+func (b *protocolLogBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.b.String() }
