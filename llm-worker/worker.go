@@ -262,7 +262,7 @@ func (w *Worker) annotatePass(ctx context.Context, vocab *vocabCache, round roun
 		if w.cfg.Classify.Enabled {
 			v = vocab.get(ctx, msg.Mailbox)
 		}
-		annotated, classified, err := w.processMessage(ctx, msg, v)
+		annotated, classified, err := w.processMessage(ctx, msg, v, vocab)
 		if annotated {
 			stats.Annotated++
 			metricMessagesAnnotated.Add(1)
@@ -335,7 +335,7 @@ func (w *Worker) shouldSkip(msg Message) bool {
 // processMessage annotates one message and, when v is non-nil, classifies it
 // in the same request. Each boolean records the corresponding successful PUT
 // (annotation also counts simulated dry-run work, as before).
-func (w *Worker) processMessage(ctx context.Context, msg Message, v *archiveVocabulary) (annotated, classified bool, err error) {
+func (w *Worker) processMessage(ctx context.Context, msg Message, v *archiveVocabulary, vocab *vocabCache) (annotated, classified bool, err error) {
 	var (
 		ann  LLMAnnotation
 		resp *chatResponse
@@ -390,9 +390,7 @@ func (w *Worker) processMessage(ctx context.Context, msg Message, v *archiveVoca
 	// fails is still annotated and is picked up by the classification pass
 	// rather than re-annotated.
 	cput := ClassificationPut{Category: ann.ArchiveCategory, Confidence: *ann.ArchiveConfidence, Model: w.cfg.Worker.AnnotationModel}
-	if err := w.withRetry(ctx, func() error {
-		return w.mail.PutClassification(ctx, msg.ID, cput)
-	}); err != nil {
+	if err := w.putClassification(ctx, msg, cput, vocab); err != nil {
 		return true, false, fmt.Errorf("classification: %w", err)
 	}
 	return true, true, nil
@@ -438,7 +436,12 @@ func (w *Worker) classifyPass(ctx context.Context, vocab *vocabCache, processed 
 				return nil
 			}
 			attempted[msg.ID] = struct{}{}
-			err := w.classifyMessage(ctx, msg, v)
+			v = vocab.get(ctx, mailbox)
+			if v == nil {
+				stats.Skipped++
+				return nil
+			}
+			err := w.classifyMessage(ctx, msg, v, vocab)
 			w.noteOutcome(msg.ID, true, err)
 			if err != nil {
 				stats.Failed++
@@ -483,7 +486,7 @@ func (w *Worker) classifyPass(ctx context.Context, vocab *vocabCache, processed 
 	return stats, nil
 }
 
-func (w *Worker) classifyMessage(ctx context.Context, msg Message, v *archiveVocabulary) error {
+func (w *Worker) classifyMessage(ctx context.Context, msg Message, v *archiveVocabulary, vocab *vocabCache) error {
 	var cl LLMClassification
 	err := w.withSmallerBodies(ctx, msg.ID, w.cfg.Classify.MaxBodyChars, func(maxBody int) error {
 		prompt := buildClassifyPrompt(w.cfg, msg, v, maxBody)
@@ -502,9 +505,24 @@ func (w *Worker) classifyMessage(ctx context.Context, msg Message, v *archiveVoc
 		return nil
 	}
 	put := ClassificationPut{Category: cl.ArchiveCategory, Confidence: *cl.ArchiveConfidence, Model: w.cfg.Worker.AnnotationModel}
-	return w.withRetry(ctx, func() error {
-		return w.mail.PutClassification(ctx, msg.ID, put)
-	})
+	return w.putClassification(ctx, msg, put, vocab)
+}
+
+// putClassification refreshes a rejected vocabulary immediately. Retry the
+// already inferred key once only if it remains valid in the fresh list.
+func (w *Worker) putClassification(ctx context.Context, msg Message, put ClassificationPut, vocab *vocabCache) error {
+	send := func() error { return w.mail.PutClassification(ctx, msg.ID, put) }
+	err := w.withRetry(ctx, send)
+	var status *HTTPStatusError
+	if vocab == nil || !errors.As(err, &status) || status.StatusCode != http.StatusUnprocessableEntity {
+		return err
+	}
+	delete(vocab.byMailbox, msg.Mailbox)
+	fresh := vocab.get(ctx, msg.Mailbox)
+	if fresh == nil || !fresh.has(put.Category) {
+		return err
+	}
+	return w.withRetry(ctx, send)
 }
 
 // maxStreamReconnects bounds how many times one pass reopens an export that

@@ -96,13 +96,16 @@ func TestDecodeArchiveAnswers(t *testing.T) {
 // fakeStore is an in-memory epistula-api for worker passes: two mailboxes, only
 // jdoe with archive categories, plus the LM Studio side.
 type fakeStore struct {
-	mu              sync.Mutex
-	messages        map[int64]Message
-	annotated       map[int64]bool
-	classified      map[int64]string
-	categoriesDown  bool
-	schemasSeen     map[string]int
-	classifyRejects int
+	mu                 sync.Mutex
+	messages           map[int64]Message
+	annotated          map[int64]bool
+	classified         map[int64]string
+	categoriesDown     bool
+	schemasSeen        map[string]int
+	classifyRejects    int
+	retireKey          string
+	retireAfter        int
+	classificationPuts int
 	// queued is the annotation pass queue (epistula-database migration 022);
 	// queueDown answers for it the way a epistula-api without it does.
 	queued    map[int64]bool
@@ -136,7 +139,16 @@ func (s *fakeStore) mailAPI(t *testing.T) http.Handler {
 				return
 			}
 			if strings.Contains(r.URL.Path, "/jdoe/") {
-				fmt.Fprint(w, `{"categories":[{"key":"finance/banking","folder":"Archive/Finance/Banking"},{"key":"travel","folder":"Archive/Travel"}]}`)
+				cats := append([]ArchiveCategory(nil), testVocab.Categories...)
+				if s.retireKey != "" && s.classificationPuts >= s.retireAfter {
+					cats = nil
+					for _, cat := range testVocab.Categories {
+						if cat.Key != s.retireKey {
+							cats = append(cats, cat)
+						}
+					}
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"categories": cats})
 			} else {
 				fmt.Fprint(w, `{"categories":[]}`)
 			}
@@ -176,7 +188,9 @@ func (s *fakeStore) mailAPI(t *testing.T) http.Handler {
 			if err := json.NewDecoder(r.Body).Decode(&put); err != nil {
 				t.Errorf("decode classification: %v", err)
 			}
-			if s.messages[id].Mailbox != "jdoe" {
+			retired := s.retireKey != "" && s.classificationPuts >= s.retireAfter && put.Category == s.retireKey
+			s.classificationPuts++
+			if s.messages[id].Mailbox != "jdoe" || retired {
 				s.classifyRejects++
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				return
@@ -226,7 +240,12 @@ func (s *fakeStore) lmStudio(t *testing.T) http.Handler {
 		var req struct {
 			ResponseFormat struct {
 				JSONSchema struct {
-					Name string `json:"name"`
+					Name   string `json:"name"`
+					Schema struct {
+						Properties map[string]struct {
+							Enum []string `json:"enum"`
+						} `json:"properties"`
+					} `json:"schema"`
 				} `json:"json_schema"`
 			} `json:"response_format"`
 		}
@@ -249,6 +268,23 @@ func (s *fakeStore) lmStudio(t *testing.T) http.Handler {
 			answer = `{"archive_category":"finance/banking","archive_confidence":0.75}`
 		default:
 			t.Errorf("unexpected schema %q", name)
+		}
+		// Model respects the schema's current enum after a category retirement.
+		keys := req.ResponseFormat.JSONSchema.Schema.Properties["archive_category"].Enum
+		if len(keys) > 0 {
+			var decoded map[string]any
+			_ = json.Unmarshal([]byte(answer), &decoded)
+			found := false
+			for _, key := range keys {
+				if key == decoded["archive_category"] {
+					found = true
+				}
+			}
+			if !found {
+				decoded["archive_category"] = keys[0]
+				b, _ := json.Marshal(decoded)
+				answer = string(b)
+			}
 		}
 		if garbled {
 			answer = "not json"
@@ -479,5 +515,33 @@ func TestVocabCacheRefreshes(t *testing.T) {
 	c.get(ctx, "jdoe")
 	if fetches != before {
 		t.Fatal("a failed refresh is retried on every message")
+	}
+}
+
+func TestClassificationRefreshesRetiredCategory(t *testing.T) {
+	for _, combined := range []bool{false, true} {
+		t.Run(fmt.Sprint(combined), func(t *testing.T) {
+			s := newFakeStore()
+			s.retireAfter = 1
+			s.retireKey = "finance/banking"
+			if combined {
+				s.retireKey = "travel"
+			}
+			for id := int64(1); id <= 8; id++ {
+				s.messages[id] = Message{ID: id, Mailbox: "jdoe", Folder: "INBOX"}
+				s.annotated[id] = !combined
+			}
+			w := newClassifyWorker(t, s)
+			stats, err := w.RunOnce(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s.classifyRejects != 1 {
+				t.Fatalf("rejects=%d stats=%+v", s.classifyRejects, stats)
+			}
+			if s.classified[8] == s.retireKey || s.classified[8] == "" {
+				t.Fatalf("last classification=%q", s.classified[8])
+			}
+		})
 	}
 }
