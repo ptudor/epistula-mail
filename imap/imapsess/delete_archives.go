@@ -43,17 +43,16 @@ type deleteArchiveTarget struct {
 }
 
 // deleteArchiveTarget returns nil when EXPUNGE in the selected folder
-// destroys as usual: the feature is off, the folder is \Trash, \Drafts or
-// \Junk, or the mailbox has no \Archive folder to archive into.
+// destroys as usual: the feature is off, the folder is in the \Trash,
+// \Drafts or \Junk subtree, or the mailbox has no \Archive folder to archive into.
 func (s *Session) deleteArchiveTarget(ctx context.Context, tx pgx.Tx) (*deleteArchiveTarget, error) {
 	if !s.be.DeleteArchives {
 		return nil, nil
 	}
 	var name string
-	var special *string
 	if err := tx.QueryRow(ctx,
-		`SELECT name, special_use FROM folders WHERE id = $1`, s.selectedFolderID,
-	).Scan(&name, &special); err != nil {
+		`SELECT name FROM folders WHERE id = $1`, s.selectedFolderID,
+	).Scan(&name); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// The folder was deleted under the session; the EXPUNGE that
 			// follows finds nothing to do either.
@@ -61,11 +60,15 @@ func (s *Session) deleteArchiveTarget(ctx context.Context, tx pgx.Tx) (*deleteAr
 		}
 		return nil, err
 	}
-	if special != nil {
-		switch *special {
-		case `\Trash`, `\Drafts`, `\Junk`:
-			return nil, nil
-		}
+	var destructiveRole bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM folders WHERE mailbox_id=$1 AND special_use=ANY($3::text[])
+		 AND (name=$2 OR left($2, char_length(name)+1)=name||'/'))`,
+		s.mailboxID, name, []string{`\Trash`, `\Drafts`, `\Junk`}).Scan(&destructiveRole); err != nil {
+		return nil, err
+	}
+	if destructiveRole {
+		return nil, nil
 	}
 	root, err := storage.FindSpecialUseFolder(ctx, tx, s.mailboxID, `\Archive`)
 	if errors.Is(err, storage.ErrNotFound) {

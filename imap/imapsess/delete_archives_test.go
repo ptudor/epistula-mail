@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/emersion/go-imap/v2"
 )
 
 // The delete-archives rule (delete_archives.go): with the feature on, EXPUNGE
@@ -218,5 +220,45 @@ func TestDeleteArchivesHonoursConcurrentUndelete(t *testing.T) {
 	}
 	if got := folderOfMessageWithSHA(t, sess, 3); len(got) != 1 || got[0] != "Archive" {
 		t.Fatalf("uid 3 is in %v, want Archive", got)
+	}
+}
+
+func TestDeleteArchivesRoleSubfoldersDestroy(t *testing.T) {
+	for _, role := range []string{`\Trash`, `\Drafts`, `\Junk`} {
+		t.Run(role, func(t *testing.T) {
+			s := mutationFixture(t)
+			defer s.Close()
+			s.be.DeleteArchives = true
+			addFolder(t, s, "Archive", `\Archive`)
+			addFolder(t, s, "Deleted Messages", role)
+			if _, err := s.be.Pool.Exec(context.Background(), `UPDATE folders SET name='Deleted Messages/Old' WHERE id=$1`, s.selectedFolderID); err != nil {
+				t.Fatal(err)
+			}
+			s.selectedFolderName = "Deleted Messages/Old"
+			if err := s.Expunge(nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			if got := folderOfMessageWithSHA(t, s, 3); len(got) != 0 {
+				t.Fatal(got)
+			}
+		})
+	}
+}
+
+func TestDeleteArchivesUIDExpungeSubset(t *testing.T) {
+	s := mutationFixture(t)
+	defer s.Close()
+	s.be.DeleteArchives = true
+	addFolder(t, s, "Archive", `\Archive`)
+	setFlags(t, s, 1, []string{`\Deleted`})
+	uids := imap.UIDSetNum(3)
+	if err := s.Expunge(nil, &uids); err != nil {
+		t.Fatal(err)
+	}
+	if !messageExists(t, s, s.selectedFolderID, 1) {
+		t.Fatal("unrequested UID was expunged")
+	}
+	if got := folderOfMessageWithSHA(t, s, 3); len(got) != 1 || got[0] != "Archive" {
+		t.Fatal(got)
 	}
 }

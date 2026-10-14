@@ -265,6 +265,10 @@ What the server does with a delete, in detail (`delete_archives`):
   INBOX. Undo within that window keeps it.
 - A mailbox with no `\Archive` folder keeps plain IMAP behaviour.
 
+EXPUNGE in a Trash, Drafts or Junk subfolder destroys messages just as it does
+in the role's own folder. Automatic retention purge covers only the exact
+\Trash folder; subfolders require an explicit EXPUNGE or a move to that folder.
+
 ## What "deleted" means
 
 When a message is purged, its row goes, and with it (by cascade) its
