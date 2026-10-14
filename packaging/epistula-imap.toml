@@ -43,6 +43,7 @@ root = "/var/spool/epistula-database"
 group_writable = true
 
 [limits]
+max_connections         = 1024     # global TCP ceiling before TLS; at most 64 concurrent handshakes
 # These count simultaneous IMAP connections, not devices. Mail clients may
 # keep several connections open per account for folder sync and IDLE.
 per_ip_connections      = 30

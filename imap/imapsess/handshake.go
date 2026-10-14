@@ -30,17 +30,22 @@ type TLSHandshakeListener struct {
 	errs  chan error
 	done  chan struct{}
 	once  sync.Once
+	slots chan struct{}
 }
 
 // NewTLSHandshakeListener wraps inner with eager-handshake enforcement.
 // A non-positive timeout falls back to 10 seconds — this listener exists
 // to bound the handshake, so "unbounded" is never a valid configuration.
-func NewTLSHandshakeListener(inner net.Listener, timeout time.Duration, logger *slog.Logger) *TLSHandshakeListener {
+func NewTLSHandshakeListener(inner net.Listener, timeout time.Duration, logger *slog.Logger, maxConcurrent ...int) *TLSHandshakeListener {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
 	if logger == nil {
 		logger = slog.Default()
+	}
+	bound := 64
+	if len(maxConcurrent) > 0 && maxConcurrent[0] > 0 {
+		bound = maxConcurrent[0]
 	}
 	l := &TLSHandshakeListener{
 		inner:   inner,
@@ -49,6 +54,7 @@ func NewTLSHandshakeListener(inner net.Listener, timeout time.Duration, logger *
 		conns:   make(chan net.Conn),
 		errs:    make(chan error, 1),
 		done:    make(chan struct{}),
+		slots:   make(chan struct{}, bound),
 	}
 	go l.acceptLoop()
 	return l
@@ -82,7 +88,13 @@ func (l *TLSHandshakeListener) acceptLoop() {
 			return
 		}
 		delay = 0
-		go l.handshakeAndDeliver(c)
+		select {
+		case l.slots <- struct{}{}:
+			go func() { defer func() { <-l.slots }(); l.handshakeAndDeliver(c) }()
+		default:
+			metricLimiterRejections.WithLabelValues("tls_handshake_limit").Inc()
+			_ = c.Close()
+		}
 	}
 }
 

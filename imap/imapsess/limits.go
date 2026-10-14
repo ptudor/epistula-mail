@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -302,17 +303,23 @@ func remoteIP(addr net.Addr) string {
 // Close on the returned listener also closes the underlying listener.
 type LimitedListener struct {
 	net.Listener
-	limiter *PerIPLimiter
-	logger  *slog.Logger
+	limiter        *PerIPLimiter
+	logger         *slog.Logger
+	maxConnections int64
+	active         atomic.Int64
 }
 
 // NewLimitedListener wraps inner with a per-IP cap. If limiter is nil or
 // has a non-positive cap, the wrapper just passes through.
-func NewLimitedListener(inner net.Listener, limiter *PerIPLimiter, logger *slog.Logger) *LimitedListener {
+func NewLimitedListener(inner net.Listener, limiter *PerIPLimiter, logger *slog.Logger, maxConnections ...int) *LimitedListener {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &LimitedListener{Listener: inner, limiter: limiter, logger: logger}
+	limit := int64(0)
+	if len(maxConnections) > 0 {
+		limit = int64(maxConnections[0])
+	}
+	return &LimitedListener{Listener: inner, limiter: limiter, logger: logger, maxConnections: limit}
 }
 
 // Accept loops until it returns a permitted connection or the inner
@@ -325,9 +332,25 @@ func (l *LimitedListener) Accept() (net.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
+		var global *atomic.Int64
+		if l.maxConnections > 0 {
+			if l.active.Add(1) > l.maxConnections {
+				l.active.Add(-1)
+				c.SetWriteDeadline(time.Now().Add(time.Second))
+				_, _ = c.Write([]byte("* BYE Too many connections\r\n"))
+				_ = c.Close()
+				metricLimiterRejections.WithLabelValues("global_connections").Inc()
+				l.logger.Warn("connection refused: global cap")
+				continue
+			}
+			global = &l.active
+		}
 		ip := remoteIP(c.RemoteAddr())
 		if ip == "" || l.limiter.Acquire(ip) {
-			return &limitedConn{Conn: c, limiter: l.limiter, ip: ip}, nil
+			return &limitedConn{Conn: c, limiter: l.limiter, ip: ip, global: global}, nil
+		}
+		if global != nil {
+			global.Add(-1)
 		}
 		_, _ = c.Write([]byte("* BYE Too many connections from your IP\r\n"))
 		_ = c.Close()
@@ -343,12 +366,16 @@ type limitedConn struct {
 	limiter   *PerIPLimiter
 	ip        string
 	closeOnce sync.Once
+	global    *atomic.Int64
 }
 
 func (c *limitedConn) Close() error {
 	err := c.Conn.Close()
 	c.closeOnce.Do(func() {
 		c.limiter.Release(c.ip)
+		if c.global != nil {
+			c.global.Add(-1)
+		}
 	})
 	return err
 }

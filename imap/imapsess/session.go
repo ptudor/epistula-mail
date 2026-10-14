@@ -105,7 +105,10 @@ type Backend struct {
 	// stop accepting, wait for this to reach zero (with timeout), then
 	// close the PG pool. Incremented at session creation, decremented
 	// exactly once in Session.Close.
-	active atomic.Int64
+	active         atomic.Int64
+	shutdownOnce   sync.Once
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
 }
 
 // ActiveSessions returns the number of sessions currently open.
@@ -164,7 +167,8 @@ type Session struct {
 
 	// closed makes Close idempotent so the backend's active-session
 	// counter is decremented exactly once per session.
-	closed bool
+	closed    bool
+	closeDone chan struct{}
 
 	// sessCtx is cancelled when the session closes. Work that queues on a
 	// shared resource on this session's behalf — waiting for authentication
@@ -226,14 +230,43 @@ func (b *Backend) NewSession() *Session {
 // lifetime context.
 func (b *Backend) newSession(remoteIP string) *Session {
 	b.active.Add(1)
-	ctx, cancel := context.WithCancel(context.Background())
+	b.initShutdown()
+	ctx, cancel := context.WithCancel(b.shutdownCtx)
 	return &Session{
 		be:         b,
 		remoteIP:   remoteIP,
 		cmdLimiter: newTokenBucket(b.CommandRatePerSec),
 		sessCtx:    ctx,
 		sessCancel: cancel,
+		closeDone:  make(chan struct{}),
 	}
+}
+
+func (b *Backend) initShutdown() {
+	b.shutdownOnce.Do(func() { b.shutdownCtx, b.shutdownCancel = context.WithCancel(context.Background()) })
+}
+
+// BeginShutdown cancels session work. Protocol sessions send BYE after any
+// command holding their state lock finishes; the caller retains its drain bound.
+func (b *Backend) BeginShutdown() { b.initShutdown(); b.shutdownCancel() }
+
+// NewSessionForIMAPConn enables protocol-aware shutdown without interleaving
+// BYE into a command response. Conn.Bye serializes its write and closes the socket.
+func (b *Backend) NewSessionForIMAPConn(conn *imapserver.Conn) *Session {
+	s := b.NewSessionForNetConn(conn.NetConn())
+	go func() {
+		select {
+		case <-b.shutdownCtx.Done():
+			s.stateMu.Lock()
+			closed := s.closed
+			s.stateMu.Unlock()
+			if !closed {
+				_ = conn.Bye("server shutting down")
+			}
+		case <-s.closeDone:
+		}
+	}()
+	return s
 }
 
 // NewSessionForConn returns a session annotated with the client's
@@ -299,6 +332,9 @@ func (s *Session) Close() error {
 		return nil
 	}
 	s.closed = true
+	if s.closeDone != nil {
+		close(s.closeDone)
+	}
 	if s.pacing.pending() {
 		s.logPacing(slog.LevelInfo, "command burst paced")
 	}

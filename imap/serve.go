@@ -178,6 +178,7 @@ func runServe(args []string) int {
 // whatever remains when the timeout expires. A zero or negative timeout
 // force-closes immediately.
 func drainSessions(backend *imapsess.Backend, forceClose func(), timeout time.Duration) {
+	backend.BeginShutdown()
 	deadline := time.Now().Add(timeout)
 	for backend.ActiveSessions() > 0 && time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
@@ -268,7 +269,7 @@ func startIMAPListener(ctx context.Context, cfg *Config, backend *imapsess.Backe
 
 	srv := imapserver.New(&imapserver.Options{
 		NewSession: func(c *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-			return backend.NewSessionForNetConn(c.NetConn()), &imapserver.GreetingData{
+			return backend.NewSessionForIMAPConn(c), &imapserver.GreetingData{
 				PreAuth: false,
 			}, nil
 		},
@@ -291,7 +292,7 @@ func startIMAPListener(ctx context.Context, cfg *Config, backend *imapsess.Backe
 			return nil, fmt.Errorf("listen %s: %w", cfg.Server.ListenAddr, err)
 		}
 		slog.Warn("IMAP listener accepting cleartext (accept_insecure_for_dev=true)")
-		ln = imapsess.NewLimitedListener(raw, backend.PerIP, slog.Default())
+		ln = imapsess.NewLimitedListener(raw, backend.PerIP, slog.Default(), cfg.Limits.MaxConnections)
 	} else {
 		if cfg.Server.AcceptInsecure {
 			slog.Warn("accept_insecure_for_dev=true but tls_cert is set; serving TLS (clear tls_cert for a cleartext dev listener)")
@@ -311,11 +312,11 @@ func startIMAPListener(ctx context.Context, cfg *Config, backend *imapsess.Backe
 		if err != nil {
 			return nil, fmt.Errorf("listen %s: %w", cfg.Server.ListenAddr, err)
 		}
-		limited := imapsess.NewLimitedListener(raw, backend.PerIP, slog.Default())
+		limited := imapsess.NewLimitedListener(raw, backend.PerIP, slog.Default(), cfg.Limits.MaxConnections)
 		ln = imapsess.NewTLSHandshakeListener(
 			tls.NewListener(limited, tlsCfg),
 			mustParseDuration(cfg.Limits.TLSHandshakeTimeout, 10*time.Second),
-			slog.Default(),
+			slog.Default(), min(64, cfg.Limits.MaxConnections),
 		)
 
 		// SIGHUP → certificate reload, for Let's Encrypt renewals. A

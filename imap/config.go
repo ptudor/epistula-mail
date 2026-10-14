@@ -75,6 +75,7 @@ type StorageConfig struct {
 }
 
 type LimitsConfig struct {
+	MaxConnections        int   `toml:"max_connections"`
 	MaxMessageBytes       int64 `toml:"max_message_bytes"`
 	MaxMimeDepth          int   `toml:"max_mime_depth"`
 	MaxMimeParts          int   `toml:"max_mime_parts"`
@@ -188,6 +189,7 @@ func DefaultConfig() *Config {
 			Root: "/var/spool/epistula-database",
 		},
 		Limits: LimitsConfig{
+			MaxConnections:        1024,
 			MaxMessageBytes:       ingest.DefaultLimits().MaxMessageBytes,
 			MaxMimeDepth:          ingest.DefaultLimits().MaxMimeDepth,
 			MaxMimeParts:          ingest.DefaultLimits().MaxMimeParts,
@@ -459,6 +461,9 @@ func (c *Config) Validate() error {
 	if c.Postgres.MaxIdleConns > c.Postgres.MaxOpenConns {
 		return fmt.Errorf("postgres.max_idle_conns (%d) must not exceed postgres.max_open_conns (%d)",
 			c.Postgres.MaxIdleConns, c.Postgres.MaxOpenConns)
+	}
+	if c.Limits.MaxConnections < 1 {
+		return fmt.Errorf("limits.max_connections must be at least 1")
 	}
 	// A dedicated LISTEN pool prevents IDLE from occupying every query slot.
 	if c.Postgres.IdleConns < 1 {

@@ -16,7 +16,7 @@ func featureWire(t *testing.T, fixture *Session) (*bufio.Reader, net.Conn) {
 	t.Helper()
 	srv := imapserver.New(&imapserver.Options{
 		NewSession: func(c *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-			s := fixture.be.NewSessionForNetConn(c.NetConn())
+			s := fixture.be.NewSessionForIMAPConn(c)
 			s.mailboxID = fixture.mailboxID
 			s.mailboxName = fixture.mailboxName
 			s.tenant = fixture.tenant
@@ -90,4 +90,36 @@ func TestAppendLimitRefusesBeforeContinuation(t *testing.T) {
 	if !strings.HasPrefix(line, "a1 NO [TOOBIG]") {
 		t.Fatalf("unexpected continuation/refusal: %s", line)
 	}
+}
+
+func TestShutdownNotifiesIdleOnWire(t *testing.T) {
+	fixture := mutationFixture(t)
+	br, conn := featureWire(t, fixture)
+	fixture.Close() // only the wire session remains active
+	if got := featureCommand(t, br, conn, "s1", "SELECT INBOX"); !strings.Contains(got, "s1 OK") {
+		t.Fatal(got)
+	}
+	fmt.Fprint(conn, "i1 IDLE\r\n")
+	if line, err := br.ReadString('\n'); err != nil || !strings.HasPrefix(line, "+") {
+		t.Fatalf("IDLE %q %v", line, err)
+	}
+	start := time.Now()
+	fixture.be.BeginShutdown()
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(line, "* BYE server shutting down") {
+			break
+		}
+	}
+	deadline := start.Add(time.Second)
+	for fixture.be.ActiveSessions() != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if fixture.be.ActiveSessions() != 0 {
+		t.Fatal("IDLE session did not close during drain")
+	}
+	t.Logf("BYE and session closure in %s", time.Since(start))
 }
