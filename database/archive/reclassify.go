@@ -133,8 +133,8 @@ func Reclassify(ctx context.Context, db *storage.DB, mailboxID int64, opts Recla
 			if err != nil {
 				return stats, fmt.Errorf("refile to %q: %w", root.Name, err)
 			}
-			stats.Refiled += n
-			stats.MovedSince += len(chunk) - n
+			stats.Refiled += len(n)
+			stats.MovedSince += len(chunk) - len(n)
 			if err := gin.flush(ctx); err != nil {
 				return stats, err
 			}

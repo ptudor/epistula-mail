@@ -267,6 +267,12 @@ func lookupFolderTx(ctx context.Context, tx pgx.Tx, mailboxID int64, name string
 	return f, nil
 }
 
+// LockMailbox serializes a caller's checks with the message move/purge that
+// follows in the same transaction, preserving the canonical lock order.
+func LockMailbox(ctx context.Context, tx pgx.Tx, mailboxID int64) error {
+	return lockMailboxRow(ctx, tx, mailboxID)
+}
+
 // lockMailboxRow takes level 1 of the canonical lock order, the mailbox row
 // FOR UPDATE, and reports ErrNotFound when the mailbox no longer exists.
 func lockMailboxRow(ctx context.Context, tx pgx.Tx, mailboxID int64) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 
 	"github.com/jackc/pgx/v5"
@@ -137,6 +138,8 @@ func MergeFolders(ctx context.Context, db *storage.DB, mailboxID int64, opts Mer
 	for _, src := range sources {
 		var moves []Move
 		var dups []int64
+		planned := map[string]bool{}
+		moveSHA := map[int64]string{}
 		rows, err := db.Pool().Query(ctx,
 			`SELECT id, encode(raw_sha256, 'hex') FROM messages WHERE folder_id = $1 ORDER BY internal_date, id`, src.id)
 		if err != nil {
@@ -149,11 +152,15 @@ func MergeFolders(ctx context.Context, db *storage.DB, mailboxID int64, opts Mer
 				rows.Close()
 				return stats, fmt.Errorf("scan %q: %w", src.name, err)
 			}
-			if inDest[sha] {
+			if inDest[sha] || planned[sha] {
 				dups = append(dups, id)
 				continue
 			}
-			inDest[sha] = true
+			planned[sha] = true
+			moveSHA[id] = sha
+			if opts.DryRun {
+				inDest[sha] = true
+			}
 			moves = append(moves, Move{MessageID: id, FromFolderID: src.id, FromFolder: src.name, ToFolder: opts.To})
 		}
 		rows.Close()
@@ -170,7 +177,10 @@ func MergeFolders(ctx context.Context, db *storage.DB, mailboxID int64, opts Mer
 				if err != nil {
 					return stats, fmt.Errorf("move from %q: %w", src.name, err)
 				}
-				entry.Moved += n
+				entry.Moved += len(n)
+				for _, id := range n {
+					inDest[moveSHA[id]] = true
+				}
 				if err := gin.flush(ctx); err != nil {
 					return stats, err
 				}
@@ -180,14 +190,51 @@ func MergeFolders(ctx context.Context, db *storage.DB, mailboxID int64, opts Mer
 				for start := 0; start < len(dups); start += opts.BatchSize {
 					chunk := dups[start:min(start+opts.BatchSize, len(dups))]
 					var res storage.PurgeResult
+					var skipped []int64
 					if err := db.RunTx(ctx, func(tx pgx.Tx) error {
-						var err error
-						res, err = storage.PurgeMessages(ctx, tx, mailboxID, chunk, false)
+						if err := storage.LockMailbox(ctx, tx, mailboxID); err != nil {
+							return err
+						}
+						// Re-resolve To and surviving copies under the mailbox lock.
+						rows, err := tx.Query(ctx, `SELECT m.id FROM messages m
+						 JOIN folders f ON f.id=m.folder_id
+						 WHERE f.mailbox_id=$1 AND m.id=ANY($2)
+						 AND EXISTS (SELECT 1 FROM messages d JOIN folders df ON df.id=d.folder_id
+						 WHERE df.mailbox_id=$1 AND df.name=$3 AND d.raw_sha256=m.raw_sha256 AND d.id<>m.id)`, mailboxID, chunk, opts.To)
+						if err != nil {
+							return err
+						}
+						var safe []int64
+						kept := map[int64]bool{}
+						for rows.Next() {
+							var id int64
+							if err := rows.Scan(&id); err != nil {
+								rows.Close()
+								return err
+							}
+							safe = append(safe, id)
+							kept[id] = true
+						}
+						rows.Close()
+						if err := rows.Err(); err != nil {
+							return err
+						}
+						skipped = nil
+						for _, id := range chunk {
+							if !kept[id] {
+								skipped = append(skipped, id)
+							}
+						}
+						res, err = storage.PurgeMessages(ctx, tx, mailboxID, safe, false)
 						return err
 					}); err != nil {
 						return stats, fmt.Errorf("drop duplicates from %q: %w", src.name, err)
 					}
 					stats.Dropped += int(res.Messages)
+					stats.Skipped += len(skipped)
+					if len(skipped) > 0 {
+						slog.Warn("merge skipped duplicate rows without a surviving destination copy", "message_ids", skipped, "destination", opts.To)
+					}
 				}
 			}
 		}

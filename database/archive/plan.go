@@ -459,8 +459,8 @@ func Apply(ctx context.Context, db *storage.DB, plan *Plan, opts ApplyOptions) (
 		if err != nil {
 			return stats, fmt.Errorf("move %d message(s) to %q: %w", len(chunk), chunk[0].ToFolder, err)
 		}
-		stats.Moved += moved
-		stats.Skipped += len(chunk) - moved
+		stats.Moved += len(moved)
+		stats.Skipped += len(chunk) - len(moved)
 		stats.Transactions++
 		start = end
 		if err := gin.flush(ctx); err != nil {
@@ -495,14 +495,14 @@ func mergeDestination(specialUse string) bool { return specialUse != `\Trash` }
 
 // moveAndJournal moves one same-destination chunk and journals what moved, in
 // one transaction.
-func moveAndJournal(ctx context.Context, db *storage.DB, mailboxID int64, chunk []Move, batch, reason string, allowed destinationRule) (int, error) {
+func moveAndJournal(ctx context.Context, db *storage.DB, mailboxID int64, chunk []Move, batch, reason string, allowed destinationRule) ([]int64, error) {
 	items := make([]storage.MoveItem, len(chunk))
 	byID := make(map[int64]Move, len(chunk))
 	for i, m := range chunk {
 		items[i] = storage.MoveItem{ID: m.MessageID, FromFolderID: m.FromFolderID}
 		byID[m.MessageID] = m
 	}
-	var moved int
+	var moved []int64
 	err := db.RunTx(ctx, func(tx pgx.Tx) error {
 		// Categories are validated when imported, but a destination can be a
 		// year folder below one, or a folder given a role since: the
@@ -523,7 +523,10 @@ func moveAndJournal(ctx context.Context, db *storage.DB, mailboxID int64, chunk 
 		if err != nil {
 			return err
 		}
-		moved = len(done)
+		moved = nil
+		for _, d := range done {
+			moved = append(moved, d.ID)
+		}
 		if len(done) == 0 {
 			return nil
 		}
@@ -553,7 +556,7 @@ func moveAndJournal(ctx context.Context, db *storage.DB, mailboxID int64, chunk 
 		return nil
 	})
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	return moved, nil
 }

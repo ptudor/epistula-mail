@@ -206,7 +206,7 @@ func sortMailbox(ctx context.Context, db *storage.DB, mailboxID int64, root stor
 			if err != nil {
 				return filed, fmt.Errorf("file into %q: %w", folder, err)
 			}
-			filed += moved
+			filed += len(moved)
 		}
 		if found < opts.BatchSize {
 			break
