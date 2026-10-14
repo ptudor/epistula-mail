@@ -13,10 +13,9 @@
 #   sysrc epistula_mcp_enable=YES
 #   service epistula_mcp start
 #
-# Loopback bind means http_token is optional; the moment you point epistula_mcp_addr
-# at a non-loopback interface the binary REFUSES to start without http_token set
-# in the config (it would otherwise expose a mail-reading credential). Front any
-# public endpoint with Apache/TLS, as everywhere else in this stack.
+# Every HTTP listener requires http_token, including loopback: other local
+# processes must not inherit the configured mail-reading credential.
+# Front public endpoints with a TLS reverse proxy.
 #
 # PROVIDE: epistula_mcp
 # REQUIRE: LOGIN NETWORKING
@@ -38,9 +37,8 @@ load_rc_config $name
 
 epistula_mcp_program="/usr/local/bin/epistula-mcp"
 
-# daemon(8) supervises (-r) and restarts on unexpected exit, dropping to the
-# service user. status/stop target the CHILD via its pidfile; stop signals the
-# supervisor so its restart loop ends, then it forwards SIGTERM to the child.
+# daemon(8) drops to the service user and tracks the child without restarting
+# permanent configuration failures. status/stop use its pidfiles.
 command="/usr/sbin/daemon"
 procname="${epistula_mcp_program}"
 pidfile="${epistula_mcp_rundir}/${name}.pid"
@@ -50,8 +48,8 @@ start_cmd="${name}_start"
 stop_cmd="${name}_stop"
 
 epistula_mcp_start() {
-	if [ ! -f "${epistula_mcp_config}" ]; then
-		echo "epistula-mcp: config not found: ${epistula_mcp_config}" >&2
+	if ! su -m "${epistula_mcp_user}" -c 'test -r "$1"' sh "${epistula_mcp_config}"; then
+		echo "epistula-mcp: config not readable by ${epistula_mcp_user}: ${epistula_mcp_config}" >&2
 		return 1
 	fi
 	if [ -f "${pidfile}" ] && pgrep -F "${pidfile}" "epistula-mcp" >/dev/null 2>&1; then
@@ -59,15 +57,20 @@ epistula_mcp_start() {
 		return 1
 	fi
 	install -d -o "${epistula_mcp_user}" -g "${epistula_mcp_user}" -m 0755 "${epistula_mcp_rundir}"
+	if [ ! -f "${epistula_mcp_logfile}" ]; then
+		install -o "${epistula_mcp_user}" -g "${epistula_mcp_user}" -m 640 /dev/null "${epistula_mcp_logfile}" || return 1
+	fi
+	chown "${epistula_mcp_user}:${epistula_mcp_user}" "${epistula_mcp_logfile}" || return 1
+	chmod 640 "${epistula_mcp_logfile}" || return 1
 	echo "Starting epistula-mcp."
-	/usr/sbin/daemon -f -r -R 5 \
+	/usr/sbin/daemon -f \
 		-P "${supervisor_pidfile}" -p "${pidfile}" \
 		-u "${epistula_mcp_user}" -o "${epistula_mcp_logfile}" \
 		"${epistula_mcp_program}" -config "${epistula_mcp_config}" -http "${epistula_mcp_addr}"
 }
 
 epistula_mcp_stop() {
-	# Signal the supervisor so its restart loop ends, but only after checking
+	# Signal the supervisor to forward shutdown, but only after checking
 	# that its pidfile names a live daemon(8): a stale pidfile must not send
 	# TERM to, or wait on, a reused unrelated PID. With the supervisor gone,
 	# signal a surviving child directly.

@@ -22,9 +22,8 @@ and 8790 (llm-worker admin); **8786** is free and is the suggested `-http` port.
 
 - `freebsd/epistula_mcp` — rc.d script for the `-http` daemon. Copy to
   `/usr/local/etc/rc.d/epistula_mcp`, `chmod 555`, then `sysrc epistula_mcp_enable=YES`
-  and `service epistula_mcp start`. Binds `127.0.0.1:8786` by default (loopback, so
-  `http_token` is optional); it refuses to bind a non-loopback `epistula_mcp_addr`
-  without `http_token` set in the config.
+  and `service epistula_mcp start`. Binds `127.0.0.1:8786` by default and requires
+  `http_token` for every HTTP listener, including loopback.
 - `launchd/net.ptudor.epistula-mcp.plist` — macOS LaunchDaemon for the same `-http`
   daemon. Install steps are in the plist header.
 
@@ -44,7 +43,7 @@ epistula-database admin api-token-add -name epistula-mcp-annotate \
     -mailboxes "jdoe" -permission write_annotation
 ```
 
-Put them in the `0600` config (`/usr/local/etc/epistula/epistula-mcp.toml`) as `token`
+Put them in the protected config (`/usr/local/etc/epistula/epistula-mcp.toml`) as `token`
 and `annotate_token`, or pass `MAIL_MCP_TOKEN` / `MAIL_MCP_ANNOTATE_TOKEN`. Each
 secret is printed once at mint time. Revoke with
 `epistula-database admin api-token-revoke`. Even a bug in this process cannot exceed a
@@ -63,8 +62,47 @@ would read as a split while the read tools still carried write scope.
 
 The `-http` transport's own `http_token` is a *separate* secret (a bearer gating
 the HTTP endpoint, not a mail credential); generate a random one, for example
-`openssl rand 24 | base64 | sed 's/[/10lO#+=]//g'`, when binding anything but
-loopback.
+`openssl rand 24 | base64 | sed 's/[/10lO#+=]//g'`, for every HTTP deployment.
+Without this credential, other local processes could use the daemon's mail access.
+
+## Service account and config access
+
+For FreeBSD, create the dedicated account, allow traversal of the shared config
+parent, then install a group-readable config. This also works when the database
+quickstart created the parent as `root:epistula-database 0750`:
+
+```sh
+pw groupadd epistula-mcp
+pw useradd epistula-mcp -g epistula-mcp -d /nonexistent -s /usr/sbin/nologin
+chmod 755 /usr/local/etc/epistula
+install -o root -g epistula-mcp -m 640 epistula-mcp.toml.example /usr/local/etc/epistula/epistula-mcp.toml
+```
+
+Set `token` and `http_token` before starting. The rc.d script checks config
+readability as the service user and provisions its logfile before dropping
+privileges. It does not restart a failed process automatically.
+
+For the macOS LaunchDaemon, create `_epistula-mcp` with an unused user/group ID.
+Inspect both lists first, and replace `600` below if that ID is already used:
+
+```sh
+dscl . -list /Users UniqueID
+dscl . -list /Groups PrimaryGroupID
+MCP_ID=600
+sudo dscl . -create /Groups/_epistula-mcp
+sudo dscl . -create /Groups/_epistula-mcp PrimaryGroupID "$MCP_ID"
+sudo dscl . -create /Users/_epistula-mcp
+sudo dscl . -create /Users/_epistula-mcp UniqueID "$MCP_ID"
+sudo dscl . -create /Users/_epistula-mcp PrimaryGroupID "$MCP_ID"
+sudo dscl . -create /Users/_epistula-mcp NFSHomeDirectory /var/empty
+sudo dscl . -create /Users/_epistula-mcp UserShell /usr/bin/false
+sudo dscl . -create /Users/_epistula-mcp Password '*'
+sudo dscl . -create /Users/_epistula-mcp IsHidden 1
+```
+
+Then follow the plist's install commands: config `root:_epistula-mcp 0640`, log
+`_epistula-mcp:_epistula-mcp 0640` at the existing path, and process umask `077`.
+A client-launched stdio process instead uses a client-owned `0600` config.
 
 ## Smoke test after install
 
@@ -74,7 +112,7 @@ loopback.
 MAIL_MCP_BASE_URL=http://127.0.0.1:8784 MAIL_MCP_TOKEN=... make smoke
 
 # -http daemon: point an MCP client at http://127.0.0.1:8786 (Authorization:
-# Bearer <http_token> if set). tools/list should return:
+# Bearer <http_token>). tools/list should return:
 #   mailboxes folders messages message message_text attachment search annotate
 ```
 

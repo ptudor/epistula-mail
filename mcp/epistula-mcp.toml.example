@@ -1,7 +1,7 @@
 # epistula-mcp configuration (TOML, never .env).
 #
-# Copy to /usr/local/etc/epistula/epistula-mcp.toml and `chmod 600` — it holds the
-# epistula-api bearer token. For the stdio path launched by an MCP client you can skip
+# Service config: root:epistula-mcp 0640 on FreeBSD; root:_epistula-mcp 0640
+# on macOS. A client-owned stdio config is 0600. It holds the epistula-api token. For the stdio path launched by an MCP client you can skip
 # the file entirely and pass everything via env (MAIL_MCP_BASE_URL / MAIL_MCP_TOKEN
 # / MAIL_MCP_HTTP_TOKEN); env overrides win over this file.
 #
@@ -20,7 +20,7 @@ base_url = "http://127.0.0.1:8784"
 # The READ token. MINT A DEDICATED TOKEN FOR THE MCP — never reuse the llm-worker's.
 # Least scope: read_metadata + read_content on exactly the mailboxes the model
 # should see, and deliberately NOT write_annotation — see annotate_token below.
-# The secret is printed once at mint time; store it here (0600) or in MAIL_MCP_TOKEN.
+# The secret is printed once at mint time; store it in the protected config or in MAIL_MCP_TOKEN.
 #
 #   epistula-database admin api-token-add -name epistula-mcp-read \
 #       -mailboxes "jdoe" -permission read_metadata -permission read_content
@@ -52,11 +52,8 @@ annotate_token = ""
 request_timeout = "30s"
 
 [mcp]
-# Bearer token gating the -http (Streamable HTTP) transport. REQUIRED before the
-# daemon will bind a non-loopback address (it refuses to expose an endpoint that
-# carries a mail-reading credential by accident); ignored on stdio and optional on
-# loopback. Clients send it as `Authorization: Bearer <token>`. Generate a
-# random one (never a placeholder), for example:
+# Bearer token required for every -http listener, including loopback; unused by stdio.
+# Clients send Authorization: Bearer <token>. Generate a random secret, for example:
 #   openssl rand 24 | base64 | sed 's/[/10lO#+=]//g'
 http_token = ""
 

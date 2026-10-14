@@ -1,10 +1,9 @@
 // HTTP client for epistula-api's /v1 surface.
 //
 // This connector never touches a database and never calls an LLM. Every tool
-// call becomes exactly one request to {base_url}/v1/..., authenticated with the
-// epistula-api bearer token in the Authorization header. There are no client-side
-// retries — a 429/503 passes through honestly and the model (or the human)
-// retries. There are no streaming endpoints in v1 (the MCP does not wrap
+// call uses {base_url}/v1/... with the bearer token in the Authorization header.
+// An older API rejecting default:N limits gets one numeric-cap retry. Other
+// errors, including 429/503, pass through for the caller to handle. There are no streaming endpoints in v1 (the MCP does not wrap
 // /v1/export), so a single http.Client with a total-deadline timeout suffices.
 // Every body is buffered under a cap: max_response_bytes for JSON and text,
 // max_attachment_bytes for an attachment's file.
@@ -267,7 +266,20 @@ func (c *client) do(ctx context.Context, method, path string, params url.Values,
 		return resp, nil, aerr
 	}
 	if resp.StatusCode >= 400 {
-		return resp, data, problemError(resp, data)
+		aerr := problemError(resp, data)
+		cap, defaultLimit := strings.CutPrefix(params.Get("limit"), "default:")
+		numericCap, capErr := strconv.Atoi(cap)
+		if defaultLimit && capErr == nil && numericCap > 0 &&
+			resp.StatusCode == http.StatusUnprocessableEntity && aerr.Detail == "limit must be a positive integer" {
+			retryParams := make(url.Values, len(params))
+			for name, values := range params {
+				retryParams[name] = append([]string(nil), values...)
+			}
+			retryParams.Set("limit", cap)
+			resp.Body.Close()
+			return c.do(ctx, method, path, retryParams, contentType, body)
+		}
+		return resp, data, aerr
 	}
 	return resp, data, nil
 }
@@ -303,6 +315,10 @@ func (c *client) send(ctx context.Context, method, path string, params url.Value
 		var nerr net.Error
 		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &nerr) && nerr.Timeout()) {
 			return nil, &apiError{Message: fmt.Sprintf("epistula-api request timed out after %s", c.http.Timeout)}
+		}
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) && urlErr.Err != nil && strings.HasPrefix(urlErr.Err.Error(), "refusing redirect") {
+			return nil, &apiError{Message: bound(urlErr.Err.Error())}
 		}
 		return nil, &apiError{Message: "epistula-api request failed: could not reach the API"}
 	}

@@ -451,12 +451,12 @@ func (t *toolset) messageListResult(data any) (*mcp.CallToolResult, any, error) 
 // message — one message in full
 // ---------------------------------------------------------------------------
 
-const messageDesc = "Use next_attachment/next_annotation as the corresponding after fields to continue metadata; use a model and its summary_next_offset to continue a long summary. Fetch one message by numeric id: subject, from/to/cc, dates, flags, " +
+const messageDesc = "Fetch one message by numeric id: subject, from/to/cc, dates, flags, " +
 	"attachment metadata (fetch a file itself with `attachment` and its part_number), " +
 	"and its ranked annotations (tags, category, summary — highest-" +
 	"priority model first, the preferred one flagged primary). The plaintext body is " +
 	"included but capped; the HTML body is never returned. For a long body use " +
-	"`message_text` to page through it. Get an id from `messages` or `search`."
+	"`message_text` to page through it. Get an id from `messages` or `search`. Use next_attachment/next_annotation as the corresponding after fields to continue metadata; use a model and its summary_next_offset to continue a long summary."
 
 type messageInput struct {
 	AttachmentAfter string `json:"attachment_after,omitempty" jsonschema:"next_attachment from the preceding metadata page"`

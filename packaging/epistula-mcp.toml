@@ -54,11 +54,8 @@ annotate_token = ""
 request_timeout = "30s"
 
 [mcp]
-# Bearer token gating the -http (Streamable HTTP) transport. REQUIRED before the
-# daemon will bind a non-loopback address (it refuses to expose an endpoint that
-# carries a mail-reading credential by accident); ignored on stdio and optional on
-# loopback. Clients send it as `Authorization: Bearer <token>`. Generate a random
-# token, for example:
+# Bearer token required for every -http listener, including loopback; unused by stdio.
+# Clients send Authorization: Bearer <token>. Generate a random secret, for example:
 #   openssl rand 24 | base64 | sed 's/[/10lO#+=]//g'
 http_token = ""
 

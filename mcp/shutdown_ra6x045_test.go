@@ -215,7 +215,7 @@ token = "tok-abc"
 `))
 	addr := freeAddr(t)
 	cmd := exec.Command(bin, "-config", cfgPath, "-http", addr)
-	cmd.Env = append(os.Environ(), "MAIL_MCP_BASE_URL=", "MAIL_MCP_TOKEN=", "MAIL_MCP_HTTP_TOKEN=")
+	cmd.Env = append(os.Environ(), "MAIL_MCP_BASE_URL=", "MAIL_MCP_TOKEN=", "MAIL_MCP_HTTP_TOKEN=test-http-secret")
 	var out strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &out

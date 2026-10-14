@@ -20,7 +20,7 @@
 //   - Streamable HTTP (-http <addr>): a long-running daemon for the rc.d/launchd
 //     case, or to give a remote MCP host one endpoint. The transport has no auth
 //     of its own, so a bearer token (http_token) gates it, and the daemon refuses
-//     to bind a non-loopback address without one — you cannot accidentally expose
+//     to start any HTTP listener without one — you cannot accidentally expose
 //     an endpoint that holds a mail-reading credential.
 package main
 
@@ -63,7 +63,8 @@ func main() {
 
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		os.Exit(EX_CONFIG)
 	}
 	readClient := newClient(cfg)
 
@@ -84,19 +85,14 @@ func main() {
 	if *httpAddr != "" {
 		var handler http.Handler = mcp.NewStreamableHTTPHandler(
 			func(*http.Request) *mcp.Server { return server }, nil)
-		switch {
-		case cfg.HTTPToken != "":
-			handler = bearerAuth(cfg.HTTPToken, handler)
-			log.Print("HTTP transport: bearer token required")
-		case isLoopbackAddr(*httpAddr):
-			log.Print("HTTP transport: no token (loopback only)")
-		default:
-			// Never expose an unauthenticated endpoint that carries a
-			// mail-reading credential on a reachable interface by accident —
-			// fail loud instead.
-			log.Fatalf("refusing to bind non-loopback address %s without http_token "+
-				"(anyone who could reach it could read mail through the epistula-api token); "+
-				"set http_token (or MAIL_MCP_HTTP_TOKEN), or bind to loopback", *httpAddr)
+		if cfg.HTTPToken == "" {
+			log.Print("HTTP transport requires http_token (or MAIL_MCP_HTTP_TOKEN), including on loopback")
+			os.Exit(EX_CONFIG)
+		}
+		handler = bearerAuth(cfg.HTTPToken, handler)
+		log.Print("HTTP transport: bearer token required")
+		if !isLoopbackAddr(*httpAddr) {
+			log.Print("HTTP transport: non-loopback plaintext listener; use a TLS reverse proxy")
 		}
 		// http.ListenAndServe uses a zero-value http.Server: no read,
 		// header, or idle deadline at all. A peer that opens a connection
@@ -125,7 +121,8 @@ func main() {
 
 		log.Printf("Streamable HTTP on %s", *httpAddr)
 		if err := serveWithDrain(srv, shutdownCtx, stop, httpDrainTimeout); err != nil {
-			log.Fatal(err)
+			log.Print(err)
+			os.Exit(EX_OSERR)
 		}
 		return
 	}

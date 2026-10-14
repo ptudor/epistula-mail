@@ -178,9 +178,9 @@ inspects or fabricates cursors.
   long-running daemon for the rc.d/launchd case or to give a remote MCP host one
   endpoint. The SDK transport has no auth of its own, so this server adds a **bearer
   token** (`http_token`): every HTTP request must carry
-  `Authorization: Bearer <http_token>`, and the daemon **refuses to bind a
-  non-loopback address unless the token is set** — you cannot accidentally expose an
-  endpoint that holds a mail-reading credential. On loopback the token is optional.
+  `Authorization: Bearer <http_token>`, and the daemon **requires the token for
+  every HTTP listener, including loopback**. Local processes must authenticate
+  before using its mail-reading credential.
   For anything public, TLS still goes in front (Apache, as everywhere else in this
   stack).
 
@@ -201,7 +201,7 @@ annotate_token  = ""                         # optional WRITE token: write_annot
 request_timeout = "30s"
 
 [mcp]
-http_token           = ""       # bearer for -http; required to bind non-loopback
+http_token           = ""       # bearer for -http; required for every HTTP listener
 max_limit            = 200      # clamp for every list/search `limit`
 max_text_bytes       = 65536    # cap on message text returned to the model
 max_attachment_bytes = 10485760 # largest file the attachment tool returns
@@ -289,7 +289,7 @@ JSON-RPC sequence into the binary and confirm the seven read tools come back
   tool name, upstream status, byte counts, durations.
 - Upstream error passthrough is bounded: status + problem `title`/`detail`, never a
   raw body dump.
-- `-http` refuses non-loopback binds without `http_token`; TLS is Apache's job.
+- `-http` refuses startup without `http_token`, including loopback; TLS is Apache's job.
 - No SQL surface at all — injection, scope-bypass, and read-role questions are
   epistula-api's, answered once, there.
 

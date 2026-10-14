@@ -15,8 +15,13 @@
   Install:
     make build && sudo cp epistula-mcp /usr/local/bin/
     sudo install -d -m 755 /usr/local/etc/epistula
-    sudo cp epistula-mcp.toml.example /usr/local/etc/epistula/epistula-mcp.toml
-    sudo chmod 600 /usr/local/etc/epistula/epistula-mcp.toml   # set base_url + token
+    # Create the dedicated _epistula-mcp account as described in deploy/README.md.
+    sudo install -o root -g _epistula-mcp -m 640 epistula-mcp.toml.example /usr/local/etc/epistula/epistula-mcp.toml
+    # Set base_url, token and required http_token in the installed config.
+    sudo install -d -m 755 /usr/local/var/log
+    sudo touch /usr/local/var/log/epistula-mcp.log
+    sudo chown _epistula-mcp:_epistula-mcp /usr/local/var/log/epistula-mcp.log
+    sudo chmod 640 /usr/local/var/log/epistula-mcp.log
     sudo cp deploy/launchd/net.ptudor.epistula-mcp.plist /Library/LaunchDaemons/
     sudo launchctl bootstrap system /Library/LaunchDaemons/net.ptudor.epistula-mcp.plist
 
@@ -28,6 +33,13 @@
 <dict>
     <key>Label</key>
     <string>net.ptudor.epistula-mcp</string>
+
+    <key>UserName</key>
+    <string>_epistula-mcp</string>
+    <key>GroupName</key>
+    <string>_epistula-mcp</string>
+    <key>Umask</key>
+    <integer>63</integer>
 
     <key>ProgramArguments</key>
     <array>
@@ -41,7 +53,7 @@
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict><key>SuccessfulExit</key><false/></dict>
 
     <key>StandardOutPath</key>
     <string>/usr/local/var/log/epistula-mcp.log</string>

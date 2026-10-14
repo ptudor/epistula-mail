@@ -44,6 +44,9 @@ func TestRedirectDoesNotDiscloseTokenOverPlaintext(t *testing.T) {
 		t.Fatal("the downgrade redirect was followed; it must be refused")
 	}
 
+	if !strings.Contains(aerr.Message, "refusing redirect") {
+		t.Fatalf("refusal reason hidden: %+v", aerr)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	for _, got := range plaintextAuth {
