@@ -16,8 +16,11 @@
 package main
 
 import (
+	"bytes"
 	"crypto/subtle"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -33,7 +36,6 @@ import (
 var configSearchPath = []string{
 	"/usr/local/etc/epistula/epistula-mcp.toml",
 	"/etc/epistula/epistula-mcp.toml",
-	"./epistula-mcp.toml",
 }
 
 // defaultConfigPath is only used in the -help text for -config.
@@ -139,9 +141,19 @@ func loadConfig(path string) (config, error) {
 		if err != nil {
 			return config{}, fmt.Errorf("read config %s: %w", path, err)
 		}
-		if err := toml.Unmarshal(raw, &fc); err != nil {
-			return config{}, fmt.Errorf("parse config %s: %w", path, err)
+		if err := toml.NewDecoder(bytes.NewReader(raw)).DisallowUnknownFields().Decode(&fc); err != nil {
+			var missing *toml.StrictMissingError
+			if errors.As(err, &missing) {
+				var details []string
+				for _, e := range missing.Errors {
+					line, _ := e.Position()
+					details = append(details, fmt.Sprintf("%s (line %d)", strings.Join(e.Key(), "."), line))
+				}
+				return config{}, fmt.Errorf("parse config %q: unknown keys %s: %w", path, strings.Join(details, ", "), err)
+			}
+			return config{}, fmt.Errorf("parse config %q: %w", path, err)
 		}
+		slog.Info("loaded configuration", "path", path)
 	}
 
 	// Env overrides win over the file so the stdio path can run with zero files.
