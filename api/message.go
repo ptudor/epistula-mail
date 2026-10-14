@@ -268,6 +268,11 @@ func (s *server) handleMessage(w http.ResponseWriter, r *http.Request, tok *apiT
 		return
 	}
 
+	ref := s.resolveMessage(w, r, id)
+	if ref == nil || !requireMailboxScope(w, r, tok, ref.MailboxID, ref.Mailbox) {
+		return
+	}
+
 	var (
 		doc       messageDoc
 		mailboxID int64
@@ -391,6 +396,11 @@ func (s *server) handleMessageText(w http.ResponseWriter, r *http.Request, tok *
 	}
 	if offset < 0 || limit < 0 {
 		problemUnprocessable(w, r, "offset and limit must be non-negative.")
+		return
+	}
+
+	locator := s.resolveMessage(w, r, id)
+	if locator == nil || !requireMailboxScope(w, r, tok, locator.MailboxID, locator.Mailbox) {
 		return
 	}
 
