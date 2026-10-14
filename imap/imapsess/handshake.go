@@ -55,15 +55,33 @@ func NewTLSHandshakeListener(inner net.Listener, timeout time.Duration, logger *
 }
 
 func (l *TLSHandshakeListener) acceptLoop() {
+	var delay time.Duration
 	for {
 		c, err := l.inner.Accept()
 		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				if delay == 0 {
+					delay = 5 * time.Millisecond
+				} else {
+					delay = min(2*delay, time.Second)
+				}
+				l.logger.Warn("IMAP accept failed; retrying", "err", err, "retry_in", delay)
+				timer := time.NewTimer(delay)
+				select {
+				case <-timer.C:
+				case <-l.done:
+					timer.Stop()
+					return
+				}
+				continue
+			}
 			select {
 			case l.errs <- err:
 			case <-l.done:
 			}
 			return
 		}
+		delay = 0
 		go l.handshakeAndDeliver(c)
 	}
 }
