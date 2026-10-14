@@ -275,6 +275,7 @@ func (s *server) handleMessage(w http.ResponseWriter, r *http.Request, tok *apiT
 
 	var (
 		doc       messageDoc
+		rawText   []byte
 		mailboxID int64
 		mailbox   string
 		folder    string
@@ -283,7 +284,7 @@ func (s *server) handleMessage(w http.ResponseWriter, r *http.Request, tok *apiT
 		`SELECT m.id, m.uid, mb.id, mb.name, f.name, m.internal_date, m.sent_date, m.subject, m.from_addr,
 		        m.to_addrs, m.cc_addrs, m.message_id, m.in_reply_to, m.flags, m.raw_size,
 		        CASE WHEN $4 THEN NULL::jsonb ELSE m.headers END,
-                CASE WHEN $2>0 THEN left(m.text_body,$2) ELSE m.text_body END,
+                CASE WHEN $2>0 THEN substring(convert_to(m.text_body,'UTF8') FROM 1 FOR (LEAST($2::bigint,2147483644)+3)::integer) ELSE convert_to(m.text_body,'UTF8') END,
                 CASE WHEN $3 THEN m.html_body ELSE NULL END,
                 CASE WHEN $4 THEN NULL::jsonb ELSE m.bodystructure END,
                 octet_length(m.text_body)::bigint,
@@ -294,7 +295,7 @@ func (s *server) handleMessage(w http.ResponseWriter, r *http.Request, tok *apiT
 		  WHERE m.id = $1`, id, projection.textLimit, projection.includeHTML, projection.inspection,
 	).Scan(&doc.ID, &doc.UID, &mailboxID, &mailbox, &folder, &doc.InternalDate, &doc.SentDate, &doc.Subject, &doc.From,
 		&doc.To, &doc.Cc, &doc.MessageID, &doc.InReplyTo, &doc.Flags, &doc.Size,
-		&doc.Headers, &doc.TextBody, &doc.HTMLBody, &doc.BodyStructure, &doc.TextBytes, &doc.AttachmentCount)
+		&doc.Headers, &rawText, &doc.HTMLBody, &doc.BodyStructure, &doc.TextBytes, &doc.AttachmentCount)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			problemNotFound(w, r, "No such message.")
@@ -309,6 +310,10 @@ func (s *server) handleMessage(w http.ResponseWriter, r *http.Request, tok *apiT
 	}
 	doc.Mailbox = mailbox
 	doc.Folder = folder
+	if rawText != nil {
+		body := string(rawText)
+		doc.TextBody = &body
+	}
 
 	if projection.inspection {
 		if !s.annotationsAvailable {
