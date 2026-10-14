@@ -75,9 +75,10 @@ epistula_api_prestart()
         echo "${name}: config not found: ${epistula_api_config}" >&2
         return 1
     fi
-    if ! su -m "${epistula_api_user}" -c 'exec "$1" check-config -config "$2"' sh "${procname}" "${epistula_api_config}" >/dev/null 2>&1; then
+    # FreeBSD su sets $0 to _su; the words after -c therefore begin at $1.
+    if ! su -m "${epistula_api_user}" -c 'exec "$1" check-config -config "$2"' "${procname}" "${epistula_api_config}" >/dev/null 2>&1; then
         echo "${name}: check-config failed; not starting" >&2
-        su -m "${epistula_api_user}" -c 'exec "$1" check-config -config "$2"' sh "${procname}" "${epistula_api_config}" >&2
+        su -m "${epistula_api_user}" -c 'exec "$1" check-config -config "$2"' "${procname}" "${epistula_api_config}" >&2
         return 1
     fi
     # rc.subr drops to ${epistula_api_user} before running daemon(8), so the

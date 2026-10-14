@@ -50,7 +50,8 @@ start_cmd="${name}_start"
 stop_cmd="${name}_stop"
 
 epistula_mcp_start() {
-	if ! su -m "${epistula_mcp_user}" -c 'test -r "$1"' sh "${epistula_mcp_config}"; then
+	# FreeBSD su sets $0 to _su; the words after -c therefore begin at $1.
+	if ! su -m "${epistula_mcp_user}" -c 'test -r "$1"' "${epistula_mcp_config}"; then
 		echo "epistula-mcp: config not readable by ${epistula_mcp_user}: ${epistula_mcp_config}" >&2
 		return 1
 	fi
