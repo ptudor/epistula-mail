@@ -78,7 +78,7 @@ func (s *server) handlePassRequiredPrune(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if !s.passQueueAvailable {
-		problemUnavailable(w, r, "The annotation pass queue needs epistula-database migration 022 and its grants.")
+		problemPassQueueUnavailable(w, r, "The annotation pass queue needs epistula-database migration 022 and its grants.")
 		return
 	}
 	var req passPruneRequest

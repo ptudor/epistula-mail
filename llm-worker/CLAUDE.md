@@ -13,8 +13,14 @@ The worker never connects to Postgres, never reads blob files, never moves messa
 Annotations are keyed `(message_id, model)` in the store, so each model holds its
 own summary/tags/category and they never overwrite each other. Run a second box
 by installing this worker there with a different `lmstudio.model` (e.g.
-`openai/gpt-oss-20b`) and its own scoped `epistula-api` token — no coordination is
-needed:
+`openai/gpt-oss-20b`) and its own scoped `epistula-api` token.
+
+**The fast-round queue is shared per message, not per model.** The first worker
+to finish and prune removes that message from every worker's fast round. Keep
+fast rounds on only one box; set `worker.complete_round_interval_seconds = 0`
+on every other box so each interval sweeps its own model's missing annotations.
+This costs a full absence query on those boxes, but prevents them waiting for
+the default six-hour complete round. Per-model annotations remain independent:
 
 - `worker.annotation_model` (default `lmstudio:<model>`) is the per-model key. Keep
   it distinct per model/version so a re-summarization is a new alternative, not an

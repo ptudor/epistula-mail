@@ -287,7 +287,7 @@ func (s *server) addArchiveFilters(w http.ResponseWriter, r *http.Request, mailb
 		}
 		if want {
 			if !s.passQueueAvailable {
-				problemUnavailable(w, r, "The annotation pass queue needs epistula-database migration 022 and its grants.")
+				problemPassQueueUnavailable(w, r, "The annotation pass queue needs epistula-database migration 022 and its grants.")
 				return false
 			}
 			*conds = append(*conds, passQueueFilter)

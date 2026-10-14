@@ -118,7 +118,7 @@ type fakeStore struct {
 func queueUnavailable(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(http.StatusServiceUnavailable)
-	fmt.Fprint(w, `{"title":"Service Unavailable","detail":"migration 022 missing"}`)
+	fmt.Fprint(w, `{"type":"https://api.ptudor.invalid/errors/unavailable-pass-queue","title":"Service Unavailable","detail":"migration 022 missing"}`)
 }
 
 func (s *fakeStore) mailAPI(t *testing.T) http.Handler {

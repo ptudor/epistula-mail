@@ -145,7 +145,7 @@ func (c *MailAPIClient) ExportFiltered(ctx context.Context, cfg MailAPIConfig, f
 		// Structured, so a 401/429/503 on the export itself is classified as
 		// the systemic failure it is rather than an opaque formatted string
 		// (RA6X-042).
-		return statusErrorFrom(ServiceMailAPI, resp, problemDetail(body))
+		return statusErrorFrom(ServiceMailAPI, resp, problemDetail(body), problemType(body))
 	}
 
 	// Idle-read watchdog: bound the gap between INPUT, not the work done with
@@ -249,7 +249,7 @@ func (c *MailAPIClient) PutAnnotation(ctx context.Context, messageID int64, put 
 		// here. The LM Studio path deliberately attaches none; see
 		// statusErrorFrom (RA6X-043).
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return statusErrorFrom(ServiceMailAPI, resp, problemDetail(body))
+		return statusErrorFrom(ServiceMailAPI, resp, problemDetail(body), problemType(body))
 	}
 	return nil
 }
@@ -276,7 +276,7 @@ func (c *MailAPIClient) PutClassification(ctx context.Context, messageID int64, 
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return statusErrorFrom(ServiceMailAPI, resp, problemDetail(body))
+		return statusErrorFrom(ServiceMailAPI, resp, problemDetail(body), problemType(body))
 	}
 	return nil
 }
@@ -322,7 +322,7 @@ func (c *MailAPIClient) PrunePassQueue(ctx context.Context, p PassPrune) (PassPr
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return out, statusErrorFrom(ServiceMailAPI, resp, problemDetail(detail))
+		return out, statusErrorFrom(ServiceMailAPI, resp, problemDetail(detail), problemType(detail))
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&out); err != nil {
 		return out, fmt.Errorf("decode prune result: %w", err)
@@ -339,7 +339,8 @@ func isPassQueueUnavailable(err error) bool {
 	return errors.As(err, &statusErr) &&
 		statusErr.Service == ServiceMailAPI &&
 		statusErr.StatusCode == http.StatusServiceUnavailable &&
-		strings.HasPrefix(statusErr.ContentType, "application/problem+json")
+		strings.HasPrefix(statusErr.ContentType, "application/problem+json") &&
+		statusErr.ProblemType == "https://api.ptudor.invalid/errors/unavailable-pass-queue"
 }
 
 // ArchiveCategories returns the mailbox's active archive categories. An empty
@@ -387,7 +388,7 @@ func (c *MailAPIClient) getJSON(ctx context.Context, path string, v any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return statusErrorFrom(ServiceMailAPI, resp, problemDetail(body))
+		return statusErrorFrom(ServiceMailAPI, resp, problemDetail(body), problemType(body))
 	}
 	dec := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
 	if err := dec.Decode(v); err != nil {
@@ -422,4 +423,14 @@ func problemDetail(body []byte) string {
 		out = out[:maxDetail]
 	}
 	return boundedToken(out)
+}
+
+func problemType(body []byte) string {
+	var p struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(body, &p) != nil {
+		return ""
+	}
+	return p.Type
 }

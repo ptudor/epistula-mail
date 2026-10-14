@@ -42,6 +42,7 @@ type HTTPStatusError struct {
 	// ContentType is the response's declared media type, which distinguishes
 	// "the server sent a structured error" from "a proxy sent an HTML page"
 	// without quoting either.
+	ProblemType string // RFC 7807 type; never inferred from status alone
 	ContentType string
 	// Detail is a short, safe description. For epistula-api it is the RFC 7807
 	// problem detail this project itself produced; for LM Studio it is always
@@ -92,7 +93,11 @@ func (e *HTTPStatusError) Error() string {
 // rules; a size cap on a log line is not redaction. This function does not
 // provide one, and the status, media type and correlation identity below are
 // what a normal deployment gets.
-func statusErrorFrom(svc Service, resp *http.Response, detail string) *HTTPStatusError {
+func statusErrorFrom(svc Service, resp *http.Response, detail string, problemType ...string) *HTTPStatusError {
+	typ := ""
+	if len(problemType) != 0 {
+		typ = problemType[0]
+	}
 	return &HTTPStatusError{
 		Service:       svc,
 		StatusCode:    resp.StatusCode,
@@ -100,6 +105,7 @@ func statusErrorFrom(svc Service, resp *http.Response, detail string) *HTTPStatu
 		CorrelationID: correlationID(resp.Header),
 		ContentType:   mediaTypeOf(resp.Header.Get("Content-Type")),
 		Detail:        detail,
+		ProblemType:   typ,
 	}
 }
 

@@ -81,3 +81,7 @@ func problemMethodNotAllowed(w http.ResponseWriter, r *http.Request, allow strin
 	writeProblem(w, r, http.StatusMethodNotAllowed, "method-not-allowed", "Method Not Allowed",
 		"That method is not allowed on this endpoint.")
 }
+
+func problemPassQueueUnavailable(w http.ResponseWriter, r *http.Request, detail string) {
+	writeProblem(w, r, http.StatusServiceUnavailable, "unavailable-pass-queue", "Service Unavailable", detail)
+}

@@ -3,9 +3,40 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestFastRoundBackend503DoesNotMeanMissingQueue(t *testing.T) {
+	var exports atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/export" {
+			exports.Add(1)
+		}
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, `{"type":"https://api.ptudor.invalid/errors/unavailable","detail":"Authentication backend unavailable."}`)
+	}))
+	defer api.Close()
+	cfg := DefaultConfig()
+	cfg.MailAPI.BaseURL = api.URL
+	cfg.MailAPI.Token = "mapi_test"
+	w, err := NewWorker(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = w.runRound(context.Background(), roundFast)
+	if err == nil || errors.Is(err, errPassQueueUnavailable) || !isInfraFailure(err) {
+		t.Fatalf("backend 503 was misclassified: %v", err)
+	}
+	if exports.Load() != 1 {
+		t.Fatalf("%d exports, want 1", exports.Load())
+	}
+}
 
 // TestFastRoundReadsOnlyTheQueue: a fast round works on the queued messages
 // alone, leaves unqueued work to the complete round, and ends by pruning with

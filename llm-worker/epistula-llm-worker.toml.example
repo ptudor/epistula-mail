@@ -55,6 +55,8 @@ interval_seconds = 900
 # start, a round is instead a complete sweep for this model's unannotated and
 # unclassified mail, which catches what no insert queues (a new annotation
 # model, a retired archive category, older mail). 0 = every round complete.
+# Multiple model workers share one per-message queue: use 0 on every box
+# except one so those boxes always sweep their own missing annotations.
 complete_round_interval_seconds = 21600
 
 # v1 intentionally serializes requests. A single RTX 3090 generally has one
