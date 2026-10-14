@@ -42,6 +42,11 @@ func (s *Session) Append(mailbox string, r imap.LiteralReader, options *imap.App
 		}
 	}
 
+	flags := flagsFromOptions(options)
+	if err := validateClientFlags(flags, true); err != nil {
+		return nil, err
+	}
+
 	mailbox, verr := prepareFolderWrite(mailbox)
 	if verr != nil {
 		return nil, verr
@@ -177,8 +182,6 @@ func (s *Session) Append(mailbox string, r imap.LiteralReader, options *imap.App
 			"mailbox", s.mailboxName, "folder", mailbox, "err", err)
 		return nil, code
 	}
-
-	flags := flagsFromOptions(options)
 
 	res, ierr := s.be.Storage().Ingest(ctx, storage.IngestParams{
 		MailboxID:   s.mailboxID,

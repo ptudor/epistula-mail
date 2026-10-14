@@ -389,6 +389,9 @@ func fixtureFlags(t *testing.T, f *fetchTestFixture) []string {
 func TestFetchNonPeekSetsSeen(t *testing.T) {
 	f := newFetchFixture(t)
 	clearSeen(t, f)
+	if _, err := f.pool.Exec(context.Background(), `UPDATE messages SET flags=ARRAY['z-keyword','a-keyword','z-keyword'] WHERE folder_id=$1 AND uid=1`, f.session.selectedFolderID); err != nil {
+		t.Fatal(err)
+	}
 
 	opts := &imap.FetchOptions{
 		BodySection: []*imap.FetchItemBodySection{{}}, // BODY[] — no .PEEK
@@ -397,6 +400,10 @@ func TestFetchNonPeekSetsSeen(t *testing.T) {
 		t.Fatalf("Fetch: %v", err)
 	}
 	flags := fixtureFlags(t, f)
+	var normalized bool
+	if err := f.pool.QueryRow(context.Background(), `SELECT flags = (SELECT array_agg(DISTINCT fl ORDER BY fl) FROM unnest(flags) fl) FROM messages WHERE folder_id=$1 AND uid=1`, f.session.selectedFolderID).Scan(&normalized); err != nil || !normalized {
+		t.Fatalf("Seen flags are not normalized: %v %v", flags, err)
+	}
 	found := false
 	for _, fl := range flags {
 		if fl == `\Seen` {

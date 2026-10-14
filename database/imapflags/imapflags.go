@@ -24,7 +24,10 @@
 // case-folding predicate in a dozen queries.
 package imapflags
 
-import "strings"
+import (
+	"errors"
+	"strings"
+)
 
 // The five RFC 9051 §2.3.2 system flags, in their canonical spelling.
 const (
@@ -124,6 +127,40 @@ func IsSystem(s string) bool {
 // explicit length, but a flag far beyond this is a client bug or an attempt to
 // push an oversize value into a TEXT[] column.
 const maxKeywordBytes = 64
+
+const MaxClientKeywords = 100
+
+var ErrClientFlag = errors.New("invalid client flag")
+var ErrClientFlagLimit = errors.New("client keyword limit exceeded")
+
+// ValidateClientFlag permits the five writable system flags and keyword atoms.
+// Recent and the PERMANENTFLAGS wildcard are never writable message flags.
+func ValidateClientFlag(s string) error {
+	if strings.HasPrefix(s, `\`) {
+		if IsSystem(s) {
+			return nil
+		}
+		return ErrClientFlag
+	}
+	if len(s) > maxKeywordBytes {
+		return ErrClientFlagLimit
+	}
+	if !Valid(s) || strings.ContainsAny(s, `(){%*"\]`) {
+		return ErrClientFlag
+	}
+	return nil
+}
+
+// ClientKeywordsWithinLimit counts canonical distinct non-system flags.
+func ClientKeywordsWithinLimit(flags []string) bool {
+	keywords := make(map[string]struct{})
+	for _, flag := range flags {
+		if !IsSystem(flag) {
+			keywords[Canonical(flag)] = struct{}{}
+		}
+	}
+	return len(keywords) <= MaxClientKeywords
+}
 
 // Valid reports whether s is usable as a flag filter: either a system flag, or
 // a plausible keyword — non-empty, no whitespace or control characters, and

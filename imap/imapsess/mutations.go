@@ -62,6 +62,9 @@ func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *im
 	defer cancel()
 
 	flagStrs := flagSliceToStrings(flags.Flags)
+	if err := validateClientFlags(flagStrs, flags.Op != imap.StoreFlagsDel); err != nil {
+		return err
+	}
 
 	// Resolve numSet → list of UIDs, in sequence-number order so the
 	// FETCH responses emit in a sensible order.
@@ -76,6 +79,19 @@ func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *im
 	for _, r := range rows {
 		uids = append(uids, r.uid)
 	}
+	if flags.Op == imap.StoreFlagsAdd {
+		var exceeds bool
+		if err := s.be.Pool.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1 FROM messages WHERE folder_id=$1 AND uid=ANY($2)
+			AND (SELECT count(DISTINCT f) FROM unnest(flags || $3::text[]) f
+			     WHERE NOT (f=ANY($4::text[]))) > $5)`, s.selectedFolderID, uids, flagStrs,
+			[]string{imapflags.Seen, imapflags.Answered, imapflags.Flagged, imapflags.Deleted, imapflags.Draft}, imapflags.MaxClientKeywords).Scan(&exceeds); err != nil {
+			return err
+		}
+		if exceeds {
+			return clientFlagLimit()
+		}
+	}
 
 	// All three ops write the flag array in SORTED, DISTINCT order.
 	//
@@ -89,11 +105,11 @@ func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *im
 	var setExpr string
 	switch flags.Op {
 	case imap.StoreFlagsSet:
-		setExpr = `flags = (SELECT COALESCE(array_agg(DISTINCT f ORDER BY f), '{}'::text[]) FROM unnest($2::text[]) f)`
+		setExpr = `flags = ` + normalizedFlagsSQL(`$2::text[]`, "")
 	case imap.StoreFlagsAdd:
-		setExpr = `flags = (SELECT COALESCE(array_agg(DISTINCT f ORDER BY f), '{}'::text[]) FROM unnest(flags || $2) f)`
+		setExpr = `flags = ` + normalizedFlagsSQL(`flags || $2`, "")
 	case imap.StoreFlagsDel:
-		setExpr = `flags = (SELECT COALESCE(array_agg(DISTINCT f ORDER BY f), '{}'::text[]) FROM unnest(flags) f WHERE NOT (f = ANY($2)))`
+		setExpr = `flags = ` + normalizedFlagsSQL(`flags`, `NOT (f = ANY($2))`)
 	default:
 		return &imap.Error{Type: imap.StatusResponseTypeBad, Text: fmt.Sprintf("STORE: unknown op %v", flags.Op)}
 	}
@@ -135,6 +151,9 @@ func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *im
 			if err := r2.Scan(&uid, &newFlags); err != nil {
 				return fmt.Errorf("scan: %w", err)
 			}
+			if flags.Op != imap.StoreFlagsDel && !imapflags.ClientKeywordsWithinLimit(newFlags) {
+				return imapflags.ErrClientFlagLimit
+			}
 			updatedFlags[uid] = newFlags
 		}
 		if err := r2.Err(); err != nil {
@@ -144,6 +163,9 @@ func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *im
 		notifyFolderChanged(ctx, tx, s.be.Logger, s.selectedFolderID)
 		return nil
 	}); err != nil {
+		if errors.Is(err, imapflags.ErrClientFlagLimit) {
+			return clientFlagLimit()
+		}
 		s.be.Logger.Error("STORE", "folder", s.selectedFolderName, "err", err)
 		if isRetryableTxError(err) {
 			return txAborted("STORE")

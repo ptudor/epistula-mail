@@ -1090,7 +1090,7 @@ func (s *Session) applySeenSideEffect(ctx context.Context, uids []int64) (map[in
 		}
 
 		rows, err := tx.Query(ctx,
-			`UPDATE messages SET flags = flags || $3, mod_seq = $4
+			`UPDATE messages SET flags = `+normalizedFlagsSQL(`flags || $3`, "")+`, mod_seq = $4
 			  WHERE folder_id = $1 AND uid = ANY($2) AND NOT ($5 = ANY(flags))
 			 RETURNING uid`,
 			s.selectedFolderID, uids, []string{`\Seen`}, newModSeq, `\Seen`,
