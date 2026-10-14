@@ -67,6 +67,9 @@ func (s *server) searchConds(w http.ResponseWriter, r *http.Request, tok *apiTok
 	return conds, args, true
 }
 
+// The last microsecond of 9999-12-31 UTC, keeping pgx timestamp encoding safe.
+const maxDateCursorMicros int64 = 253402300799999999
+
 // datePageWindow applies the (internal_date DESC, id DESC) cursor window.
 func datePageWindow(w http.ResponseWriter, r *http.Request, conds *[]string, args *[]any) bool {
 	c := r.URL.Query().Get("cursor")
@@ -74,7 +77,7 @@ func datePageWindow(w http.ResponseWriter, r *http.Request, conds *[]string, arg
 		return true
 	}
 	keys, err := decodeCursor(c, 2)
-	if err != nil {
+	if err != nil || keys[0] < 0 || keys[0] > maxDateCursorMicros || keys[1] < 0 {
 		problemUnprocessable(w, r, "Malformed cursor.")
 		return false
 	}

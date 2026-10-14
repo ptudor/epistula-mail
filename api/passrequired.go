@@ -61,6 +61,9 @@ func (p *passPruneRequest) validate() error {
 	if len(p.Model) > maxAnnotationModelLen {
 		return fmt.Errorf("model exceeds %d bytes", maxAnnotationModelLen)
 	}
+	if err := checkStorable("mailbox", p.Mailbox); err != nil {
+		return err
+	}
 	return checkStorable("model", p.Model)
 }
 

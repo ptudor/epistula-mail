@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
@@ -17,6 +19,50 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestSidecarStartupDetectsMissingGrants(t *testing.T) {
+	for _, missing := range []string{
+		"SELECT ON message_annotations", "INSERT ON message_annotations", "UPDATE ON message_annotations",
+		"UPDATE ON message_classifications", "EXECUTE ON FUNCTION mail_lock_message_for_annotation(bigint)",
+	} {
+		t.Run(missing, func(t *testing.T) {
+			role := newDeployedRole(t)
+			f := newArchiveFixture(t)
+			f.srv.pool = role.connect(t, f.apiFixture)
+			ctx := context.Background()
+			annotations, classifications, err := f.srv.probeWriteGrants(ctx)
+			if err != nil || !annotations || !classifications {
+				t.Fatalf("documented grants: %v %v %v", annotations, classifications, err)
+			}
+			body := `{"model":"m1","category":"travel","confidence":0.9}`
+			resp := f.putClassification(f.aliceMsgIDs[0], f.classifyToken, body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusNoContent {
+				t.Fatalf("first PUT: %s", resp.Status)
+			}
+			if _, err := f.pool.Exec(ctx, "REVOKE "+missing+" FROM "+pgx.Identifier{role.name}.Sanitize()); err != nil {
+				t.Fatal(err)
+			}
+			var logs bytes.Buffer
+			old := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			annotations, classifications, err = f.srv.probeWriteGrants(ctx)
+			slog.SetDefault(old)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(logs.String(), "level=WARN") != 1 || !strings.Contains(logs.String(), missing) {
+				t.Fatalf("missing grant warning: %s", logs.String())
+			}
+			f.srv.annotationsAvailable, f.srv.classificationsAvailable = annotations, classifications
+			if strings.Contains(missing, "message_annotations") {
+				wantProblem(t, f.do(http.MethodGet, "/v1/messages/"+strconv.FormatInt(f.aliceMsgIDs[0], 10), f.classifierToken, nil), http.StatusServiceUnavailable)
+			} else {
+				wantProblem(t, f.putClassification(f.aliceMsgIDs[0], f.classifyToken, body), http.StatusServiceUnavailable)
+			}
+		})
+	}
+}
 
 // documentedGrants returns the statements of the SQL block under
 // "## Postgres role" in deploy/README.md, for role in database. The block is

@@ -423,7 +423,7 @@ func (s *server) handleFolderMessages(w http.ResponseWriter, r *http.Request, to
 	afterUID := int64(0)
 	if c := r.URL.Query().Get("cursor"); c != "" {
 		keys, err := decodeCursor(c, 1)
-		if err != nil {
+		if err != nil || keys[0] < 0 {
 			problemUnprocessable(w, r, "Malformed cursor.")
 			return
 		}
@@ -728,4 +728,13 @@ func (s *server) attachAnnotations(ctx context.Context, items []messageItem) ([]
 		items[i].Annotations = list
 	}
 	return items, false, nil
+}
+
+// textParam rejects text PostgreSQL cannot represent before a query is issued.
+func textParam(w http.ResponseWriter, r *http.Request, name, value string) bool {
+	if err := checkStorable(name, value); err != nil {
+		problemUnprocessable(w, r, err.Error())
+		return false
+	}
+	return true
 }

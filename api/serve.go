@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
+	"strings"
 	"syscall"
 	"time"
 
@@ -116,10 +118,10 @@ func runServe(args []string) int {
 	// The annotation sidecar gates on its epistula-database migration; the
 	// read surface ships regardless.
 	probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)
-	var annotationsRel *string
-	if err := srv.pool.QueryRow(probeCtx, `SELECT to_regclass('message_annotations')::text`).Scan(&annotationsRel); err != nil {
+	annotationsUsable, classificationsUsable, err := srv.probeWriteGrants(probeCtx)
+	if err != nil {
 		probeCancel()
-		slog.Error("probe message_annotations", "err", err)
+		slog.Error("probe sidecar grants", "err", err)
 		return EX_OSERR
 	}
 	// Probe both existence AND SELECT privilege. to_regclass returns the OID
@@ -137,21 +139,6 @@ func runServe(args []string) int {
 		slog.Error("probe annotation_models", "err", err)
 		return EX_OSERR
 	}
-	// Archive sorting (migration 020): the tables must exist AND this role
-	// must hold the grants the migration gives it, or every call would fail
-	// with "permission denied" instead of a clear 503.
-	var classificationsUsable *bool
-	if err := srv.pool.QueryRow(probeCtx, `SELECT CASE
-	                WHEN to_regclass('message_classifications') IS NULL
-	                  OR to_regclass('archive_categories') IS NULL THEN NULL
-	                ELSE has_table_privilege('message_classifications', 'INSERT')
-	                 AND has_table_privilege('message_classifications', 'SELECT')
-	                 AND has_table_privilege('archive_categories', 'SELECT')
-	            END`).Scan(&classificationsUsable); err != nil {
-		probeCancel()
-		slog.Error("probe message_classifications", "err", err)
-		return EX_OSERR
-	}
 	// The annotation pass queue (migration 022), on the same terms.
 	var passQueueUsable *bool
 	if err := srv.pool.QueryRow(probeCtx, `SELECT CASE
@@ -165,15 +152,9 @@ func runServe(args []string) int {
 	}
 	probeCancel()
 	srv.passQueueAvailable = passQueueUsable != nil && *passQueueUsable
-	srv.classificationsAvailable = classificationsUsable != nil && *classificationsUsable
-	srv.annotationsAvailable = annotationsRel != nil
+	srv.classificationsAvailable = classificationsUsable
+	srv.annotationsAvailable = annotationsUsable
 	srv.modelPriorityAvailable = modelsSelectable != nil && *modelsSelectable
-	if !srv.annotationsAvailable {
-		slog.Warn("message_annotations table absent; PUT /v1/messages/{id}/annotation will return 503 until the epistula-database migration is applied")
-	}
-	if !srv.classificationsAvailable {
-		slog.Warn("archive classification tables absent or not usable by this role; archive-categories, PUT /v1/messages/{id}/classification and not_classified will return 503 (apply epistula-database migration 020; see deploy/README.md for grants)")
-	}
 	if !srv.passQueueAvailable {
 		slog.Warn("annotation pass queue absent or not usable by this role; pass_required and POST /v1/pass-required/prune will return 503 (apply epistula-database migration 022; see deploy/README.md for grants)")
 	}
@@ -283,7 +264,7 @@ func (c *captureRecorder) WriteHeader(code int) {
 func (s *server) fallback(mux *http.ServeMux) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h, pattern := mux.Handler(r)
-		if pattern != "" {
+		if pattern != "" && cleanAPIPath(r.URL.EscapedPath()) == r.URL.EscapedPath() {
 			// Real match. Use mux.ServeHTTP so path values are populated; the
 			// registered handler is already s.api-wrapped.
 			mux.ServeHTTP(w, r)
@@ -338,6 +319,16 @@ func (s *server) api(route string, h func(http.ResponseWriter, *http.Request, *a
 		if !s.limiter.allow(tok.ID) {
 			problemTooMany(rec, r, "Per-token rate limit exceeded; slow down.")
 			return
+		}
+		if !textParam(rec, r, "path", r.URL.Path) {
+			return
+		}
+		for name, values := range r.URL.Query() {
+			for _, value := range values {
+				if !textParam(rec, r, name, value) {
+					return
+				}
+			}
 		}
 		h(rec, r, tok)
 	})
@@ -455,21 +446,40 @@ func readyHandler(pool *pgxpool.Pool, storageRoot string) http.HandlerFunc {
 		defer cancel()
 		if err := pool.Ping(ctx); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintf(w, "not ready: postgres: %v\n", err)
+			slog.Error("readiness postgres", "err", err)
+			fmt.Fprintln(w, "not ready: postgres")
 			return
 		}
 		fi, err := os.Stat(storageRoot)
 		if err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintf(w, "not ready: storage_root: %v\n", err)
+			slog.Error("readiness storage", "err", err)
+			fmt.Fprintln(w, "not ready: storage")
 			return
 		}
 		if !fi.IsDir() {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintf(w, "not ready: storage_root %q is not a directory\n", storageRoot)
+			slog.Error("readiness storage is not a directory", "path", storageRoot)
+			fmt.Fprintln(w, "not ready: storage")
 			return
 		}
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "ready")
 	}
+}
+
+// Match ServeMux cleaning on the escaped path, preserving encoded segments.
+// A request needing a redirect must still go through authentication.
+func cleanAPIPath(p string) string {
+	if p == "" {
+		return "/"
+	}
+	if p[0] != '/' {
+		p = "/" + p
+	}
+	cleaned := path.Clean(p)
+	if strings.HasSuffix(p, "/") && cleaned != "/" {
+		cleaned += "/"
+	}
+	return cleaned
 }

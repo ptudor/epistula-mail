@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,6 +22,13 @@ func TestReadyHandler(t *testing.T) {
 	call := func(h http.HandlerFunc) int {
 		rr := httptest.NewRecorder()
 		h(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		if rr.Code == http.StatusServiceUnavailable {
+			for _, secret := range []string{"host=", "user=", "database=", root} {
+				if strings.Contains(rr.Body.String(), secret) {
+					t.Errorf("readiness leaked %q: %s", secret, rr.Body.String())
+				}
+			}
+		}
 		return rr.Code
 	}
 
