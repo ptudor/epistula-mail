@@ -141,16 +141,14 @@ func TestSearchZeroCapDisablesLimit(t *testing.T) {
 	}
 }
 
-// TestSearchCapAppliesToWindowedFormToo covers the other query shape: a
-// sequence-number search takes the row_number() window path, which builds a
-// different SQL string and must carry the LIMIT as well.
-func TestSearchCapAppliesToWindowedFormToo(t *testing.T) {
+// TestSearchCapAppliesToSequenceResults checks the shared flat query cap.
+func TestSearchCapAppliesToSequenceResults(t *testing.T) {
 	sess := mutationFixture(t)
 	seedMessages(t, sess, 100)
 
 	sess.be.MaxSearchResults = 50
-	// NumKindSeq forces the windowed query form.
+	// Sequence results use the same flat query and cap as UID results.
 	if _, err := sess.Search(imapserver.NumKindSeq, &imap.SearchCriteria{}, nil); err == nil {
-		t.Error("windowed SEARCH form ignored the result cap")
+		t.Error("sequence SEARCH ignored the result cap")
 	}
 }

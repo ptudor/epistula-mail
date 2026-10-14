@@ -269,3 +269,7 @@ No `import`, no `gc`, no `deliver` — those are epistula-database's responsibil
 - `METADATA` (RFC 5464) for server-side per-mailbox annotations.
 - Sieve via ManageSieve (RFC 5804). Out of scope; spam/rules belong upstream of Postfix.
 - ACL extension (RFC 4314). N/A in single-tenant deployment.
+
+IMAP BODY, TEXT and HEADER substring searches use PostgreSQL’s `und-x-icu`
+collation for Unicode case folding, including databases initialized with C locale.
+The PostgreSQL installation must provide this ICU collation.

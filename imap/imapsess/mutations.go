@@ -646,15 +646,6 @@ func (s *Session) copyInTx(ctx context.Context, tx pgx.Tx, rows []targetRef, des
 		return nil, err
 	}
 
-	if len(rows) == 0 {
-		var empty imap.UIDSet
-		return &imap.CopyData{
-			UIDValidity: uint32(destUIDValidity),
-			SourceUIDs:  empty,
-			DestUIDs:    empty,
-		}, nil
-	}
-
 	// Level 3: both folders, ascending. Sorting is what makes two MOVEs in
 	// opposite directions between the same pair of folders safe.
 	if _, err := lockFolders(ctx, tx, s.selectedFolderID, destFolderID); err != nil {

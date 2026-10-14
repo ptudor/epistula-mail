@@ -7,25 +7,14 @@ import (
 	"time"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapserver"
 )
 
-// TestSearchQueryWindowSelection is the R-041 unit regression: the UID/no-seqnum
-// query must drop the row_number() window (so indexes are usable) while the
-// window variant keeps it (so seq positions stay correct).
-func TestSearchQueryWindowSelection(t *testing.T) {
-	where := "fts @@ plainto_tsquery('simple', $2)"
-
-	windowed := searchQuery(true, where, "")
-	if !strings.Contains(windowed, "row_number()") {
-		t.Errorf("windowed query must use row_number():\n%s", windowed)
-	}
-
-	flat := searchQuery(false, where, "")
-	if strings.Contains(flat, "row_number()") {
-		t.Errorf("UID/no-seqnum query must NOT use row_number():\n%s", flat)
-	}
-	if !strings.Contains(flat, "WHERE folder_id = $1 AND (") {
-		t.Errorf("UID/no-seqnum query must filter the base table directly:\n%s", flat)
+// Both result kinds share a flat query; sequence results come from the view.
+func TestSearchQueryFlatForm(t *testing.T) {
+	flat := searchQuery("uid > $2", " LIMIT $3")
+	if strings.Contains(flat, "row_number()") || !strings.Contains(flat, "WHERE folder_id = $1 AND (") || !strings.HasSuffix(flat, " LIMIT $3") {
+		t.Fatal(flat)
 	}
 }
 
@@ -68,13 +57,13 @@ func TestSearchUIDBodyAvoidsWindowAgg(t *testing.T) {
 	}
 
 	// UID kind, no SeqNum criterion → no window → no WindowAgg node.
-	flatPlan := explain(searchQuery(false, where, ""))
+	flatPlan := explain(searchQuery(where, ""))
 	if strings.Contains(flatPlan, "WindowAgg") {
 		t.Errorf("UID SEARCH BODY plan still has a WindowAgg node:\n%s", flatPlan)
 	}
-	// The windowed variant (Seq kind / SeqNum criterion) does carry WindowAgg —
-	// the contrast confirms the difference is the window, not something else.
-	if wp := explain(searchQuery(true, where, "")); !strings.Contains(wp, "WindowAgg") {
-		t.Errorf("windowed query unexpectedly lacks WindowAgg:\n%s", wp)
+	for _, kind := range []imapserver.NumKind{imapserver.NumKindUID, imapserver.NumKindSeq} {
+		if _, err := sess.Search(kind, &imap.SearchCriteria{Body: []string{"urgent"}}, nil); err != nil {
+			t.Fatalf("kind %v: %v", kind, err)
+		}
 	}
 }

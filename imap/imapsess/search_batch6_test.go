@@ -158,7 +158,7 @@ func searchUIDsInTZ(t *testing.T, sess *Session, c *imap.SearchCriteria, tz stri
 		}
 	}()
 
-	rows, err := conn.Query(ctx, searchQuery(false, where, ""), b.args...)
+	rows, err := conn.Query(ctx, searchQuery(where, ""), b.args...)
 	if err != nil {
 		t.Fatalf("search query: %v", err)
 	}

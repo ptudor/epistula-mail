@@ -54,13 +54,7 @@ func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria,
 		whereExpr = "TRUE"
 	}
 
-	// Only wrap the scan in a row_number() window when sequence numbers are
-	// actually needed — either as the result kind or as a SeqNum criterion. The
-	// window forces Postgres to read and order every folder row before the
-	// outer WHERE runs, so the fts GIN index (and b-trees) can't be used. When
-	// the result is UID-kind and no SeqNum criterion appears, filter the base
-	// table directly so those indexes are usable (R-041).
-	useWindow := false
+	// Resolve sequence criteria through the session view and filter the base table.
 	whereExpr = "(" + whereExpr + ") AND uid <= " + b.placeholder(int64(s.view.maxUID()))
 
 	// Bound the result set. Fetch max+1 so overflow is detectable.
@@ -70,7 +64,7 @@ func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria,
 		b.args = append(b.args, maxResults+1)
 		limitClause = fmt.Sprintf(" LIMIT $%d", len(b.args))
 	}
-	query := searchQuery(useWindow, whereExpr, limitClause)
+	query := searchQuery(whereExpr, limitClause)
 
 	rows, err := s.be.Pool.Query(ctx, query, b.args...)
 	if err != nil {
@@ -133,9 +127,6 @@ func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria,
 			Text: "SEARCH result set too large; narrow the criteria",
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "SEARCH rows error"}
-	}
 
 	var all imap.NumSet
 	switch kind {
@@ -156,52 +147,17 @@ func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria,
 	}, nil
 }
 
-// searchQuery returns the SEARCH SQL. With useWindow, a row_number() window
-// computes seqnum over the full folder ordering (correct positions, but the
-// outer WHERE can't push into indexes). Without it (UID-kind, no SeqNum
-// criterion), the criteria filter the base table directly so the fts GIN
-// index and b-trees are usable; seqnum is unused for UID results, so a 0
-// placeholder keeps the two-column scan shape (R-041).
-// limitClause is appended by the caller when a result cap is configured; the
-// placeholder index is one past the criteria args. The cap is fetched as
-// max+1 rows so an overflow is detectable rather than silently truncating —
-// a truncated SEARCH is worse than an error, since the client would treat
-// the missing UIDs as deleted (RO5X-020).
-func searchQuery(useWindow bool, whereExpr, limitClause string) string {
-	if !useWindow {
-		return fmt.Sprintf(`
-			SELECT 0::bigint AS seqnum, uid
-			  FROM messages
-			 WHERE folder_id = $1 AND (%s)
-			 ORDER BY uid%s`, whereExpr, limitClause)
-	}
-	// messages.* rather than a hand-maintained column list: the outer WHERE is
-	// generated from arbitrary search criteria, so every column a criterion can
-	// name has to survive into `m`. A fixed list silently loses that property
-	// the moment a criterion learns a new column — which is how BODY over
-	// text_body/html_body (RA6X-026) and SENTSINCE over sent_date_local
-	// (RA6X-048) became `column does not exist`, on the Seq-kind path only.
-	// Widening the projection costs nothing: Postgres does not detoast a large
-	// column the query never reads.
-	return fmt.Sprintf(`
-		SELECT seqnum, uid FROM (
-			SELECT row_number() OVER (ORDER BY uid)::bigint AS seqnum,
-			       messages.*
-			  FROM messages
-			 WHERE folder_id = $1
-		) m
-		 WHERE %s
-		 ORDER BY uid%s`, whereExpr, limitClause)
+// searchQuery filters the base table for both result kinds. The caller resolves
+// sequence numbers through its session view. Fetching max+1 detects overflow.
+func searchQuery(whereExpr, limitClause string) string {
+	return fmt.Sprintf(`SELECT 0::bigint AS seqnum, uid
+ FROM messages WHERE folder_id = $1 AND (%s) ORDER BY uid%s`, whereExpr, limitClause)
 }
 
-// searchSQL accumulates a parameterized WHERE expression and its args.
-// All placeholders are $-numbered; args grows monotonically as fragments
-// are emitted. usesSeqNum records whether any SeqNum criterion referenced the
-// synthesized seqnum column, which forces the row_number() window.
+// searchSQL accumulates parameterized predicates; placeholders grow monotonically.
 type searchSQL struct {
-	view       *sessionView
-	args       []any
-	usesSeqNum bool
+	view *sessionView
+	args []any
 }
 
 // placeholder appends v to args and returns its $N placeholder string.
@@ -305,9 +261,9 @@ func (b *searchSQL) buildCriteria(c *imap.SearchCriteria) (string, error) {
 			continue
 		}
 		keyPh := b.placeholder(canonical)
-		valPh := b.placeholder("%" + escapeLike(strings.ToLower(h.Value)) + "%")
+		valPh := b.placeholder("%" + escapeLike(h.Value) + "%")
 		clauses = append(clauses, fmt.Sprintf(
-			`EXISTS (SELECT 1 FROM jsonb_array_elements_text(headers -> %s) v WHERE LOWER(v) LIKE %s ESCAPE '\')`,
+			`EXISTS (SELECT 1 FROM jsonb_array_elements_text(headers -> %s) v WHERE v COLLATE "und-x-icu" ILIKE %s ESCAPE '\')`,
 			keyPh, valPh))
 	}
 
@@ -410,9 +366,7 @@ const (
 	maxUIDExpr = `(SELECT COALESCE(max(uid), 0) FROM messages WHERE folder_id = $1)`
 )
 
-// seqSetClause emits `seqnum IN (...)` / range disjunctions matching
-// the IMAP SeqSet shape. It references the synthesized seqnum column, so it
-// forces the row_number() window on (R-041).
+// seqSetClause resolves sequence numbers through the selected view.
 func (b *searchSQL) seqSetClause(s imap.SeqSet) string {
 	if b.view != nil {
 		var uids []int64
@@ -423,7 +377,6 @@ func (b *searchSQL) seqSetClause(s imap.SeqSet) string {
 		}
 		return "uid = ANY(" + b.placeholder(uids) + "::bigint[])"
 	}
-	b.usesSeqNum = true
 	return rangeClause(rangesOfSeqSet(s), "seqnum", maxSeqExpr,
 		func(v any) string { return b.placeholder(v) })
 }
@@ -533,7 +486,7 @@ func (b *searchSQL) substringClause(term string, scope bodyScope) string {
 	if term == "" {
 		return "TRUE"
 	}
-	pattern := b.placeholder("%" + escapeLike(strings.ToLower(term)) + "%")
+	pattern := b.placeholder("%" + escapeLike(term) + "%")
 
 	var fields []string
 	switch scope {
@@ -541,8 +494,8 @@ func (b *searchSQL) substringClause(term string, scope bodyScope) string {
 		// The body projections only. Subject is deliberately absent: including
 		// it is what let BODY match a subject-only word.
 		fields = []string{
-			"LOWER(COALESCE(text_body, ''))",
-			"LOWER(COALESCE(html_body, ''))",
+			"COALESCE(text_body, '')",
+			"COALESCE(html_body, '')",
 		}
 	case bodyScopeText:
 		// The whole message: every header value as well as the body. The
@@ -550,16 +503,16 @@ func (b *searchSQL) substringClause(term string, scope bodyScope) string {
 		// separated as RFC header lines. JSON punctuation and escaping never
 		// participate in matching. Body decoding stays identical to ingest.
 		fields = []string{
-			"LOWER(COALESCE(text_body, ''))",
-			"LOWER(COALESCE(html_body, ''))",
-			"LOWER(COALESCE(subject, ''))",
-			"LOWER(" + headerTextProjection + ")",
+			"COALESCE(text_body, '')",
+			"COALESCE(html_body, '')",
+			"COALESCE(subject, '')",
+			headerTextProjection,
 		}
 	}
 
 	parts := make([]string, 0, len(fields))
 	for _, f := range fields {
-		parts = append(parts, fmt.Sprintf(`%s LIKE %s ESCAPE '\'`, f, pattern))
+		parts = append(parts, fmt.Sprintf(`%s COLLATE "und-x-icu" ILIKE %s ESCAPE '\'`, f, pattern))
 	}
 	clause := "(" + strings.Join(parts, " OR ") + ")"
 
