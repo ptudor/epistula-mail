@@ -42,15 +42,10 @@ func (s *Session) Append(mailbox string, r imap.LiteralReader, options *imap.App
 		}
 	}
 
-	if verr := validateFolderName(mailbox); verr != nil {
+	mailbox, verr := prepareFolderWrite(mailbox)
+	if verr != nil {
 		return nil, verr
 	}
-	// Normalize once, here, so the existence check below and the
-	// IngestParams.FolderName that reaches storage.Ingest agree. Checking
-	// with the canonical name but ingesting with the raw one would let
-	// `APPEND inbox` pass the check against INBOX and then have Ingest's
-	// upsert create a second, differently-cased folder.
-	mailbox = canonicalFolderName(mailbox)
 
 	// RFC 3501 §6.3.11 / RFC 9051 §6.3.12: if the destination mailbox does
 	// not exist, respond NO [TRYCREATE] so the client can offer to create

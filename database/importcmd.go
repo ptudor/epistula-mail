@@ -10,6 +10,7 @@ import (
 	"net/mail"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ptudor/epistula-mail/database/blob"
@@ -37,6 +38,11 @@ func runImport(args []string) int {
 	retryFailures := fs.Bool("retry-failures", false,
 		"Process ONLY the items the previous pass recorded as failed, from the failure manifest")
 	if err := fs.Parse(args); err != nil {
+		return EX_USAGE
+	}
+	*folderName = canonicalImportFolderName(*folderName)
+	if err := storage.ValidateFolderName(*folderName); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -folder: %v\n", err)
 		return EX_USAGE
 	}
 	if *maildirPath == "" || *mailboxName == "" {
@@ -677,4 +683,16 @@ func (c checkpoint) save(path string) error {
 		return err
 	}
 	return writeDurableFile(path, data)
+}
+
+// canonicalImportFolderName folds only INBOX's first hierarchy segment.
+func canonicalImportFolderName(name string) string {
+	first, rest, found := strings.Cut(name, "/")
+	if strings.EqualFold(first, "INBOX") {
+		if found {
+			return "INBOX/" + rest
+		}
+		return "INBOX"
+	}
+	return name
 }

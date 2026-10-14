@@ -55,6 +55,11 @@ func runImportBlobs(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return EX_USAGE
 	}
+	*folderName = canonicalImportFolderName(*folderName)
+	if err := storage.ValidateFolderName(*folderName); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -folder: %v\n", err)
+		return EX_USAGE
+	}
 
 	cfg, err := LoadConfig(*configPath)
 	if err != nil {

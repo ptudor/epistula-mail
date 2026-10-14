@@ -17,6 +17,7 @@ func TestValidateRejectsBadLimitsAndArgon(t *testing.T) {
 		name   string
 		mutate func(*Config)
 	}{
+		{"bad default folder", func(c *Config) { c.Delivery.DefaultFolder = "a//b" }},
 		{"zero delivery.timeout", func(c *Config) { c.Delivery.Timeout = "0s" }},
 		{"negative delivery.timeout", func(c *Config) { c.Delivery.Timeout = "-5s" }},
 		{"zero max_header_bytes", func(c *Config) { c.Limits.MaxHeaderBytes = 0 }},

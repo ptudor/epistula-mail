@@ -88,8 +88,8 @@ func FolderAncestors(name string) []string {
 // (RA6X-052). ON CONFLICT stays as a backstop for a writer that does not hold
 // the mailbox lock.
 func EnsureFolder(ctx context.Context, tx pgx.Tx, mailboxID int64, name string, specialUse *string) (Folder, bool, error) {
-	if name == "" {
-		return Folder{}, false, errors.New("storage.EnsureFolder: folder name is required")
+	if err := ValidateFolderName(name); err != nil {
+		return Folder{}, false, err
 	}
 	if specialUse != nil {
 		canonical, ok := CanonicalSpecialUse(*specialUse)

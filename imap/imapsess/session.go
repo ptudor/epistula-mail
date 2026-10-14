@@ -718,7 +718,7 @@ func patternMatches(name string, patterns []string, ref string) bool {
 		return true
 	}
 	for _, p := range patterns {
-		if imapserver.MatchList(name, '/', ref, p) {
+		if imapserver.MatchList(name, '/', canonicalFolderName(ref), canonicalFolderName(p)) {
 			return true
 		}
 	}
@@ -2269,7 +2269,11 @@ const maxFolderNameBytes = 255
 // Select, Status, List, Append, Subscribe, and Unsubscribe in one place
 // (RO5X-012).
 func canonicalFolderName(name string) string {
-	if strings.EqualFold(name, "INBOX") {
+	first, rest, found := strings.Cut(name, "/")
+	if strings.EqualFold(first, "INBOX") {
+		if found {
+			return "INBOX/" + rest
+		}
 		return "INBOX"
 	}
 	return name
@@ -2289,7 +2293,7 @@ func canonicalFolderName(name string) string {
 // Returning the canonical form and the error together makes the correct usage
 // the obvious one: a caller cannot validate and then forget to canonicalize.
 func prepareFolderWrite(name string) (string, *imap.Error) {
-	canonical := canonicalFolderName(name)
+	canonical := canonicalFolderName(strings.TrimSuffix(name, "/"))
 	if verr := validateFolderName(canonical); verr != nil {
 		return "", verr
 	}
@@ -2299,27 +2303,11 @@ func prepareFolderWrite(name string) (string, *imap.Error) {
 // validateFolderName rejects names the store should never hold. Applied by
 // CREATE and APPEND alike (RO5X-012).
 func validateFolderName(name string) *imap.Error {
-	if name == "" {
-		// go-imap should reject this at the parser; guard anyway.
-		return &imap.Error{Type: imap.StatusResponseTypeBad, Text: "mailbox name is required"}
-	}
-	if len(name) > maxFolderNameBytes {
-		return &imap.Error{
-			Type: imap.StatusResponseTypeNo,
-			Code: imap.ResponseCodeCannot,
-			Text: fmt.Sprintf("mailbox name exceeds %d bytes", maxFolderNameBytes),
+	if err := storage.ValidateFolderName(name); err != nil {
+		if name == "" {
+			return &imap.Error{Type: imap.StatusResponseTypeBad, Text: "mailbox name is required"}
 		}
-	}
-	for _, r := range name {
-		// NUL would truncate the name for anything reading it as a C
-		// string; the other controls corrupt the LIST response framing.
-		if r < 0x20 || r == 0x7f {
-			return &imap.Error{
-				Type: imap.StatusResponseTypeNo,
-				Code: imap.ResponseCodeCannot,
-				Text: "mailbox name contains a control character",
-			}
-		}
+		return &imap.Error{Type: imap.StatusResponseTypeNo, Code: imap.ResponseCodeCannot, Text: err.Error()}
 	}
 	return nil
 }

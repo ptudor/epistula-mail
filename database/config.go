@@ -11,6 +11,7 @@ import (
 
 	"github.com/ptudor/epistula-mail/database/netutil"
 	"github.com/ptudor/epistula-mail/database/pgdsn"
+	"github.com/ptudor/epistula-mail/database/storage"
 )
 
 var defaultConfigPaths = []string{
@@ -247,6 +248,10 @@ func applyEnv(cfg *Config) {
 }
 
 func (c *Config) Validate() error {
+	if err := storage.ValidateFolderName(c.Delivery.DefaultFolder); err != nil {
+		return fmt.Errorf("delivery.default_folder: %w", err)
+	}
+
 	if c.Postgres.DSN == "" {
 		return errors.New("postgres.dsn is required")
 	}

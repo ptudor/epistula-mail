@@ -20,6 +20,7 @@ func TestPatternMatchesUsesIMAPListGlobs(t *testing.T) {
 		want     bool
 	}{
 		{name: "INBOX", patterns: []string{"INBOX"}, want: true},
+		{name: "INBOX", patterns: []string{"inbox"}, want: true},
 		{name: "Archive/2025/Q1", patterns: []string{"Archive/*"}, want: true},
 		{name: "Archive/2025/Q1", patterns: []string{"Archive/%"}, want: false},
 		{name: "Archive/2025", patterns: []string{"Archive/%"}, want: true},
