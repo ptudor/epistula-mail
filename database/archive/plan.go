@@ -565,12 +565,14 @@ func moveAndJournal(ctx context.Context, db *storage.DB, mailboxID int64, chunk 
 		}
 		ids := make([]int64, len(done))
 		froms := make([]string, len(done))
+		fromIDs := make([]int64, len(done))
 		cats := make([]*string, len(done))
 		confs := make([]*float32, len(done))
 		for i, d := range done {
 			m := byID[d.ID]
 			ids[i] = d.ID
 			froms[i] = d.FromFolder
+			fromIDs[i] = d.FromFolderID
 			if m.Category != "" {
 				c := m.Category
 				cats[i] = &c
@@ -578,11 +580,12 @@ func moveAndJournal(ctx context.Context, db *storage.DB, mailboxID int64, chunk 
 			confs[i] = m.Confidence
 		}
 		_, err = tx.Exec(ctx, `
-			INSERT INTO archive_moves (mailbox_id, message_id, batch, reason, from_folder, to_folder, category, confidence)
-			SELECT $1, t.id, $2, $3, t.from_folder, $4, t.category, t.confidence
-			  FROM unnest($5::bigint[], $6::text[], $7::text[], $8::real[])
-			       AS t(id, from_folder, category, confidence)`,
-			mailboxID, batch, reason, chunk[0].ToFolder, ids, froms, cats, confs)
+			INSERT INTO archive_moves (mailbox_id, message_id, batch, reason, from_folder, to_folder, category, confidence, from_folder_id, to_folder_id)
+			SELECT $1, t.id, $2, $3, t.from_folder, $4, t.category, t.confidence, t.from_folder_id, m.folder_id
+			  FROM unnest($5::bigint[], $6::text[], $7::text[], $8::real[], $9::bigint[])
+			       AS t(id, from_folder, category, confidence, from_folder_id)
+			  JOIN messages m ON m.id=t.id`,
+			mailboxID, batch, reason, chunk[0].ToFolder, ids, froms, cats, confs, fromIDs)
 		if err != nil {
 			return fmt.Errorf("journal moves: %w", err)
 		}
@@ -617,6 +620,11 @@ func Undo(ctx context.Context, db *storage.DB, mailboxID int64, batch string, dr
 	if batchSize <= 0 {
 		batchSize = 500
 	}
+	type restoreTarget struct {
+		name string
+		id   int64
+		sort bool
+	}
 	type entry struct {
 		journalID     int64
 		messageID     int64
@@ -625,7 +633,7 @@ func Undo(ctx context.Context, db *storage.DB, mailboxID int64, batch string, dr
 	}
 	rows, err := db.Pool().Query(ctx, `
 		SELECT DISTINCT ON (j.message_id)
-		       j.id, j.message_id, j.from_folder, j.to_folder, m.folder_id, f.name
+		       j.id, j.message_id, j.from_folder, j.to_folder, m.folder_id, f.name, j.from_folder_id, j.to_folder_id, j.reason
 		  FROM archive_moves j
 		  JOIN messages m ON m.id = j.message_id
 		  JOIN folders f ON f.id = m.folder_id
@@ -635,19 +643,24 @@ func Undo(ctx context.Context, db *storage.DB, mailboxID int64, batch string, dr
 		return UndoStats{}, fmt.Errorf("read journal: %w", err)
 	}
 	var stats UndoStats
-	byFrom := map[string][]entry{}
+	byFrom := map[restoreTarget][]entry{}
 	for rows.Next() {
 		var e entry
-		var toFolder, current string
-		if err := rows.Scan(&e.journalID, &e.messageID, &e.fromFolder, &toFolder, &e.currentFolder, &current); err != nil {
+		var toFolder, current, reason string
+		var fromID, toID *int64
+		if err := rows.Scan(&e.journalID, &e.messageID, &e.fromFolder, &toFolder, &e.currentFolder, &current, &fromID, &toID, &reason); err != nil {
 			rows.Close()
 			return UndoStats{}, fmt.Errorf("scan journal: %w", err)
 		}
-		if current != toFolder {
+		if (toID != nil && e.currentFolder != *toID) || (toID == nil && current != toFolder) {
 			stats.Moved++
 			continue
 		}
-		byFrom[e.fromFolder] = append(byFrom[e.fromFolder], e)
+		target := restoreTarget{name: e.fromFolder, sort: reason == "sort"}
+		if fromID != nil {
+			target.id = *fromID
+		}
+		byFrom[target] = append(byFrom[target], e)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -661,11 +674,19 @@ func Undo(ctx context.Context, db *storage.DB, mailboxID int64, batch string, dr
 		return stats, err
 	}
 
-	froms := make([]string, 0, len(byFrom))
+	froms := make([]restoreTarget, 0, len(byFrom))
 	for f := range byFrom {
 		froms = append(froms, f)
 	}
-	sort.Strings(froms)
+	sort.Slice(froms, func(i, j int) bool {
+		if froms[i].name != froms[j].name {
+			return froms[i].name < froms[j].name
+		}
+		if froms[i].id != froms[j].id {
+			return froms[i].id < froms[j].id
+		}
+		return !froms[i].sort && froms[j].sort
+	})
 	gin, err := newGINFlusher(ctx, db)
 	if err != nil {
 		return stats, err
@@ -683,7 +704,25 @@ func Undo(ctx context.Context, db *storage.DB, mailboxID int64, batch string, dr
 			}
 			var restored int
 			err := db.RunTx(ctx, func(tx pgx.Tx) error {
-				done, err := storage.MoveMessages(ctx, tx, mailboxID, items, from)
+				if err := storage.LockMailbox(ctx, tx, mailboxID); err != nil {
+					return err
+				}
+				destination := from.name
+				if from.sort {
+					root, err := storage.FindSpecialUseFolder(ctx, tx, mailboxID, `\Archive`)
+					if errors.Is(err, storage.ErrNotFound) {
+						return storage.ErrNoArchiveFolder
+					}
+					if err != nil {
+						return err
+					}
+					destination = root.Name
+				} else if from.id != 0 {
+					if err := tx.QueryRow(ctx, `SELECT name FROM folders WHERE id=$1 AND mailbox_id=$2`, from.id, mailboxID).Scan(&destination); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+						return err
+					}
+				}
+				done, err := storage.MoveMessages(ctx, tx, mailboxID, items, destination)
 				if err != nil {
 					return err
 				}
@@ -700,7 +739,7 @@ func Undo(ctx context.Context, db *storage.DB, mailboxID int64, batch string, dr
 				return nil
 			})
 			if err != nil {
-				return stats, fmt.Errorf("restore %d message(s) to %q: %w", len(chunk), from, err)
+				return stats, fmt.Errorf("restore %d message(s) to %q: %w", len(chunk), from.name, err)
 			}
 			stats.Restored += restored
 			stats.Moved += len(chunk) - restored

@@ -68,7 +68,7 @@ func Reclassify(ctx context.Context, db *storage.DB, mailboxID int64, opts Recla
 		// under Key and the message is still where it was filed.
 		rows, err := db.Pool().Query(ctx, `
 			SELECT DISTINCT ON (j.message_id)
-			       j.message_id, COALESCE(j.category, ''), j.to_folder, m.folder_id, f.name
+			       j.message_id, COALESCE(j.category, ''), j.to_folder, m.folder_id, f.name, j.to_folder_id
 			  FROM archive_moves j
 			  JOIN messages m ON m.id = j.message_id
 			  JOIN folders f ON f.id = m.folder_id
@@ -80,14 +80,15 @@ func Reclassify(ctx context.Context, db *storage.DB, mailboxID int64, opts Recla
 		for rows.Next() {
 			var id, folderID int64
 			var category, toFolder, current string
-			if err := rows.Scan(&id, &category, &toFolder, &folderID, &current); err != nil {
+			var toID *int64
+			if err := rows.Scan(&id, &category, &toFolder, &folderID, &current, &toID); err != nil {
 				rows.Close()
 				return stats, fmt.Errorf("scan journal: %w", err)
 			}
 			if category != opts.Key {
 				continue
 			}
-			if current != toFolder || folderID == root.ID {
+			if (toID != nil && folderID != *toID) || (toID == nil && current != toFolder) || folderID == root.ID {
 				stats.MovedSince++
 				continue
 			}

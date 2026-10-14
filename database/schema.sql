@@ -166,11 +166,10 @@ CREATE INDEX IF NOT EXISTS idx_messages_fts          ON messages USING GIN (fts)
 CREATE INDEX IF NOT EXISTS idx_messages_headers      ON messages USING GIN (headers);
 CREATE INDEX IF NOT EXISTS idx_messages_folder_date  ON messages (folder_id, internal_date DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_message_id   ON messages (message_id) WHERE message_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_messages_raw_sha256   ON messages (raw_sha256);
 CREATE INDEX IF NOT EXISTS idx_messages_folder_sha   ON messages (folder_id, raw_sha256);
-CREATE INDEX IF NOT EXISTS idx_messages_sha_date     ON messages (raw_sha256, raw_blob_date);
 CREATE INDEX IF NOT EXISTS idx_messages_sha_date_folder ON messages (raw_sha256, raw_blob_date, folder_id);
 CREATE INDEX IF NOT EXISTS idx_messages_folder_modseq ON messages (folder_id, mod_seq);
+CREATE INDEX IF NOT EXISTS idx_messages_deleted_folder ON messages (folder_id) WHERE '\Deleted' = ANY(flags);
 
 -- Attachments extracted from multipart messages. filename is metadata only;
 -- the on-disk file is named by sha256
@@ -369,7 +368,8 @@ INSERT INTO schema_versions (version, description) VALUES
     (20, 'archive sorting'),
     (21, 'folder redirects'),
     (22, 'annotation pass required'),
-    (23, 'delivery log fk indexes')
+    (23, 'delivery log fk indexes'),
+    (24, 'archive identity and indexes')
     ON CONFLICT DO NOTHING;
 
 -- All folder creation/rename paths use this allocator. Never wrap or reset the
@@ -469,7 +469,9 @@ CREATE TABLE IF NOT EXISTS archive_moves (
     category    TEXT,
     confidence  REAL,
     moved_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    undone_at   TIMESTAMPTZ
+    undone_at   TIMESTAMPTZ,
+    from_folder_id BIGINT, -- migration 024; historical identity, survives folder deletion
+    to_folder_id   BIGINT
 );
 CREATE INDEX IF NOT EXISTS idx_archive_moves_batch ON archive_moves (mailbox_id, batch);
 CREATE INDEX IF NOT EXISTS idx_archive_moves_message ON archive_moves (message_id);

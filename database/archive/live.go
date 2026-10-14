@@ -181,11 +181,11 @@ func sortMailbox(ctx context.Context, db *storage.DB, mailboxID int64, root stor
 			   AND m.id > $7
 			   AND NOT EXISTS (
 			       SELECT 1 FROM (
-			           SELECT j.reason, j.undone_at, j.to_folder FROM archive_moves j
+			           SELECT j.reason, j.undone_at, j.to_folder, j.to_folder_id FROM archive_moves j
 			            WHERE j.mailbox_id=$1 AND j.message_id=m.id ORDER BY j.id DESC LIMIT 1
 			       ) latest
 			        WHERE latest.reason IN ('sort', 'reorg')
-			          AND (latest.undone_at IS NOT NULL OR latest.to_folder <> $8))
+			          AND (latest.undone_at IS NOT NULL OR COALESCE(latest.to_folder_id <> $2, latest.to_folder <> $8)))
 			 ORDER BY m.id
 			 LIMIT $6`,
 			mailboxID, root.ID, opts.SettleDelay.Seconds(), opts.MinConfidence, keys, opts.BatchSize, afterID, root.Name)

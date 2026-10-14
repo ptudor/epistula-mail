@@ -1,7 +1,11 @@
 package imapsess
 
 import (
+	"context"
+	"errors"
+
 	"fmt"
+	"github.com/jackc/pgx/v5/pgconn"
 	"net/textproto"
 	"strings"
 
@@ -71,7 +75,7 @@ func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria,
 	rows, err := s.be.Pool.Query(ctx, query, b.args...)
 	if err != nil {
 		s.be.Logger.Error("SEARCH query", "err", err, "where", whereExpr)
-		return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "SEARCH query failed"}
+		return nil, searchQueryError(err)
 	}
 	defer rows.Close()
 
@@ -114,7 +118,7 @@ func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria,
 	}
 	if err := rows.Err(); err != nil {
 		s.be.Logger.Error("SEARCH rows", "err", err)
-		return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "SEARCH query failed"}
+		return nil, searchQueryError(err)
 	}
 
 	// The query asked for max+1 rows; getting them all means the real result
@@ -568,3 +572,12 @@ func (b *searchSQL) substringClause(term string, scope bodyScope) string {
 const headerTextProjection = `(SELECT COALESCE(string_agg(h.key || ': ' || v.value, E'\n' ORDER BY h.key, v.ord), '')
  FROM jsonb_each(CASE WHEN jsonb_typeof(headers)='object' THEN headers ELSE '{}'::jsonb END) h
  CROSS JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(h.value)='array' THEN h.value ELSE jsonb_build_array(h.value) END) WITH ORDINALITY v(value,ord))`
+
+// searchQueryError distinguishes resource limits from other query failures.
+func searchQueryError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &pgErr) && pgErr.Code == "57014" && strings.Contains(pgErr.Message, "statement timeout")) {
+		return &imap.Error{Type: imap.StatusResponseTypeNo, Code: imap.ResponseCodeLimit, Text: "SEARCH time limit exceeded; narrow the criteria"}
+	}
+	return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "SEARCH query failed"}
+}
