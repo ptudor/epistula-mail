@@ -156,7 +156,7 @@ func (s *Session) verifyProfiles(password string, identity loginIdentity, profil
 	}
 	// Reserve the largest scratch allocation for the entire sequential set.
 	// Every category therefore has identical admission/queue behavior too.
-	return s.be.AuthBudget.verifyFunc(ctx, profileReservation(profiles), func() (bool, error) {
+	matched, verifyErr := s.be.AuthBudget.verifyFunc(ctx, profileReservation(profiles), func() (bool, error) {
 		matched := false
 		for _, p := range profiles {
 			if ctx.Err() != nil {
@@ -180,6 +180,12 @@ func (s *Session) verifyProfiles(password string, identity loginIdentity, profil
 		}
 		return matched && identity.disabled == nil, nil
 	})
+	if verifyErr == nil && identity.id != 0 && parseErr != nil {
+		if _, warned := s.be.malformedAuthWarned.LoadOrStore(identity.id, struct{}{}); !warned {
+			s.be.Logger.Warn("malformed password_hash", "mailbox", identity.name, "reason", parseErr)
+		}
+	}
+	return matched, verifyErr
 }
 
 // AuditAuthProfiles logs the supported cost catalog at startup without
@@ -189,6 +195,30 @@ func AuditAuthProfiles(ctx context.Context, pool *pgxpool.Pool, budget *AuthBudg
 	profiles, err := readAuthProfiles(ctx, pool)
 	if err != nil {
 		return err
+	}
+	rows, err := pool.Query(ctx, `SELECT name,password_hash FROM mailboxes ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	malformed := 0
+	for rows.Next() {
+		var name, hash string
+		if err := rows.Scan(&name, &hash); err != nil {
+			rows.Close()
+			return err
+		}
+		if _, err := auth.ParseEncodedParams(hash); err != nil {
+			malformed++
+			logger.Warn("authentication audit: malformed password_hash", "mailbox", name, "reason", err)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	if malformed > 0 {
+		logger.Warn("authentication audit: malformed credentials", "count", malformed)
 	}
 	reservation := profileReservation(profiles)
 	if budget != nil && reservation > budget.LimitKiB() {

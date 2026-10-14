@@ -13,7 +13,7 @@ var (
 
 	metricLimiterRejections = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "imap_database_limiter_rejections_total",
-		Help: "Connections or commands refused by a limiter (per_ip | per_mailbox | login_throttle | command_rate | auth_budget).",
+		Help: "Connections or commands refused by a limiter (per_ip | per_mailbox | login_throttle | command_rate | auth_budget | preauth_timeout | global_connections | tls_handshake | tls_handshake_limit).",
 	}, []string{"limiter"})
 
 	metricCommandsPaced = prometheus.NewCounter(prometheus.CounterOpts{

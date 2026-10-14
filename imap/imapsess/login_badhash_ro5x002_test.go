@@ -1,10 +1,11 @@
 package imapsess
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
-	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,10 +45,11 @@ func TestLoginAgainstMalformedStoredHash(t *testing.T) {
 				t.Fatalf("insert mailbox: %v", err)
 			}
 
+			var logs bytes.Buffer
 			be := &Backend{
 				Pool:        db.Pool(),
 				BlobStore:   blob.NewStore(t.TempDir()),
-				Logger:      slog.New(slog.NewTextHandler(os.Stderr, nil)),
+				Logger:      slog.New(slog.NewTextHandler(&logs, nil)),
 				StmtTimeout: 10 * time.Second,
 			}
 			sess := be.NewSession()
@@ -70,6 +72,21 @@ func TestLoginAgainstMalformedStoredHash(t *testing.T) {
 			if sess.mailboxID != 0 {
 				t.Error("session became authenticated against a malformed hash")
 			}
+			if out := logs.String(); !strings.Contains(out, "malformed password_hash") || !strings.Contains(out, "mailbox=alice") || strings.Contains(out, tc.hash) {
+				t.Fatalf("malformed warning: %s", out)
+			}
+			_ = sess.Login("alice", "whatever")
+			if n := strings.Count(logs.String(), `msg="malformed password_hash"`); n != 1 {
+				t.Fatalf("malformed warnings=%d", n)
+			}
+			if err := AuditAuthProfiles(ctx, db.Pool(), nil, be.Logger); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(logs.String(), "count=1") {
+				t.Fatal("audit omitted malformed count")
+			}
+			sess.Close()
+
 		})
 	}
 }

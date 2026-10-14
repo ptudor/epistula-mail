@@ -44,6 +44,7 @@ func TestLoginFailuresAreLogged(t *testing.T) {
 		{"unknown", "ptudor@example.invalid", "secret-guess-2", []string{"level=INFO", `reason="no such mailbox"`, "username=ptudor@example.invalid"}},
 		{"empty username", "", "secret-guess-3", []string{"level=INFO", `reason="username missing"`, "ip=1.2.3.4"}},
 		{"empty password", "alice", "", []string{"level=INFO", `reason="password missing"`, "username=alice"}},
+		{"throttled long username", long, "guess", []string{`msg="login throttled"`, "username=" + strings.Repeat("u", maxLoggedUsername) + "..."}},
 		{"long username", long, "secret-guess-4", []string{"username=" + strings.Repeat("u", maxLoggedUsername) + "..."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -53,6 +54,10 @@ func TestLoginFailuresAreLogged(t *testing.T) {
 				BlobStore:   blob.NewStore(t.TempDir()),
 				Logger:      slog.New(slog.NewTextHandler(&buf, nil)),
 				StmtTimeout: 10 * time.Second,
+			}
+			if tc.name == "throttled long username" {
+				be.LoginLimiter = NewLoginThrottle(1, time.Minute, time.Minute)
+				be.LoginLimiter.RecordResult("1.2.3.4", false)
 			}
 			sess := be.NewSession()
 			sess.remoteIP = "1.2.3.4"

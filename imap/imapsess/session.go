@@ -85,10 +85,11 @@ type Backend struct {
 	// AuthTiming preserves a common minimum for lookup noise and early
 	// failures. The common cost workset handles mixed hashes independently.
 	// Nil disables only this optional padding.
-	AuthTiming        *AuthTimingFloor
-	authProfilesMu    sync.Mutex
-	authProfiles      []authProfile
-	authProfilesUntil time.Time
+	AuthTiming          *AuthTimingFloor
+	authProfilesMu      sync.Mutex
+	authProfiles        []authProfile
+	authProfilesUntil   time.Time
+	malformedAuthWarned sync.Map
 
 	// PreAuthTimeout bounds how long a connection may sit between TLS
 	// handshake and successful LOGIN (the preauth_timeout config key).
@@ -193,8 +194,9 @@ type Session struct {
 	// budget independently of the library's per-command read deadline (R-039).
 	// authenticated is flipped true by a successful Login and read by the
 	// timer goroutine — the two touch it atomically; nothing else does.
-	preAuthTimer  *time.Timer
-	authenticated atomic.Bool
+	preAuthTimer    *time.Timer
+	preAuthDeadline time.Time
+	authenticated   atomic.Bool
 	// timedOut distinguishes "the pre-auth timer closed this connection" from
 	// "it authenticated", since both set authenticated (see the CAS in
 	// NewSessionForNetConn).
@@ -290,6 +292,7 @@ func (b *Backend) NewSessionForNetConn(conn net.Conn) *Session {
 	s := b.NewSessionForConn(conn.RemoteAddr())
 	s.conn = conn
 	if b.PreAuthTimeout > 0 {
+		s.preAuthDeadline = time.Now().Add(b.PreAuthTimeout)
 		s.preAuthTimer = time.AfterFunc(b.PreAuthTimeout, func() {
 			// CompareAndSwap, not Load-then-close: with a plain read, a timer
 			// that fired and observed false could still close a connection
@@ -332,6 +335,14 @@ func (s *Session) Close() error {
 		return nil
 	}
 	s.closed = true
+	if s.timedOut.Load() {
+		logger := s.be.Logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Info("pre-authentication timeout", "ip", s.remoteIP)
+		metricLimiterRejections.WithLabelValues("preauth_timeout").Inc()
+	}
 	if s.closeDone != nil {
 		close(s.closeDone)
 	}
@@ -412,7 +423,7 @@ func (s *Session) Login(username, password string) (err error) {
 	// Throttle check FIRST — short-circuits before the password hash
 	// comparison so a locked-out attacker can't keep us busy.
 	if s.remoteIP != "" && s.be.LoginLimiter != nil && !s.be.LoginLimiter.Allow(s.remoteIP) {
-		s.be.Logger.Warn("login throttled", "ip", s.remoteIP, "username", username)
+		s.be.Logger.Warn("login throttled", "ip", s.remoteIP, "username", loggableUsername(username))
 		metricLimiterRejections.WithLabelValues("login_throttle").Inc()
 		metricAuthTotal.WithLabelValues("failure").Inc()
 		return authFailed()
@@ -428,6 +439,9 @@ func (s *Session) Login(username, password string) (err error) {
 	}
 	id, canonicalName := identity.id, identity.name
 	ok, err := s.verifyProfiles(password, identity, profiles)
+	if s.timedOut.Load() {
+		return &imap.Error{Type: imap.StatusResponseTypeNo, Code: imap.ResponseCodeUnavailable, Text: "connection closed"}
+	}
 	if err != nil {
 		if errors.Is(err, errAuthBudgetExhausted) {
 			// Server-side saturation, not a credential problem. Do not charge
@@ -468,6 +482,11 @@ func (s *Session) Login(username, password string) (err error) {
 		return authFailed()
 	}
 
+	// Win authentication admission against the pre-auth timer before claiming
+	// any mailbox slot or reporting a successful login.
+	if !s.authenticated.CompareAndSwap(false, true) {
+		return &imap.Error{Type: imap.StatusResponseTypeNo, Code: imap.ResponseCodeUnavailable, Text: "connection closed"}
+	}
 	// The credential is correct, so clear the IP's failure history NOW —
 	// before the resource cap below can refuse the session.
 	//
@@ -487,6 +506,13 @@ func (s *Session) Login(username, password string) (err error) {
 	// attacker hammering one mailbox can't lock out the legitimate user
 	// just by exhausting the slot count. (This ordering must NOT change.)
 	if s.be.PerMailbox != nil && !s.be.PerMailbox.Acquire(id) {
+		// A resource refusal remains unauthenticated and can be retried. Restore
+		// the original deadline if its timer raced the temporary admission claim.
+		s.authenticated.Store(false)
+		if s.preAuthTimer != nil {
+			s.preAuthTimer.Reset(time.Until(s.preAuthDeadline))
+		}
+
 		s.be.Logger.Warn("login refused: per-mailbox session cap",
 			"mailbox", username, "ip", s.remoteIP)
 		metricLimiterRejections.WithLabelValues("per_mailbox").Inc()
@@ -504,7 +530,6 @@ func (s *Session) Login(username, password string) (err error) {
 	// Authenticated: stop the pre-auth budget timer so it can't close a live
 	// session, and lift any read deadline. Idle-session policy from here on is
 	// the client's IDLE/poll cadence plus the per-IP and per-mailbox caps.
-	s.authenticated.Store(true)
 	if s.preAuthTimer != nil {
 		s.preAuthTimer.Stop()
 	}
