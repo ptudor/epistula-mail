@@ -47,7 +47,7 @@ func TestAuthenticatedServerBlocksOfflineMaintenance(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close()
 	cfg := filepath.Join(t.TempDir(), "imap.toml")
-	text := fmt.Sprintf("production=false\n[server]\nlisten_addr=%q\naccept_insecure_for_dev=true\ndrain_timeout_seconds=1\n[admin]\nlisten_addr='127.0.0.1:0'\n[postgres]\ndsn=%q\nmax_open_conns=2\nmax_idle_conns=0\nidle_conn_pool_size=0\n[storage]\nroot=%q\n", addr, dsn, root)
+	text := fmt.Sprintf("production=false\n[server]\nlisten_addr=%q\naccept_insecure_for_dev=true\ndrain_timeout_seconds=1\n[admin]\nlisten_addr='127.0.0.1:0'\n[postgres]\ndsn=%q\nmax_open_conns=2\nmax_idle_conns=0\nidle_conn_pool_size=1\n[storage]\nroot=%q\n", addr, dsn, root)
 	if err := os.WriteFile(cfg, []byte(text), 0600); err != nil {
 		t.Fatal(err)
 	}

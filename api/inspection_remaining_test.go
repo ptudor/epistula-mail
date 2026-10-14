@@ -28,6 +28,16 @@ func TestInspectionRankingAndSummaryEdges(t *testing.T) {
 	if len(doc.Annotations) != 2 || doc.Annotations[0].Model != "a" || doc.Annotations[0].Primary || !doc.Annotations[1].Primary {
 		t.Fatal("ranked model selection changed")
 	}
+	// Reverse the priority winner while keeping model names and page order
+	// unchanged, so alphabetical order cannot masquerade as priority ranking.
+	if _, err := f.pool.Exec(ctx, `INSERT INTO annotation_models(model,priority) VALUES('a',20)`); err != nil {
+		t.Fatal(err)
+	}
+	doc = messageDoc{}
+	f.getJSON(fmt.Sprintf("/v1/messages/%d?metadata=inspection", id), f.aliceContentToken, http.StatusOK, &doc)
+	if len(doc.Annotations) != 2 || doc.Annotations[0].Model != "a" || !doc.Annotations[0].Primary || doc.Annotations[1].Primary {
+		t.Fatal("priority change did not change primary independently of model order")
+	}
 	for _, offset := range []int{0, 3, 6, 9, 100} {
 		var page messageDoc
 		f.getJSON(fmt.Sprintf("/v1/messages/%d?metadata=inspection&annotation_model=a&summary_offset=%d", id, offset), f.aliceContentToken, http.StatusOK, &page)
