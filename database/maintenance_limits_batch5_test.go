@@ -144,14 +144,14 @@ func TestDryRunDoesNotTouchTheStorageRoot(t *testing.T) {
 		t.Fatalf("a dry-run changed the root's mode from %v to %v", before.Mode(), after.Mode())
 	}
 
-	// A live run still initializes a fresh store.
+	// Live commands also require an operator-provisioned root (RM51X-022).
 	fresh := filepath.Join(dir, "live")
 	cfg.Storage.Root = fresh
 	cfg.Storage.GroupWritable = false
-	if _, code := openBlobStoreFor(cfg, false); code != EX_OK {
-		t.Fatalf("a live run failed to initialize a fresh store: exit %d", code)
+	if _, code := openBlobStoreFor(cfg, false); code != EX_TEMPFAIL {
+		t.Fatalf("a live run with a missing root returned exit %d", code)
 	}
-	if fi, err := os.Stat(fresh); err != nil || !fi.IsDir() {
-		t.Fatalf("a live run did not create the store: %v", err)
+	if _, err := os.Stat(fresh); !os.IsNotExist(err) {
+		t.Fatalf("a live run created the missing root: %v", err)
 	}
 }

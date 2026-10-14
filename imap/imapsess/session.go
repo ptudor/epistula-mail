@@ -2692,7 +2692,7 @@ func (c *messageSections) prepare(s *Session, r fetchRow, sec *imap.FetchItemBod
 	default:
 		_, err = c.part(s, r, sec.Part)
 	}
-	if err == nil {
+	if err == nil || errors.Is(err, errPartNotFound) {
 		return nil
 	}
 	var protocolErr *imap.Error

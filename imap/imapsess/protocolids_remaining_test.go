@@ -63,14 +63,21 @@ func TestRemainingUIDValidityExhaustionRollsBackHierarchy(t *testing.T) {
 		} else {
 			err = s.Create("New/Child", nil)
 		}
-		if err == nil {
+		if rename && err != nil {
+			t.Fatalf("RENAME must preserve existing UIDVALIDITY without allocating: %v", err)
+		}
+		if !rename && err == nil {
 			t.Fatal("partly exhausted hierarchy operation succeeded")
 		}
 		var old, newCount int
 		if err := s.be.Pool.QueryRow(ctx, `SELECT count(*) FILTER(WHERE name LIKE 'Old%'),count(*) FILTER(WHERE name LIKE 'New%') FROM folders WHERE mailbox_id=$1`, s.mailboxID).Scan(&old, &newCount); err != nil {
 			t.Fatal(err)
 		}
-		if old != 2 || newCount != 0 {
+		wantOld, wantNew := 2, 0
+		if rename {
+			wantOld, wantNew = 0, 2
+		}
+		if old != wantOld || newCount != wantNew {
 			t.Fatalf("partial hierarchy mutation: old=%d new=%d", old, newCount)
 		}
 	}
