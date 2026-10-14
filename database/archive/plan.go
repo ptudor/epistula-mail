@@ -455,7 +455,7 @@ func Apply(ctx context.Context, db *storage.DB, plan *Plan, opts ApplyOptions) (
 			end++
 		}
 		chunk := moves[start:end]
-		moved, err := moveAndJournal(ctx, db, plan.MailboxID, chunk, opts.Batch, "reorg", filingDestination)
+		moved, err := moveAndJournal(ctx, db, plan.MailboxID, chunk, opts.Batch, "reorg", filingDestination, true)
 		if err != nil {
 			return stats, fmt.Errorf("move %d message(s) to %q: %w", len(chunk), chunk[0].ToFolder, err)
 		}
@@ -493,9 +493,11 @@ func filingDestination(specialUse string) bool { return specialUse == `\Archive`
 // the merged mail.
 func mergeDestination(specialUse string) bool { return specialUse != `\Trash` }
 
+var errNoReorgMoves = errors.New("archive: no eligible reorganization moves")
+
 // moveAndJournal moves one same-destination chunk and journals what moved, in
 // one transaction.
-func moveAndJournal(ctx context.Context, db *storage.DB, mailboxID int64, chunk []Move, batch, reason string, allowed destinationRule) ([]int64, error) {
+func moveAndJournal(ctx context.Context, db *storage.DB, mailboxID int64, chunk []Move, batch, reason string, allowed destinationRule, skipDeleted bool) ([]int64, error) {
 	items := make([]storage.MoveItem, len(chunk))
 	byID := make(map[int64]Move, len(chunk))
 	for i, m := range chunk {
@@ -512,18 +514,42 @@ func moveAndJournal(ctx context.Context, db *storage.DB, mailboxID int64, chunk 
 		// year folder below one, or a folder given a role since: the
 		// destination's special-use role is checked against the caller's
 		// rule every time.
-		var special *string
-		switch err := tx.QueryRow(ctx,
-			`SELECT special_use FROM folders WHERE mailbox_id = $1 AND name = $2`,
-			mailboxID, chunk[0].ToFolder,
-		).Scan(&special); {
-		case errors.Is(err, pgx.ErrNoRows):
-		case err != nil:
-			return fmt.Errorf("check destination: %w", err)
-		case special != nil && !allowed(*special):
-			return fmt.Errorf("%w: %q carries %s", ErrSpecialUseDestination, chunk[0].ToFolder, *special)
+		names := []string{chunk[0].ToFolder}
+		root, rootErr := storage.FindSpecialUseFolder(ctx, tx, mailboxID, `\Archive`)
+		if rootErr != nil && !errors.Is(rootErr, storage.ErrNotFound) {
+			return rootErr
 		}
-		done, err := storage.MoveMessages(ctx, tx, mailboxID, items, chunk[0].ToFolder)
+		if rootErr == nil && storage.IsUnderFolder(chunk[0].ToFolder, root.Name) {
+			for _, name := range storage.FolderAncestors(chunk[0].ToFolder) {
+				if name == root.Name || storage.IsUnderFolder(name, root.Name) {
+					names = append(names, name)
+				}
+			}
+		}
+		roles, err := tx.Query(ctx, `SELECT name, special_use FROM folders WHERE mailbox_id=$1 AND name=ANY($2) AND special_use IS NOT NULL`, mailboxID, names)
+		if err != nil {
+			return fmt.Errorf("check destination: %w", err)
+		}
+		for roles.Next() {
+			var name, special string
+			if err := roles.Scan(&name, &special); err != nil {
+				roles.Close()
+				return err
+			}
+			if !allowed(special) {
+				roles.Close()
+				return fmt.Errorf("%w: %q carries %s", ErrSpecialUseDestination, name, special)
+			}
+		}
+		roles.Close()
+		if err := roles.Err(); err != nil {
+			return err
+		}
+		move := storage.MoveMessages
+		if skipDeleted {
+			move = storage.MoveMessagesUndeleted
+		}
+		done, err := move(ctx, tx, mailboxID, items, chunk[0].ToFolder)
 		if err != nil {
 			return err
 		}
@@ -532,6 +558,9 @@ func moveAndJournal(ctx context.Context, db *storage.DB, mailboxID int64, chunk 
 			moved = append(moved, d.ID)
 		}
 		if len(done) == 0 {
+			if skipDeleted {
+				return errNoReorgMoves
+			}
 			return nil
 		}
 		ids := make([]int64, len(done))
@@ -559,6 +588,9 @@ func moveAndJournal(ctx context.Context, db *storage.DB, mailboxID int64, chunk 
 		}
 		return nil
 	})
+	if errors.Is(err, errNoReorgMoves) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}

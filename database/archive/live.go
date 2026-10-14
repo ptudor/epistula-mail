@@ -113,10 +113,14 @@ func SortOnce(ctx context.Context, db *storage.DB, opts SortOptions) (SortStats,
 // the sorter may file into, logging each one it refuses.
 func validCategoryKeys(ctx context.Context, db *storage.DB, mailboxID int64, root string, logger *slog.Logger) ([]string, error) {
 	rows, err := db.Pool().Query(ctx, `
-		SELECT c.key, c.folder, COALESCE(f.special_use, '')
+		SELECT c.key, c.folder, COALESCE((
+		 SELECT f.special_use FROM folders f WHERE f.mailbox_id=c.mailbox_id
+		  AND f.special_use IS NOT NULL
+		  AND left(f.name,char_length($2)+1)=$2||'/'
+		  AND (f.name=c.folder OR left(c.folder,char_length(f.name)+1)=f.name||'/')
+		 ORDER BY f.name LIMIT 1), '')
 		  FROM archive_categories c
-		  LEFT JOIN folders f ON f.mailbox_id = c.mailbox_id AND f.name = c.folder
-		 WHERE c.mailbox_id = $1 AND c.retired_at IS NULL`, mailboxID)
+		 WHERE c.mailbox_id = $1 AND c.retired_at IS NULL`, mailboxID, root)
 	if err != nil {
 		return nil, fmt.Errorf("read categories: %w", err)
 	}
@@ -219,7 +223,7 @@ func sortMailbox(ctx context.Context, db *storage.DB, mailboxID int64, root stor
 				skipped += len(byFolder[folder])
 				continue
 			}
-			moved, err := moveAndJournal(ctx, db, mailboxID, byFolder[folder], batch, "sort", filingDestination)
+			moved, err := moveAndJournal(ctx, db, mailboxID, byFolder[folder], batch, "sort", filingDestination, false)
 			if errors.Is(err, ErrSpecialUseDestination) {
 				refused[folder] = true
 				skipped += len(byFolder[folder])

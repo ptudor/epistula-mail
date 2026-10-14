@@ -173,7 +173,7 @@ func MergeFolders(ctx context.Context, db *storage.DB, mailboxID int64, opts Mer
 			entry.Moved = 0
 			for start := 0; start < len(moves); start += opts.BatchSize {
 				chunk := moves[start:min(start+opts.BatchSize, len(moves))]
-				n, err := moveAndJournal(ctx, db, mailboxID, chunk, opts.Batch, "reorg", mergeDestination)
+				n, err := moveAndJournal(ctx, db, mailboxID, chunk, opts.Batch, "reorg", mergeDestination, false)
 				if err != nil {
 					return stats, fmt.Errorf("move from %q: %w", src.name, err)
 				}

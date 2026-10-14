@@ -560,6 +560,9 @@ func adminFolderMerge(args []string) int {
 	}
 	fmt.Printf("recorded a folder redirect: later imports into %s go to %q while the folder does not exist\n",
 		scope, *to)
+	if *dropDuplicates {
+		fmt.Printf("%d duplicate row(s) were destroyed and are NOT journaled; archive-undo restores only the %d moved messages\n", stats.Dropped, stats.Moved)
+	}
 	fmt.Printf("undo the moves with: epistula-database admin archive-undo -mailbox %s -batch %s -yes\n", *mailbox, batch)
 	fmt.Printf("then tidy up with:   epistula-database admin folder-prune-empty -mailbox %s -dry-run\n", *mailbox)
 	return EX_OK

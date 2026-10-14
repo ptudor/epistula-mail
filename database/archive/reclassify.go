@@ -129,7 +129,7 @@ func Reclassify(ctx context.Context, db *storage.DB, mailboxID int64, opts Recla
 		}
 		for start := 0; start < len(refile); start += opts.BatchSize {
 			chunk := refile[start:min(start+opts.BatchSize, len(refile))]
-			n, err := moveAndJournal(ctx, db, mailboxID, chunk, opts.Batch, "reorg", filingDestination)
+			n, err := moveAndJournal(ctx, db, mailboxID, chunk, opts.Batch, "reorg", filingDestination, false)
 			if err != nil {
 				return stats, fmt.Errorf("refile to %q: %w", root.Name, err)
 			}

@@ -210,9 +210,10 @@ Folder:
                    deepest first. For tidying up after archive-apply.
   folder-merge -mailbox M -from F [-subtree] -to T [-drop-duplicates] (-dry-run | -yes)
                    Move every message of F (and, with -subtree, everything
-                   below it) into T, journaled so archive-undo reverses it.
+                   below it) into T; archive-undo restores the journaled moves.
                    A message whose exact content is already in T is left
                    behind, or destroyed with -drop-duplicates (T keeps it).
+                   Destroyed duplicate rows are NOT journaled or restored by undo.
 
 Archive sorting (see ARCHIVE_SORTING.md):
   archive-category-import -mailbox M -file F [-dry-run]

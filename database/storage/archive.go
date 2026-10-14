@@ -300,17 +300,23 @@ func validateCategories(ctx context.Context, tx pgx.Tx, mailboxID int64, root st
 		if strings.ContainsRune(c.Description, 0) {
 			return fmt.Errorf("%w: %s: description contains a NUL character", ErrInvalidArchiveCategory, where)
 		}
+		var ancestors []string
+		for _, name := range append(FolderAncestors(c.Folder), c.Folder) {
+			if IsUnderFolder(name, root) {
+				ancestors = append(ancestors, name)
+			}
+		}
 		var special *string
 		err := tx.QueryRow(ctx,
-			`SELECT special_use FROM folders WHERE mailbox_id = $1 AND name = $2`,
-			mailboxID, c.Folder,
+			`SELECT special_use FROM folders WHERE mailbox_id = $1 AND name = ANY($2) AND special_use IS NOT NULL ORDER BY name LIMIT 1`,
+			mailboxID, ancestors,
 		).Scan(&special)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 		case err != nil:
 			return fmt.Errorf("check folder %q: %w", c.Folder, err)
 		case special != nil:
-			return fmt.Errorf("%w: %s: folder %q carries %s; a category may not file into a special-use folder", ErrInvalidArchiveCategory, where, c.Folder, *special)
+			return fmt.Errorf("%w: %s: folder %q or an ancestor carries %s; a category may not file into a special-use folder", ErrInvalidArchiveCategory, where, c.Folder, *special)
 		}
 	}
 	// An annual category owns the year folders below its own; another
@@ -367,6 +373,16 @@ type MovedMessage struct {
 // this row entered its current folder" (schema.sql). Both sides are announced
 // on mail_arrived so IDLE sessions notice.
 func MoveMessages(ctx context.Context, tx pgx.Tx, mailboxID int64, items []MoveItem, dest string) ([]MovedMessage, error) {
+	return moveMessages(ctx, tx, mailboxID, items, dest, false)
+}
+
+// MoveMessagesUndeleted rechecks the Deleted flag after acquiring folder and
+// message locks in canonical order, for reorganization apply.
+func MoveMessagesUndeleted(ctx context.Context, tx pgx.Tx, mailboxID int64, items []MoveItem, dest string) ([]MovedMessage, error) {
+	return moveMessages(ctx, tx, mailboxID, items, dest, true)
+}
+
+func moveMessages(ctx context.Context, tx pgx.Tx, mailboxID int64, items []MoveItem, dest string, skipDeleted bool) ([]MovedMessage, error) {
 	if err := ValidateFolderName(dest); err != nil {
 		return nil, err
 	}
@@ -457,6 +473,43 @@ func MoveMessages(ctx context.Context, tx pgx.Tx, mailboxID int64, items []MoveI
 		`SELECT id FROM messages WHERE id = ANY($1) ORDER BY id FOR UPDATE`, moveIDs,
 	); err != nil {
 		return nil, fmt.Errorf("lock messages: %w", err)
+	}
+
+	if skipDeleted {
+		rows, err := tx.Query(ctx, `SELECT id FROM messages WHERE id=ANY($1) AND NOT ('\Deleted'=ANY(flags))`, moveIDs)
+		if err != nil {
+			return nil, err
+		}
+		keep := map[int64]bool{}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			keep[id] = true
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		filtered := moving[:0]
+		for _, m := range moving {
+			if keep[m.ID] {
+				filtered = append(filtered, m)
+			}
+		}
+		moving = filtered
+		filteredIDs := moveIDs[:0]
+		for _, id := range moveIDs {
+			if keep[id] {
+				filteredIDs = append(filteredIDs, id)
+			}
+		}
+		moveIDs = filteredIDs
+		if len(moveIDs) == 0 {
+			return nil, nil
+		}
 	}
 
 	// Reserve the UID block and modseq range in one statement, as IMAP COPY
