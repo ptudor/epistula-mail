@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"strings"
@@ -19,7 +21,6 @@ import (
 var defaultConfigPaths = []string{
 	"/usr/local/etc/epistula/epistula-imap.toml",
 	"/etc/epistula/epistula-imap.toml",
-	"epistula-imap.toml",
 }
 
 type Config struct {
@@ -279,9 +280,19 @@ func loadTOML(path string, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("read config %q: %w", path, err)
 	}
-	if err := toml.Unmarshal(data, cfg); err != nil {
+	if err := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(cfg); err != nil {
+		var missing *toml.StrictMissingError
+		if errors.As(err, &missing) {
+			var details []string
+			for _, e := range missing.Errors {
+				line, _ := e.Position()
+				details = append(details, fmt.Sprintf("%s (line %d)", strings.Join(e.Key(), "."), line))
+			}
+			return fmt.Errorf("parse config %q: unknown keys %s: %w", path, strings.Join(details, ", "), err)
+		}
 		return fmt.Errorf("parse config %q: %w", path, err)
 	}
+	slog.Info("loaded configuration", "path", path)
 	return nil
 }
 
