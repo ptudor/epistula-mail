@@ -186,6 +186,9 @@ func runImportBlobs(args []string) int {
 			if errors.Is(lerr, storage.ErrNotFound) {
 				slog.Warn("import-blobs skipping tenant subtree with no mailbox row",
 					"tenant", tenant, "hint", "create it with `admin mailbox-add`, then re-run")
+				if err := journal.fail(string(tenant)+importBlobsTenantSep, "missing_mailbox", storage.ErrNotFound); err != nil {
+					return tenantTarget{}, err
+				}
 				t := tenantTarget{ok: false}
 				resolved[tenant] = t
 				return t, nil
@@ -211,15 +214,50 @@ func runImportBlobs(args []string) int {
 		return t, nil
 	}
 
+	advanceKey := func(key string) error {
+		state.LastKey = key
+		state.Count++
+		if state.Count%1000 == 0 {
+			if !*dryRun && !*retryFailures {
+				if cerr := state.save(*checkpointPath); cerr != nil {
+					return fmt.Errorf("checkpoint save: %w", cerr)
+				}
+			}
+			slog.Info("import-blobs progress",
+				"count", state.Count,
+				"imported", stats.imported,
+				"degraded", stats.degraded,
+				"duplicates", stats.duplicates,
+				"parse_failures", stats.parseFailures,
+				"elapsed", time.Since(stats.startedAt).Truncate(time.Second),
+			)
+		}
+		return nil
+	}
+
+	retryTenants := map[blob.Tenant]bool{}
 	visit := func(kind blob.Kind, tenant blob.Tenant, bucket blob.Bucket, shaHex, path string, info os.FileInfo) error {
 		if filterTenant != "" && tenant != filterTenant {
 			stats.skippedForeignTenant++
 			return nil
 		}
 		key := string(tenant) + importBlobsTenantSep + string(bucket) + "/" + shaHex
-		selected, qerr := journal.selected(key)
-		if qerr != nil {
-			return qerr
+		tenantSelected, known := retryTenants[tenant]
+		if *retryFailures && !known {
+			var err error
+			tenantSelected, err = journal.contains(string(tenant) + importBlobsTenantSep)
+			if err != nil {
+				return err
+			}
+			retryTenants[tenant] = tenantSelected
+		}
+		selected := tenantSelected
+		if !selected {
+			var qerr error
+			selected, qerr = journal.selected(key)
+			if qerr != nil {
+				return qerr
+			}
 		}
 		if !selected {
 			return nil
@@ -235,7 +273,7 @@ func runImportBlobs(args []string) int {
 		}
 		if !tgt.ok {
 			stats.skippedNoMailbox++
-			return journal.fail(key, "missing_mailbox", storage.ErrNotFound)
+			return advanceKey(key)
 		}
 
 		rc, newFolderID, err := importBlobOne(ctx, db, store, parser, importBlobParams{
@@ -294,24 +332,7 @@ func runImportBlobs(args []string) int {
 				return err
 			}
 		}
-		state.LastKey = key
-		state.Count++
-		if state.Count%1000 == 0 {
-			if !*dryRun && !*retryFailures {
-				if cerr := state.save(*checkpointPath); cerr != nil {
-					return fmt.Errorf("checkpoint save: %w", cerr)
-				}
-			}
-			slog.Info("import-blobs progress",
-				"count", state.Count,
-				"imported", stats.imported,
-				"degraded", stats.degraded,
-				"duplicates", stats.duplicates,
-				"parse_failures", stats.parseFailures,
-				"elapsed", time.Since(stats.startedAt).Truncate(time.Second),
-			)
-		}
-		return nil
+		return advanceKey(key)
 	}
 
 	if err := store.Walk(blob.KindRaw, visit); err != nil {
@@ -320,6 +341,16 @@ func runImportBlobs(args []string) int {
 			_ = state.save(*checkpointPath)
 		}
 		return EX_OSERR
+	}
+	// A tenant record expands to its entire subtree. Only clear it after a
+	// successful full walk; individual parse failures retain their own records.
+	for tenant, target := range resolved {
+		if target.ok {
+			if err := journal.resolved(string(tenant) + importBlobsTenantSep); err != nil {
+				slog.Error("resolve tenant failure", "err", err)
+				return EX_IOERR
+			}
+		}
 	}
 	// A dry-run never persists a checkpoint — overwriting the real run's resume
 	// marker with a full-walk LastKey would make a later -resume skip every
