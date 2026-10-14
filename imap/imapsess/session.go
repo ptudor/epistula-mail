@@ -72,6 +72,8 @@ type Backend struct {
 	// idle_timeout config key). <= 0 uses the 29-minute default that
 	// stays inside RFC 9051's 30-minute floor.
 	IdleHeartbeat time.Duration
+	// IdlePollInterval bounds fallback polling when a LISTEN connection is unavailable.
+	IdlePollInterval time.Duration
 
 	// AuthBudget rations concurrent Argon2id verification across the whole
 	// daemon by the scratch memory each hash declares (RA6X-023). Nil
@@ -83,7 +85,10 @@ type Backend struct {
 	// AuthTiming preserves a common minimum for lookup noise and early
 	// failures. The common cost workset handles mixed hashes independently.
 	// Nil disables only this optional padding.
-	AuthTiming *AuthTimingFloor
+	AuthTiming        *AuthTimingFloor
+	authProfilesMu    sync.Mutex
+	authProfiles      []authProfile
+	authProfilesUntil time.Time
 
 	// PreAuthTimeout bounds how long a connection may sit between TLS
 	// handshake and successful LOGIN (the preauth_timeout config key).
@@ -380,7 +385,7 @@ func (s *Session) Login(username, password string) (err error) {
 	ctx, cancel := s.queryCtx()
 	defer cancel()
 
-	identity, profiles, err := loadLoginIdentity(ctx, s.be.Pool, username)
+	identity, profiles, err := s.be.loadLoginIdentity(ctx, username)
 	if err != nil {
 		s.be.Logger.Error("Login: authentication catalog", "err", err)
 		return &imap.Error{Type: imap.StatusResponseTypeNo, Code: imap.ResponseCodeUnavailable, Text: "backend unavailable"}

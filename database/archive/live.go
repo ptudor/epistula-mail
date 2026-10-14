@@ -408,6 +408,22 @@ type DeletedOptions struct {
 	Now func() time.Time
 }
 
+const deletedInboxCandidates = `
+		SELECT r.mailbox_id, r.name, i.id, m.id
+		  FROM (SELECT DISTINCT ON (f.mailbox_id) f.mailbox_id, f.name
+		          FROM folders f JOIN mailboxes mb ON mb.id = f.mailbox_id
+		         WHERE f.special_use = '\Archive' AND mb.maintenance_at IS NULL
+		         ORDER BY f.mailbox_id, f.id) r
+		  JOIN folders i ON i.mailbox_id = r.mailbox_id AND i.name = 'INBOX'
+   JOIN LATERAL (
+    SELECT m.id FROM messages m WHERE m.folder_id=i.id AND '\Deleted'=ANY(m.flags)
+     AND NOT EXISTS (
+      SELECT 1 FROM messages o JOIN folders of ON of.id=o.folder_id
+       WHERE of.mailbox_id=r.mailbox_id AND o.raw_sha256=m.raw_sha256 AND o.id<>m.id)
+    ORDER BY m.id LIMIT $1
+   ) m ON true
+   ORDER BY r.mailbox_id,m.id`
+
 // ArchiveOnce runs one pass over every mailbox with an \Archive folder and
 // returns how many messages it archived.
 func (t *DeletedTracker) ArchiveOnce(ctx context.Context, db *storage.DB, opts DeletedOptions) (int, error) {
@@ -422,19 +438,7 @@ func (t *DeletedTracker) ArchiveOnce(ctx context.Context, db *storage.DB, opts D
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 500
 	}
-	rows, err := db.Pool().Query(ctx, `
-		SELECT r.mailbox_id, r.name, i.id, m.id
-		  FROM (SELECT DISTINCT ON (f.mailbox_id) f.mailbox_id, f.name
-		          FROM folders f JOIN mailboxes mb ON mb.id = f.mailbox_id
-		         WHERE f.special_use = '\Archive' AND mb.maintenance_at IS NULL
-		         ORDER BY f.mailbox_id, f.id) r
-		  JOIN folders i ON i.mailbox_id = r.mailbox_id AND i.name = 'INBOX'
-		  JOIN messages m ON m.folder_id = i.id
-		 WHERE '\Deleted' = ANY(m.flags)
-		   AND NOT EXISTS (
-		       SELECT 1 FROM messages o JOIN folders of ON of.id = o.folder_id
-		        WHERE of.mailbox_id = r.mailbox_id AND o.raw_sha256 = m.raw_sha256 AND o.id <> m.id)
-		 ORDER BY r.mailbox_id, m.id`)
+	rows, err := db.Pool().Query(ctx, deletedInboxCandidates, opts.BatchSize*maxBatchesPerMailbox)
 	if err != nil {
 		return 0, fmt.Errorf("find deleted inbox mail: %w", err)
 	}

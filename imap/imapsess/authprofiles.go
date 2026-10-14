@@ -104,22 +104,33 @@ func readAuthProfiles(ctx context.Context, q authProfileQuerier) ([]authProfile,
 	return profiles, nil
 }
 
-func loadLoginIdentity(ctx context.Context, pool *pgxpool.Pool, username string) (loginIdentity, []authProfile, error) {
+const authProfileTTL = 30 * time.Second
+
+// All users share one immutable workset throughout each TTL. Credentials are
+// still read on every attempt; adding a new cost class takes up to one TTL.
+func (b *Backend) loginProfiles(ctx context.Context) ([]authProfile, error) {
+	b.authProfilesMu.Lock()
+	defer b.authProfilesMu.Unlock()
+	if time.Now().Before(b.authProfilesUntil) {
+		return b.authProfiles, nil
+	}
+	profiles, err := readAuthProfiles(ctx, b.Pool)
+	if err != nil {
+		return nil, err
+	}
+	b.authProfiles = profiles
+	b.authProfilesUntil = time.Now().Add(authProfileTTL)
+	return profiles, nil
+}
+
+func (b *Backend) loadLoginIdentity(ctx context.Context, username string) (loginIdentity, []authProfile, error) {
 	var identity loginIdentity
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	profiles, err := b.loginProfiles(ctx)
 	if err != nil {
 		return identity, nil, err
 	}
-	defer tx.Rollback(ctx)
-	err = tx.QueryRow(ctx, `SELECT id,name,password_hash,disabled_at FROM mailboxes WHERE name=$1`, username).Scan(&identity.id, &identity.name, &identity.hash, &identity.disabled)
+	err = b.Pool.QueryRow(ctx, `SELECT id,name,password_hash,disabled_at FROM mailboxes WHERE name=$1`, username).Scan(&identity.id, &identity.name, &identity.hash, &identity.disabled)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return identity, nil, err
-	}
-	profiles, err := readAuthProfiles(ctx, tx)
-	if err != nil {
-		return identity, nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return identity, nil, err
 	}
 	return identity, profiles, nil

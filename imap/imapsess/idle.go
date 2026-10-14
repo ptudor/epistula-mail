@@ -91,9 +91,9 @@ func (s *Session) idleConsume(ctx context.Context, w *imapserver.UpdateWriter, s
 	}
 	// A lost listener is an optimization failure. Poll with a finite interval
 	// until DONE; database recovery resumes updates without a client reconnect.
-	interval := s.be.heartbeat()
-	if interval > time.Second {
-		interval = time.Second
+	interval := s.be.IdlePollInterval
+	if interval <= 0 {
+		interval = 5 * time.Second
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

@@ -41,6 +41,8 @@ func TestPoolAndThrottleBoundsAreValidated(t *testing.T) {
 			c.Postgres.MaxIdleConns = 8
 		}, "max_idle_conns"},
 		{"negative idle conns", func(c *Config) { c.Postgres.MaxIdleConns = -1 }, "max_idle_conns"},
+		{"zero dedicated idle pool", func(c *Config) { c.Postgres.IdleConns = 0 }, "idle_conn_pool_size"},
+		{"zero fallback poll", func(c *Config) { c.Limits.IdlePollInterval = "0s" }, "idle_poll_interval"},
 		{"negative dedicated idle pool", func(c *Config) { c.Postgres.IdleConns = -1 }, "idle_conn_pool_size"},
 		{"zero login window", func(c *Config) { c.Limits.LoginWindow = "0s" }, "login_window"},
 		{"negative login window", func(c *Config) { c.Limits.LoginWindow = "-30s" }, "login_window"},
@@ -68,15 +70,14 @@ func TestPoolAndThrottleBoundsAreValidated(t *testing.T) {
 
 	// Documented zero settings and the shipped defaults still validate.
 	accepted := map[string]func(*Config){
-		"no connection kept warm":       func(c *Config) { c.Postgres.MaxIdleConns = 0 },
-		"idle pool shares the main one": func(c *Config) { c.Postgres.IdleConns = 0 },
-		"pgx default conn lifetime":     func(c *Config) { c.Postgres.ConnMaxLifetime = "0s" },
-		"built-in statement timeout":    func(c *Config) { c.Postgres.StatementTimeout = "0s" },
-		"built-in idle re-poll":         func(c *Config) { c.Limits.IdleTimeout = "0s" },
-		"login throttle disabled":       func(c *Config) { c.Limits.LoginAttempts = 0 },
-		"command rate disabled":         func(c *Config) { c.Limits.CommandRatePerSec = 0 },
-		"search cap disabled":           func(c *Config) { c.Limits.MaxSearchResults = 0 },
-		"idle conns equal open conns":   func(c *Config) { c.Postgres.MaxIdleConns = c.Postgres.MaxOpenConns },
+		"no connection kept warm":     func(c *Config) { c.Postgres.MaxIdleConns = 0 },
+		"pgx default conn lifetime":   func(c *Config) { c.Postgres.ConnMaxLifetime = "0s" },
+		"built-in statement timeout":  func(c *Config) { c.Postgres.StatementTimeout = "0s" },
+		"built-in idle re-poll":       func(c *Config) { c.Limits.IdleTimeout = "0s" },
+		"login throttle disabled":     func(c *Config) { c.Limits.LoginAttempts = 0 },
+		"command rate disabled":       func(c *Config) { c.Limits.CommandRatePerSec = 0 },
+		"search cap disabled":         func(c *Config) { c.Limits.MaxSearchResults = 0 },
+		"idle conns equal open conns": func(c *Config) { c.Postgres.MaxIdleConns = c.Postgres.MaxOpenConns },
 	}
 	for name, mutate := range accepted {
 		t.Run("accepted: "+name, func(t *testing.T) {
@@ -140,7 +141,7 @@ accept_insecure_for_dev = true
 dsn = "postgres://localhost/x?sslmode=disable"
 max_open_conns = 8
 max_idle_conns = 4
-idle_conn_pool_size = 0
+idle_conn_pool_size = 1
 
 [storage]
 root = "` + root + `"

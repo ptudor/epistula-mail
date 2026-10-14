@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/ptudor/epistula-mail/database/archive"
 	"log/slog"
 	"strings"
 	"testing"
@@ -63,10 +66,17 @@ func TestArchiveConfigRejects(t *testing.T) {
 // archived, classified message, and it stops — closing its done channel —
 // when its context ends, so serve can wait for it before closing the pool.
 func TestArchiveLoopRunsAndStops(t *testing.T) {
-	db, _ := pgtest.Open(t)
+	db, dsn := pgtest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	pool := db.Pool()
+	poolCfg := archiveTestConfig()
+	poolCfg.Postgres.DSN = dsn
+	poolCfg.Postgres.StatementTimeout = "2s"
+	pool, err := openPool(ctx, poolCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
 
 	var mailboxID, rootID, msgID int64
 	if err := pool.QueryRow(ctx,
@@ -143,5 +153,36 @@ func TestArchiveLoopDisabledStartsNothing(t *testing.T) {
 	case <-done:
 	default:
 		t.Fatal("a disabled archive loop returned an open channel")
+	}
+}
+
+func TestArchiveCandidateQueryHonorsPoolTimeout(t *testing.T) {
+	db, dsn := pgtest.Open(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cfg := archiveTestConfig()
+	cfg.Postgres.DSN = dsn
+	cfg.Postgres.StatementTimeout = "100ms"
+	pool, err := openPool(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	tx, err := db.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	if _, err := tx.Exec(ctx, `LOCK TABLE folders IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = archive.SortOnce(ctx, storage.NewFromPool(pool, storage.Config{}), archive.SortOptions{})
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "57014" || !strings.Contains(pgErr.Message, "statement timeout") {
+		t.Fatalf("candidate query: %v", err)
+	}
+	if time.Since(start) > time.Second || ctx.Err() != nil {
+		t.Fatalf("pool timeout was not enforced promptly: %v", err)
 	}
 }

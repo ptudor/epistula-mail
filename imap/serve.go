@@ -88,6 +88,7 @@ func runServe(args []string) int {
 		MaxSearchResults:  cfg.Limits.MaxSearchResults,
 		CommandRatePerSec: cfg.Limits.CommandRatePerSec,
 		IdleHeartbeat:     mustParseDuration(cfg.Limits.IdleTimeout, 29*time.Minute),
+		IdlePollInterval:  mustParseDuration(cfg.Limits.IdlePollInterval, 5*time.Second),
 		PreAuthTimeout:    mustParseDuration(cfg.Limits.PreAuthTimeout, 60*time.Second),
 		DeleteArchives:    cfg.Archive.DeleteArchives,
 		AuthBudget:        imapsess.NewAuthBudgetMiB(cfg.Limits.AuthVerifyBudgetMiB),
@@ -368,6 +369,11 @@ func openPool(ctx context.Context, cfg *Config) (*pgxpool.Pool, error) {
 	if d := mustParseDuration(cfg.Postgres.ConnMaxLifetime, 5*time.Minute); d > 0 {
 		poolCfg.MaxConnLifetime = d
 	}
+	timeout := mustParseDuration(cfg.Postgres.StatementTimeout, 10*time.Second)
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	poolCfg.ConnConfig.RuntimeParams["statement_timeout"] = fmt.Sprintf("%d", max(int64(1), timeout.Milliseconds()))
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return nil, err

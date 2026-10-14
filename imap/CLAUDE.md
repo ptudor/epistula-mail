@@ -214,7 +214,7 @@ UID allocation is the only operation that needs serialization: `UPDATE folders S
 3. On NOTIFY where `payload == folder_id` of the selected mailbox, server emits `* <n> EXISTS` and `* <n> RECENT`.
 4. Server tears down IDLE on client `DONE` or on the 29-minute heartbeat (one minute under the RFC 9051 minimum).
 
-PG connection budget: `idle_conn_pool_size` (under `[postgres]`) sizes the dedicated LISTEN pool — one connection per IDLE session at worst; 0 shares the main query pool.
+PG connection budget: `idle_conn_pool_size` (under `[postgres]`) sizes the dedicated LISTEN pool — one connection per IDLE session up to that cap; it must be at least 1. Zero is refused because sharing the query pool can exhaust every command connection. Sessions beyond the LISTEN cap fall back to `[limits] idle_poll_interval` (default 5 seconds), keeping their polling rate bounded.
 
 ---
 

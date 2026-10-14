@@ -90,6 +90,7 @@ type LimitsConfig struct {
 	LoginCooldown         string `toml:"login_cooldown"`
 	CommandRatePerSec     int    `toml:"command_rate_per_sec"`
 	IdleTimeout           string `toml:"idle_timeout"`
+	IdlePollInterval      string `toml:"idle_poll_interval"`
 	MaxAppendBytes        int64  `toml:"max_append_bytes"`
 	// MaxSearchResults caps how many rows a single SEARCH may return.
 	// SEARCH materializes its whole result set (and the NumSet built from
@@ -204,6 +205,7 @@ func DefaultConfig() *Config {
 			LoginCooldown:         "60s",
 			CommandRatePerSec:     100,
 			IdleTimeout:           "29m",
+			IdlePollInterval:      "5s",
 			MaxAppendBytes:        52_428_800,
 			MaxSearchResults:      100_000,
 			TLSHandshakeTimeout:   "10s",
@@ -458,12 +460,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("postgres.max_idle_conns (%d) must not exceed postgres.max_open_conns (%d)",
 			c.Postgres.MaxIdleConns, c.Postgres.MaxOpenConns)
 	}
-	// idle_conn_pool_size caps the dedicated LISTEN pool; 0 shares the main
-	// query pool, which is the documented way to turn the dedicated pool off.
-	// A negative value became a negative pgxpool MaxConns.
-	if c.Postgres.IdleConns < 0 {
-		return fmt.Errorf("postgres.idle_conn_pool_size must not be negative: %d "+
-			"(0 shares the main query pool)", c.Postgres.IdleConns)
+	// A dedicated LISTEN pool prevents IDLE from occupying every query slot.
+	if c.Postgres.IdleConns < 1 {
+		return fmt.Errorf("postgres.idle_conn_pool_size must be at least 1: %d", c.Postgres.IdleConns)
+	}
+	if err := positiveDuration("limits.idle_poll_interval", c.Limits.IdlePollInterval, "use a positive fallback polling interval"); err != nil {
+		return err
 	}
 
 	if err := c.Archive.validate(); err != nil {

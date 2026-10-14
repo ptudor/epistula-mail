@@ -32,7 +32,7 @@ statement_timeout    = "10s"
 max_open_conns       = 40
 max_idle_conns       = 10    # connections kept warm (maps to pgx MinConns)
 conn_max_lifetime    = "5m"
-idle_conn_pool_size  = 20    # dedicated pool for IMAP IDLE LISTEN connections; 0 shares the main pool
+idle_conn_pool_size  = 20    # dedicated IDLE LISTEN pool; must be >= 1 to avoid exhausting query connections
 
 [storage]
 # Must match epistula-database's storage.root. The daemon needs group-read on raw/
@@ -52,6 +52,7 @@ login_window            = "60s"
 login_cooldown          = "60s"
 command_rate_per_sec    = 100       # per connection; commands past it wait, never fail
 idle_timeout            = "29m"    # IDLE notification heartbeat, not session expiry
+idle_poll_interval      = "5s"     # fallback when LISTEN pool is full or unavailable
 max_append_bytes        = 52428800  # 50 MiB literal cap
 # Parser limits shared with epistula-database.
 max_message_bytes       = 54525952  # 52 MiB
