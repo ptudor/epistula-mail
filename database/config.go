@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -17,7 +19,6 @@ import (
 var defaultConfigPaths = []string{
 	"/usr/local/etc/epistula/epistula-database.toml",
 	"/etc/epistula/epistula-database.toml",
-	"epistula-database.toml",
 }
 
 type Config struct {
@@ -223,9 +224,19 @@ func loadTOML(path string, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("read config %q: %w", path, err)
 	}
-	if err := toml.Unmarshal(data, cfg); err != nil {
+	if err := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(cfg); err != nil {
+		var missing *toml.StrictMissingError
+		if errors.As(err, &missing) {
+			var details []string
+			for _, e := range missing.Errors {
+				line, _ := e.Position()
+				details = append(details, fmt.Sprintf("%s (line %d)", strings.Join(e.Key(), "."), line))
+			}
+			return fmt.Errorf("parse config %q: unknown keys %s: %w", path, strings.Join(details, ", "), err)
+		}
 		return fmt.Errorf("parse config %q: %w", path, err)
 	}
+	slog.Info("loaded configuration", "path", path)
 	return nil
 }
 
@@ -262,12 +273,26 @@ func (c *Config) Validate() error {
 	if err := pgdsn.Usable(c.Postgres.DSN); err != nil {
 		return fmt.Errorf("postgres.dsn: %w", err)
 	}
-	if _, err := time.ParseDuration(c.Postgres.StatementTimeout); err != nil {
+	if d, err := time.ParseDuration(c.Postgres.StatementTimeout); err != nil {
 		return fmt.Errorf("postgres.statement_timeout: %w", err)
+	} else if d <= 0 {
+		return errors.New("postgres.statement_timeout must be positive")
 	}
-	if _, err := time.ParseDuration(c.Postgres.ConnMaxLifetime); err != nil {
+	if d, err := time.ParseDuration(c.Postgres.ConnMaxLifetime); err != nil {
 		return fmt.Errorf("postgres.conn_max_lifetime: %w", err)
+	} else if d <= 0 {
+		return errors.New("postgres.conn_max_lifetime must be positive")
 	}
+	for name, value := range map[string]int{
+		"read_timeout_seconds":     c.HTTP.ReadTimeoutSec,
+		"write_timeout_seconds":    c.HTTP.WriteTimeoutSec,
+		"shutdown_timeout_seconds": c.HTTP.ShutdownTimeoutSec,
+	} {
+		if value < 1 {
+			return fmt.Errorf("http.%s must be at least 1", name)
+		}
+	}
+
 	if d, err := time.ParseDuration(c.Delivery.Timeout); err != nil {
 		return fmt.Errorf("delivery.timeout: %w", err)
 	} else if d <= 0 {

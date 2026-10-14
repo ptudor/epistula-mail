@@ -17,6 +17,13 @@ func TestValidateRejectsBadLimitsAndArgon(t *testing.T) {
 		name   string
 		mutate func(*Config)
 	}{
+		{"Postgres.StatementTimeout: 0s", func(c *Config) { c.Postgres.StatementTimeout = "0s" }},
+		{"Postgres.StatementTimeout: -1s", func(c *Config) { c.Postgres.StatementTimeout = "-1s" }},
+		{"Postgres.ConnMaxLifetime: 0s", func(c *Config) { c.Postgres.ConnMaxLifetime = "0s" }},
+		{"Postgres.ConnMaxLifetime: -1s", func(c *Config) { c.Postgres.ConnMaxLifetime = "-1s" }},
+		{"HTTP.ReadTimeoutSec: 0", func(c *Config) { c.HTTP.ReadTimeoutSec = 0 }},
+		{"HTTP.WriteTimeoutSec: 0", func(c *Config) { c.HTTP.WriteTimeoutSec = 0 }},
+		{"HTTP.ShutdownTimeoutSec: 0", func(c *Config) { c.HTTP.ShutdownTimeoutSec = 0 }},
 		{"bad default folder", func(c *Config) { c.Delivery.DefaultFolder = "a//b" }},
 		{"zero delivery.timeout", func(c *Config) { c.Delivery.Timeout = "0s" }},
 		{"negative delivery.timeout", func(c *Config) { c.Delivery.Timeout = "-5s" }},
