@@ -68,3 +68,9 @@ Deploy the updated writer, IMAP and API binaries before using mailbox maintenanc
 Run `epistula-database admin mailbox-maintenance -name old -on`, move only the tenant subtree (for example with `zfs rename`), then `admin mailbox-rename -from old -to new -yes`. New blob processes refuse startup while any mailbox is in maintenance. Rename verifies every referenced destination size/hash and preserves mailbox/message/folder IDs, UIDs, dates, flags and API token scopes. Maintenance releases with the database commit; restart services afterward.
 
 If the filesystem move succeeds but rename fails, keep services stopped: repair the destination and retry rename, or restore the complete old tree and run maintenance `-off`. That release also refuses missing/corrupt references. A missing/unmounted root cannot pass the exclusive barrier. Do not bypass a busy barrier by clearing the database flag manually.
+
+Run `epistula-database admin log-prune -older-than 2160h -dry-run` to preview
+a 90-day delivery audit retention policy. Schedule the same command with `-yes`
+in place of `-dry-run` daily once that retention period meets local requirements.
+Deletion commits in batches of at most 1,000 rows; interruption retains completed
+batches and rerunning continues safely. Message content and outcome strings are unchanged.

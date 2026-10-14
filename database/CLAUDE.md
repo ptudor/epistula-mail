@@ -312,6 +312,7 @@ epistula-database admin alias-delete -domain D -localpart L
 epistula-database admin folder-list  -mailbox M
 epistula-database admin folder-repair-ancestors (-mailbox M | -all) [-dry-run]
 epistula-database admin folder-set-special-use  -mailbox M -folder F (-use ATTR | -clear) [-dry-run]
+epistula-database admin log-prune    -older-than DUR (-dry-run | -yes)
 epistula-database admin log-tail     [-since DUR] [-mailbox M] [-outcome STR]
 
 epistula-database admin acl-add      -domain D -localpart L (-allow | -deny) [-note "..."]

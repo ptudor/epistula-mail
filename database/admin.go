@@ -98,6 +98,8 @@ func runAdmin(args []string) int {
 		return adminArchiveCategorySuggest(rest)
 	case "archive-reclassify":
 		return adminArchiveReclassify(rest)
+	case "log-prune":
+		return adminLogPrune(rest)
 	case "log-tail":
 		return adminLogTail(rest)
 	case "acl-add":
@@ -243,6 +245,7 @@ Archive sorting (see ARCHIVE_SORTING.md):
 
 Inspection:
   folder-list      -mailbox M
+  log-prune        -older-than DUR (-dry-run | -yes)
   log-tail         [-since DUR] [-mailbox M] [-outcome STR] [-limit N]
 
 Postfix policy export:
