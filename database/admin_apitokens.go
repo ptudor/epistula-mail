@@ -67,6 +67,12 @@ func adminAPITokenAdd(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return EX_USAGE
 	}
+	normalizedName, nameErr := normalizeTokenName(*name)
+	if nameErr != nil {
+		fmt.Fprintln(os.Stderr, nameErr)
+		return EX_USAGE
+	}
+	*name = normalizedName
 	if *name == "" {
 		fmt.Fprintln(os.Stderr, "-name is required")
 		return EX_USAGE
@@ -309,7 +315,7 @@ func adminAPITokenList(args []string) int {
 			lastUsedStr = lastUsed.UTC().Format("2006-01-02")
 		}
 		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			id, name, strings.Join(scope, ","), strings.Join(permissions, ","),
+			id, terminalSafe(name), terminalSafe(strings.Join(scope, ",")), terminalSafe(strings.Join(permissions, ",")),
 			created.UTC().Format("2006-01-02"), lastUsedStr, state)
 		count++
 	}
@@ -333,6 +339,12 @@ func adminAPITokenRevoke(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return EX_USAGE
 	}
+	normalizedName, nameErr := normalizeTokenName(*name)
+	if nameErr != nil {
+		fmt.Fprintln(os.Stderr, nameErr)
+		return EX_USAGE
+	}
+	*name = normalizedName
 	if *name == "" {
 		fmt.Fprintln(os.Stderr, "-name is required")
 		return EX_USAGE

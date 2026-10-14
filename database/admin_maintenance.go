@@ -179,18 +179,6 @@ Release it with:  epistula-database admin mailbox-maintenance -name %s -off
 	return EX_OK
 }
 
-// mailboxMaintenanceState reports whether the named mailbox is quiesced, for
-// commands that require it (mailbox-rename) or must report it.
-func mailboxMaintenanceState(ctx context.Context, tx pgx.Tx, mailboxID int64) (*time.Time, error) {
-	var since *time.Time
-	if err := tx.QueryRow(ctx,
-		`SELECT maintenance_at FROM mailboxes WHERE id = $1`, mailboxID,
-	).Scan(&since); err != nil {
-		return nil, err
-	}
-	return since, nil
-}
-
 // verifyTenantBlobs checks that every blob the database says mailboxID owns is
 // present under the tenant tree named destTenant (RA6X-013).
 //

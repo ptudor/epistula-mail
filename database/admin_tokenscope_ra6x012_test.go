@@ -29,9 +29,17 @@ func TestMailboxDeleteRetiresTokenGrants(t *testing.T) {
 	mustToken(t, ctx, db, "only-keeper", false, []int64{keeper})
 	mustToken(t, ctx, db, "wildcard", true, []int64{})
 
+	mustToken(t, ctx, db, "already-revoked", false, []int64{victim})
+	if _, err := db.Pool().Exec(ctx, `UPDATE api_tokens SET revoked_at=now() WHERE name='already-revoked'`); err != nil {
+		t.Fatal(err)
+	}
 	cfg := writeRenameConfig(t, dsn, t.TempDir())
-	if code := adminMailboxDelete([]string{"-config", cfg, "-name", "victim", "-yes"}); code != EX_OK {
-		t.Fatalf("mailbox-delete exit=%d, want EX_OK", code)
+	code, out := adminOutput(t, func() int { return adminMailboxDelete([]string{"-config", cfg, "-name", "victim", "-yes"}) })
+	if code != EX_OK {
+		t.Fatal(code)
+	}
+	if !strings.Contains(out, "revoked 1 API token(s)") || strings.Contains(out, "already-revoked") || !strings.Contains(out, "from 2 API token scope(s)") {
+		t.Fatal(out)
 	}
 
 	for _, want := range []struct {
@@ -42,6 +50,7 @@ func TestMailboxDeleteRetiresTokenGrants(t *testing.T) {
 	}{
 		// Its only grant is gone, so it authorizes nothing: revoked.
 		{token: "only-victim", scope: "{}", revoked: true},
+		{token: "already-revoked", scope: "{}", revoked: true},
 		// Keeps its other grant, stays live.
 		{token: "victim-and-keeper", scope: idArray(keeper), revoked: false},
 		// Untouched.

@@ -292,52 +292,135 @@ Keeping admin out of the Go daemon means: no HTML templating in the LDA, no admi
 
 ### `admin` CLI subcommands
 
-```
-epistula-database admin domain-add     -name N [-wildcard]
-epistula-database admin domain-list
-epistula-database admin domain-delete  -name N
+```text
+admin subcommands:
 
-epistula-database admin mailbox-add    -name N [-quota-bytes B] [-password-stdin]
-epistula-database admin mailbox-list
-epistula-database admin mailbox-passwd -name N [-password-stdin]
-epistula-database admin mailbox-disable -name N
-epistula-database admin mailbox-enable  -name N
-epistula-database admin mailbox-delete  -name N
-epistula-database admin mailbox-rename  -from OLD -to NEW -yes
+Mailbox:
+  mailbox-add      -name N [-quota-bytes B] [-password-stdin]
+  mailbox-list
+  mailbox-passwd   -name N [-password-stdin]
+  mailbox-disable  -name N
+  mailbox-enable   -name N
+  mailbox-delete   -name N -yes
+  mailbox-rename   -from OLD -to NEW -yes
+                   Move a mailbox to a new name, keeping its folders, messages
+                   and aliases. The name is also the on-disk blob tenant, so the
+                   directory <storage_root>/OLD must ALREADY have been moved to
+                   NEW (on ZFS, via zfs rename) — the command refuses otherwise.
+                   Requires the mailbox to be in maintenance first, and changes
+                   the IMAP login. API token scopes are unaffected (they hold
+                   durable mailbox ids, not names).
+  auth-cost-audit  [-verbose]
+                   Report the Argon2id cost of every stored credential. Accounts
+                   hashed above the default cost cannot be covered by the IMAP
+                   login timing floor and must be re-hashed.
+  mailbox-maintenance -name N (-on | -off)
+                   Quiesce a mailbox while its blob tenant tree is moved:
+                   blocks blob activity store-wide. -on fails if any blob process
+                   still holds the storage root; stop and drain them first. Unlike
+                   mailbox-disable, which still accepts delivery.
 
-epistula-database admin alias-add    -domain D -mailbox M (-localpart L | -catchall)
-epistula-database admin alias-list   [-domain D]
-epistula-database admin alias-delete -domain D -localpart L
+Domain:
+  domain-set       -name N (-wildcard | -no-wildcard)
+  domain-add       -name N [-wildcard]
+  domain-list
+  domain-delete    -name N -yes
 
-epistula-database admin folder-list  -mailbox M
-epistula-database admin folder-repair-ancestors (-mailbox M | -all) [-dry-run]
-epistula-database admin folder-set-special-use  -mailbox M -folder F (-use ATTR | -clear) [-dry-run]
-epistula-database admin log-prune    -older-than DUR (-dry-run | -yes)
-epistula-database admin log-tail     [-since DUR] [-mailbox M] [-outcome STR]
+Alias:
+  alias-add        -domain D -mailbox M (-localpart L | -catchall)
+  alias-list       [-domain D]
+  alias-delete     -domain D (-localpart L | -catchall)
 
-epistula-database admin acl-add      -domain D -localpart L (-allow | -deny) [-note "..."]
-epistula-database admin acl-list     [-domain D] [-allow | -deny]
-epistula-database admin acl-delete   -domain D -localpart L (-allow | -deny)
+ACL (per-domain allow/deny lists):
+  acl-add          -domain D -localpart L (-allow | -deny) [-note "..."]
+  acl-list         [-domain D] [-allow | -deny]
+  acl-delete       -domain D -localpart L (-allow | -deny)
 
-epistula-database admin api-token-add    -name N -mailboxes ("*" | "a,b") -permission P [-permission P ...]
-epistula-database admin api-token-list   [-all]
-epistula-database admin api-token-revoke -name N
+API tokens (bearer credentials for api; secret shown once):
+  api-token-add    -name N -mailboxes ("*" | "a,b,c") -permission P [-permission P ...]
+                   P ∈ read_metadata | read_content | write_annotation | write_classification
+  api-token-list   [-all]
+  api-token-revoke -name N
 
-epistula-database admin annotation-model-set    -model M -priority N [-display "..."]
-epistula-database admin annotation-model-list   [-all]
-epistula-database admin annotation-model-retire -model M
+Annotation models (rank the per-model summaries epistula-api serves; highest priority is primary):
+  annotation-model-set    -model M -priority N [-display "..."]
+                          Register/re-rank a model and mark it active. Unregistered
+                          models are served as priority-0 alternatives.
+  annotation-model-list   [-all]
+  annotation-model-retire -model M
+                          Keep its annotations as alternatives but never primary.
 
-epistula-database admin folder-create           -mailbox M -folder F [-use ATTR] [-dry-run]
-epistula-database admin folder-merge            -mailbox M -from F [-subtree] -to T [-drop-duplicates] (-dry-run | -yes)
-epistula-database admin folder-prune-empty      -mailbox M (-dry-run | -yes)
-epistula-database admin archive-category-import -mailbox M -file F [-dry-run]
-epistula-database admin archive-category-list   -mailbox M [-all]
-epistula-database admin archive-category-suggest -mailbox M [-min N] [-share P] [-examples K] [-min-confidence C] [-format text|toml]
-epistula-database admin archive-reclassify      -mailbox M -key K [-refile] (-dry-run | -yes)
-epistula-database admin archive-plan            -mailbox M [-rules F] [-moves-out F]
-epistula-database admin archive-apply           -mailbox M [-rules F] [-batch-size N] [-limit N] [-pause D] -yes
-epistula-database admin archive-undo            -mailbox M -batch B (-dry-run | -yes)
-epistula-database admin archive-batches         -mailbox M
+Folder:
+  folder-create    -mailbox M -folder F [-use ATTR] [-dry-run]
+                   Create a folder (and its missing parents), optionally with
+                   an RFC 6154 role, e.g. -folder Archive -use Archive. An
+                   existing folder is left unchanged.
+  folder-repair-ancestors (-mailbox M | -all) [-dry-run]
+                   Create the missing parents of nested folders (Sent/2004 for
+                   Sent/2004/11-Nov) left by imports that predate automatic
+                   ancestor creation. Idempotent; -dry-run lists what it would
+                   create without locking or writing.
+  folder-set-special-use -mailbox M -folder F (-use ATTR | -clear) [-dry-run]
+                   Give a folder its RFC 6154 role (\Sent, \Drafts, \Archive,
+                   \Trash, \Junk, \All, \Flagged, \Important) so IMAP clients
+                   use it; -clear removes it. One folder per attribute per
+                   mailbox: clear the old holder before moving an attribute.
+                   With epistula-imap's Trash purge on, whatever is in the
+                   \Trash folder is destroyed after the retention period.
+  folder-prune-empty -mailbox M (-dry-run | -yes)
+                   Delete empty folders nothing needs (not INBOX, not
+                   special-use, not an archive category folder or its parent),
+                   deepest first. For tidying up after archive-apply.
+  folder-merge -mailbox M -from F [-subtree] -to T [-drop-duplicates] (-dry-run | -yes)
+                   Move every message of F (and, with -subtree, everything
+                   below it) into T; archive-undo restores the journaled moves.
+                   A message whose exact content is already in T is left
+                   behind, or destroyed with -drop-duplicates (T keeps it).
+                   Destroyed duplicate rows are NOT journaled or restored by undo.
+
+Archive sorting (see ARCHIVE_SORTING.md):
+  archive-category-import -mailbox M -file F [-dry-run]
+                   Make the TOML category list in F the mailbox's approved
+                   archive categories; keys not listed are retired. Every
+                   folder must lie inside the mailbox's \Archive folder.
+  archive-category-list   -mailbox M [-all]
+  archive-category-suggest -mailbox M [-min N] [-share P] [-examples K] [-min-confidence C] [-format text|toml]
+                   Read-only: find the senders and tags that recur where the
+                   classifier was unsure (…/other keys, low confidence) and
+                   propose sibling categories. Proposals only: add what you
+                   want to the list and re-import it.
+  archive-reclassify -mailbox M -key K [-refile] (-dry-run | -yes)
+                   Clear K's classifications so the worker classifies those
+                   messages again (after adding a sibling key). -refile also
+                   moves what was filed under K back to \Archive, journaled.
+  archive-plan     -mailbox M [-rules F] [-moves-out F]
+                   Dry run of the one-time reorganization: where every
+                   message would go and why the rest stay. Writes nothing.
+  archive-apply    -mailbox M [-rules F] [-batch-size N] [-limit N] [-pause D] -yes
+                   Carry the plan out in journaled batches; prints the batch
+                   name. Safe to interrupt and re-run.
+  archive-undo     -mailbox M -batch B (-dry-run | -yes)
+                   Move everything batch B filed back where it came from.
+  archive-batches  -mailbox M
+                   List journaled batches (reorg and the live sorter's daily ones).
+
+Inspection:
+  folder-list      -mailbox M
+  log-prune        -older-than DUR (-dry-run | -yes)
+  log-tail         [-since DUR] [-mailbox M] [-outcome STR] [-limit N]
+
+Postfix policy export:
+  reject-export    -in <csv> -out-dir <dir>
+                   Translate CSV recipient and sender reject rules into Postfix
+                   header_checks + check_recipient_access policy files.
+                   See `epistula-database admin reject-export -h`.
+
+All subcommands accept -config <path>.
+-yes is required to apply mailbox-delete, mailbox-rename, domain-delete,
+archive-apply, archive-undo, folder-prune-empty, folder-merge,
+archive-reclassify and log-prune (where offered, -dry-run previews instead).
+alias-delete, acl-delete, api-token-revoke and annotation-model-retire apply
+immediately without -yes.
 ```
 
 The `archive-*` commands, `folder-create`, `folder-merge` and `folder-prune-empty` are archive sorting's
@@ -351,7 +434,9 @@ and `PruneEmptyFolders`. `messages.created_at` is the time a row entered its
 current folder, and both the sorter's settle delay and the Trash retention
 are measured from it.
 
-All admin subcommands accept `-config <path>` and operate transactionally. Destructive operations require an explicit `-yes` flag.
+All admin subcommands accept `-config <path>`. The generated usage above lists the
+commands requiring `-yes` and those that apply immediately. `domain-set` changes
+wildcard policy in place, retaining aliases and ACL rows.
 
 ## What this project does NOT do
 

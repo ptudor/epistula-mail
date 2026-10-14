@@ -59,6 +59,8 @@ func runAdmin(args []string) int {
 		return adminMailboxMaintenance(rest)
 	case "auth-cost-audit":
 		return adminAuthCostAudit(rest)
+	case "domain-set":
+		return adminDomainSet(rest)
 	case "domain-add":
 		return adminDomainAdd(rest)
 	case "domain-list":
@@ -157,11 +159,12 @@ Mailbox:
                    login timing floor and must be re-hashed.
   mailbox-maintenance -name N (-on | -off)
                    Quiesce a mailbox while its blob tenant tree is moved:
-                   refuses delivery/APPEND/import for it and excludes it from
-                   GC. -on blocks until in-flight writes finish. Not the same as
+                   blocks blob activity store-wide. -on fails if any blob process
+                   still holds the storage root; stop and drain them first. Unlike
                    mailbox-disable, which still accepts delivery.
 
 Domain:
+  domain-set       -name N (-wildcard | -no-wildcard)
   domain-add       -name N [-wildcard]
   domain-list
   domain-delete    -name N -yes
@@ -255,7 +258,12 @@ Postfix policy export:
                    header_checks + check_recipient_access policy files.
                    See `+"`epistula-database admin reject-export -h`"+`.
 
-All subcommands accept -config <path>. Destructive operations require -yes.`)
+All subcommands accept -config <path>.
+-yes is required to apply mailbox-delete, mailbox-rename, domain-delete,
+archive-apply, archive-undo, folder-prune-empty, folder-merge,
+archive-reclassify and log-prune (where offered, -dry-run previews instead).
+alias-delete, acl-delete, api-token-revoke and annotation-model-retire apply
+immediately without -yes.`)
 }
 
 func adminMailboxAdd(args []string) int {
@@ -265,6 +273,10 @@ func adminMailboxAdd(args []string) int {
 	quota := fs.Int64("quota-bytes", 0, "Quota in bytes (0 = unlimited)")
 	passwordStdin := fs.Bool("password-stdin", false, "Read password from stdin instead of prompting on tty")
 	if err := fs.Parse(args); err != nil {
+		return EX_USAGE
+	}
+	if *quota < 0 {
+		fmt.Fprintln(os.Stderr, "-quota-bytes must be non-negative")
 		return EX_USAGE
 	}
 	if *name == "" {
@@ -500,6 +512,12 @@ func adminAliasAdd(args []string) int {
 	lp := norm.NFC.String(strings.ToLower(strings.TrimSpace(*localpart)))
 	if *catchall {
 		lp = ""
+	}
+	if !*catchall {
+		if err := validateLocalpart(lp); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return EX_USAGE
+		}
 	}
 	domainNorm := normalizeDomain(*domain)
 	// The -mailbox target is matched against the canonical stored name (lower +
@@ -772,7 +790,7 @@ func adminACLList(args []string) int {
 			fmt.Fprintf(os.Stderr, "scan: %v\n", err)
 			return EX_TEMPFAIL
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", dn, lp, kind, created.UTC().Format("2006-01-02"), note)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", terminalSafe(dn), terminalSafe(lp), terminalSafe(kind), created.UTC().Format("2006-01-02"), terminalSafe(note))
 		count++
 	}
 	if err := rows.Err(); err != nil {
@@ -926,6 +944,10 @@ func normalizeACLArgs(domain, localpart string) (string, string, int) {
 	}
 	if lp == "" {
 		fmt.Fprintln(os.Stderr, "localpart is empty (the catchall slot is managed via alias-add -catchall)")
+		return "", "", EX_USAGE
+	}
+	if err := validateLocalpart(lp); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return "", "", EX_USAGE
 	}
 	return d, lp, EX_OK
@@ -1173,17 +1195,11 @@ func adminMailboxDelete(args []string) int {
 		// follow-up revoke could run. Doing both in one row update lets the
 		// constraint see the final row, where the token is already revoked.
 		rows, err := tx.Query(ctx,
-			`UPDATE api_tokens
-			    SET scope_mailbox_ids = array_remove(scope_mailbox_ids, $1),
-			        revoked_at = CASE
-			          WHEN revoked_at IS NULL
-			           AND NOT scope_all_mailboxes
-			           AND cardinality(array_remove(scope_mailbox_ids, $1)) = 0
-			          THEN now()
-			          ELSE revoked_at
-			        END
-			  WHERE $1 = ANY(scope_mailbox_ids)
-			RETURNING name, cardinality(scope_mailbox_ids) = 0 AND NOT scope_all_mailboxes`,
+			`WITH before AS (SELECT id, revoked_at FROM api_tokens WHERE $1=ANY(scope_mailbox_ids) FOR UPDATE)
+ UPDATE api_tokens t SET scope_mailbox_ids=array_remove(t.scope_mailbox_ids,$1),
+ revoked_at=CASE WHEN t.revoked_at IS NULL AND NOT t.scope_all_mailboxes AND cardinality(array_remove(t.scope_mailbox_ids,$1))=0 THEN now() ELSE t.revoked_at END
+ FROM before WHERE t.id=before.id
+ RETURNING t.name,before.revoked_at IS NULL AND t.revoked_at IS NOT NULL,before.revoked_at IS NULL`,
 			mailboxID)
 		if err != nil {
 			return fmt.Errorf("rescope tokens: %w", err)
@@ -1191,11 +1207,13 @@ func adminMailboxDelete(args []string) int {
 		defer rows.Close()
 		for rows.Next() {
 			var n string
-			var nowScopeless bool
-			if err := rows.Scan(&n, &nowScopeless); err != nil {
+			var nowScopeless, wasLive bool
+			if err := rows.Scan(&n, &nowScopeless, &wasLive); err != nil {
 				return fmt.Errorf("scan token: %w", err)
 			}
-			rescoped++
+			if wasLive {
+				rescoped++
+			}
 			if nowScopeless {
 				revokedTokens = append(revokedTokens, n)
 			}
@@ -1823,7 +1841,7 @@ func adminAliasList(args []string) int {
 			display = "(catchall)"
 		}
 		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n",
-			id, dn, display, mb, created.UTC().Format("2006-01-02"))
+			id, terminalSafe(dn), terminalSafe(display), terminalSafe(mb), created.UTC().Format("2006-01-02"))
 		count++
 	}
 	if err := rows.Err(); err != nil {
@@ -1864,6 +1882,12 @@ func adminAliasDelete(args []string) int {
 		// Same normalization as alias-add and the delivery resolver, so the
 		// spelling that created a row always deletes it (R-006).
 		lp = norm.NFC.String(strings.ToLower(strings.TrimSpace(*localpart)))
+	}
+	if !*catchall {
+		if err := validateLocalpart(lp); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return EX_USAGE
+		}
 	}
 	domainNorm := normalizeDomain(*domain)
 
@@ -2071,8 +2095,8 @@ func adminLogTail(args []string) int {
 	for _, r := range entries {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
 			r.received.UTC().Format("2006-01-02T15:04:05Z"),
-			truncate(r.from, 32), truncate(r.to, 32), r.mailbox,
-			r.bytes, r.outcome, r.shaHex, truncate(r.detail, 40))
+			terminalSafe(truncate(r.from, 32)), terminalSafe(truncate(r.to, 32)), terminalSafe(r.mailbox),
+			r.bytes, terminalSafe(r.outcome), terminalSafe(r.shaHex), terminalSafe(truncate(r.detail, 40)))
 	}
 	if err := tw.Flush(); err != nil {
 		return EX_IOERR
