@@ -330,8 +330,8 @@ func deliver(ctx context.Context, cfg *Config, accepted *deliveryAcceptance, env
 	// non-zero — including the window where the transaction committed but
 	// the process died (or the watchdog fired) before EX_OK was returned.
 	// The redelivered bytes are identical (same queue file), so
-	// (folder, raw_sha256) is the natural dedup key, mirroring the import
-	// path. Distinct SMTP submissions of the same content differ in their
+	// (mailbox, raw_sha256) is the delivery dedup key even after filing.
+	// Importers retain folder-scoped dedup. Distinct SMTP submissions differ in their
 	// Received headers and are never deduped.
 	//
 	// This pre-tx check is a fast idempotency skip, not a concurrency
@@ -560,21 +560,9 @@ func deliver(ctx context.Context, cfg *Config, accepted *deliveryAcceptance, env
 	return EX_OK
 }
 
-// deliveryIsDuplicate reports whether the message with the given content
-// hash already exists in the recipient's target folder. A folder that does
-// not exist yet trivially has no duplicate.
-func deliveryIsDuplicate(ctx context.Context, db *storage.DB, mailboxID int64, folderName, sha256Hex string) (bool, time.Time, error) {
-	var folderID int64
-	err := db.Pool().QueryRow(ctx,
-		`SELECT id FROM folders WHERE mailbox_id = $1 AND name = $2`,
-		mailboxID, folderName,
-	).Scan(&folderID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, time.Time{}, nil
-		}
-		return false, time.Time{}, fmt.Errorf("folder lookup: %w", err)
-	}
+// deliveryIsDuplicate finds content anywhere in the recipient mailbox, so an
+// intervening IMAP/archive move does not defeat a retry of the same delivery.
+func deliveryIsDuplicate(ctx context.Context, db *storage.DB, mailboxID int64, _ string, sha256Hex string) (bool, time.Time, error) {
 	// The blob date comes back with the answer so a caller can verify the
 	// stored file at the coordinates the row actually names (RA6X-035),
 	// instead of guessing which day it was written on.
@@ -583,11 +571,10 @@ func deliveryIsDuplicate(ctx context.Context, db *storage.DB, mailboxID int64, f
 		return false, time.Time{}, fmt.Errorf("decode sha: %w", derr)
 	}
 	var blobDate time.Time
-	err = db.Pool().QueryRow(ctx,
-		`SELECT raw_blob_date FROM messages
-		  WHERE folder_id = $1 AND raw_sha256 = $2
-		  ORDER BY id LIMIT 1`,
-		folderID, shaBytes,
+	err := db.Pool().QueryRow(ctx,
+		`SELECT m.raw_blob_date FROM messages m JOIN folders f ON f.id=m.folder_id
+ WHERE f.mailbox_id=$1 AND m.raw_sha256=$2 ORDER BY m.id LIMIT 1`,
+		mailboxID, shaBytes,
 	).Scan(&blobDate)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

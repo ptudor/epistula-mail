@@ -138,6 +138,9 @@ const (
 	// projection; no attachment is derived from it.
 	DefectUndecodableBody = "undecodable_body"
 
+	// DefectProjectionTruncated bounds derived text without rejecting raw mail.
+	DefectProjectionTruncated = "text_projection_truncated"
+
 	// The remaining kinds are recorded only when salvaging: each marks a
 	// resource limit that was reached and the data it cost.
 
@@ -360,6 +363,10 @@ func (p *Parser) Parse(raw []byte) (*Message, error) {
 	out.HTMLBody = SanitizeUTF8(strings.TrimSpace(walker.htmlBuf.String()))
 	if out.TextBody == "" && out.HTMLBody != "" {
 		out.TextBody = htmlToText(out.HTMLBody)
+		if text, truncated := capProjection(out.TextBody, p.limits.MaxMessageBytes); truncated {
+			out.TextBody = text
+			bs.Defects = append(bs.Defects, DefectProjectionTruncated)
+		}
 	}
 	out.Attachments = walker.attachments
 	out.BodyStructure = bs

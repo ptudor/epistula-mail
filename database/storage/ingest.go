@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"time"
 
@@ -507,8 +506,8 @@ func (db *DB) Ingest(ctx context.Context, p IngestParams) (IngestResult, error) 
 			`SELECT pg_notify('mail_arrived', $1)`,
 			strconv.FormatInt(folderID, 10),
 		); err != nil {
-			// Best-effort. IMAP clients will rediscover on their next poll.
-			slog.Warn("pg_notify failed", "err", err, "folder_id", folderID)
+			// A failed statement aborts this transaction; propagate it so delivery retries.
+			return fmt.Errorf("notify folder %d: %w", folderID, err)
 		}
 		return nil
 	}, p.OnCommitted)

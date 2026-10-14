@@ -17,25 +17,43 @@ import (
 // charset name. UTF-8 and US-ASCII pass through. Unknown charsets degrade to
 // the raw bytes (invalid UTF-8 may result; the caller's tsvector index uses
 // 'simple' which tolerates).
-func decodeText(b []byte, charset string) (string, error) {
+func decodeText(b []byte, charset string, limit int64) (string, bool, error) {
 	cs := strings.ToLower(strings.TrimSpace(charset))
-	if cs == "" || cs == "utf-8" || cs == "us-ascii" || cs == "ascii" {
-		return string(b), nil
-	}
-	enc, err := lookupEncoding(cs)
-	if err != nil || enc == nil {
-		// Last-ditch: if the bytes are already valid UTF-8, return them; else
-		// pass through and let the caller decide.
-		if utf8.Valid(b) {
-			return string(b), nil
+	var reader io.Reader = bytes.NewReader(b)
+	var charsetErr error
+	if cs != "" && cs != "utf-8" && cs != "us-ascii" && cs != "ascii" {
+		enc, err := lookupEncoding(cs)
+		charsetErr = err
+		if err == nil && enc != nil {
+			reader = transform.NewReader(reader, enc.NewDecoder())
 		}
-		return string(b), err
 	}
-	converted, _, terr := transform.Bytes(enc.NewDecoder(), b)
-	if terr != nil {
-		return string(b), terr
+	converted, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		// Keep the previous raw-byte fallback, bounded to the projection budget.
+		n := int64(len(b))
+		if n > limit+1 {
+			n = limit + 1
+		}
+		converted = b[:n]
+	} else {
+		err = charsetErr
 	}
-	return string(converted), nil
+	text := SanitizeUTF8(string(converted))
+	bounded, truncated := capProjection(text, limit)
+	return bounded, truncated, err
+}
+
+// capProjection takes a complete UTF-8 prefix; callers sanitize first.
+func capProjection(text string, limit int64) (string, bool) {
+	if int64(len(text)) <= limit {
+		return text, false
+	}
+	n := int(limit)
+	for n > 0 && !utf8.RuneStart(text[n]) {
+		n--
+	}
+	return text[:n], true
 }
 
 func lookupEncoding(charset string) (encoding.Encoding, error) {

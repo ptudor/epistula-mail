@@ -11,8 +11,7 @@ import (
 )
 
 // TestDeliveryIsDuplicate locks down the Postfix-retry idempotency guard:
-// a message already committed to (mailbox, folder) is reported as a
-// duplicate; a different message or an absent folder is not.
+// a message already committed anywhere in the mailbox is a duplicate.
 func TestDeliveryIsDuplicate(t *testing.T) {
 	db, _ := pgtest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -80,12 +79,12 @@ func TestDeliveryIsDuplicate(t *testing.T) {
 		t.Error("committed message must be reported as duplicate on redelivery")
 	}
 
-	// Same bytes, different folder: not a duplicate.
+	// A different configured delivery folder still recognizes the same delivery.
 	dup, _, err = deliveryIsDuplicate(ctx, db, mailboxID, "Archive", sha)
 	if err != nil {
 		t.Fatalf("deliveryIsDuplicate (other folder): %v", err)
 	}
-	if dup {
-		t.Error("different folder must not be reported as duplicate")
+	if !dup {
+		t.Error("different folder must still recognize the duplicate")
 	}
 }

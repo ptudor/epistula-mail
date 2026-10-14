@@ -236,31 +236,27 @@ func (w *mimeWalker) walkIn(partNumber, ctHeader, cteHeader, cdHeader, cidHeader
 		w.appendAttachment(partNumber, mediatype, params, bs, decoded)
 	}
 
-	switch {
-	case mainType == "text" && subType == "plain":
-		text, derr := decodeText(decoded, params["charset"])
-		if derr != nil {
-			// The raw bytes pass through and are sanitized at the Parse
-			// level; surface the charset problem for corpus debugging.
-			slog.Debug("ingest charset decode failed", "charset", params["charset"], "part", partNumber, "err", derr)
+	if bodyText {
+		projection := &w.textBuf
+		if subType == "html" {
+			projection = &w.htmlBuf
 		}
-		if w.textBuf.Len() > 0 {
-			w.textBuf.WriteString("\n")
+		remaining := w.limits.MaxMessageBytes - int64(projection.Len())
+		separator := ""
+		if projection.Len() > 0 && remaining > 0 {
+			separator = "\n"
+			remaining--
 		}
-		w.textBuf.WriteString(text)
-		// Lines counts the transfer-encoded body per RFC, not the
-		// charset-decoded string (RO5X-003).
-		bs.Lines = textLines(bs, body)
-
-	case mainType == "text" && subType == "html":
-		text, derr := decodeText(decoded, params["charset"])
+		text, truncated, derr := decodeText(decoded, params["charset"], remaining)
 		if derr != nil {
 			slog.Debug("ingest charset decode failed", "charset", params["charset"], "part", partNumber, "err", derr)
 		}
-		if w.htmlBuf.Len() > 0 {
-			w.htmlBuf.WriteString("\n")
+		if truncated {
+			bs.Defects = append(bs.Defects, DefectProjectionTruncated)
 		}
-		w.htmlBuf.WriteString(text)
+		projection.WriteString(separator)
+		projection.WriteString(text)
+		// Lines counts the transfer-encoded body per RFC, independent of projection.
 		bs.Lines = textLines(bs, body)
 	}
 	return bs, nil
