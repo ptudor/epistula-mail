@@ -28,6 +28,8 @@ import (
 // matched by numSet inside the selected folder. Emits FETCH FLAGS
 // updates per affected message via the FetchWriter unless StoreFlags.Silent.
 func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) (err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("STORE", &err)
 	if err := s.requireAuth(); err != nil {
 		return err
@@ -187,6 +189,8 @@ func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *im
 // sequence-number order and each WriteExpunge call uses the *current*
 // (post-prior-deletions) sequence number.
 func (s *Session) Expunge(w *imapserver.ExpungeWriter, uids *imap.UIDSet) (err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("EXPUNGE", &err)
 	if err := s.requireAuth(); err != nil {
 		return err
@@ -441,6 +445,8 @@ func (s *Session) Expunge(w *imapserver.ExpungeWriter, uids *imap.UIDSet) (err e
 // are likewise duplicated under the new message_ids. Returns
 // SourceUIDs / DestUIDs for the UIDPLUS COPYUID response.
 func (s *Session) Copy(numSet imap.NumSet, dest string) (copyData *imap.CopyData, err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("COPY", &err)
 	if err := s.requireAuth(); err != nil {
 		return nil, err
@@ -967,6 +973,8 @@ func (s *Session) copyInTx(ctx context.Context, tx pgx.Tx, rows []targetRef, des
 // EXPUNGE responses we emit afterwards are purely the on-the-wire
 // notification.
 func (s *Session) Move(w *imapserver.MoveWriter, numSet imap.NumSet, dest string) (err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("MOVE", &err)
 	if err := s.requireAuth(); err != nil {
 		return err

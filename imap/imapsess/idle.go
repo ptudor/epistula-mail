@@ -45,7 +45,10 @@ func (s *Session) idleConsume(ctx context.Context, w *imapserver.UpdateWriter, s
 	// server may IDLE in authenticated state too, but until SELECT
 	// happens there's nothing to notify on, so we just wait for
 	// stop.
-	if s.selectedFolderID == 0 {
+	s.stateMu.Lock()
+	selected := s.selectedFolderID != 0
+	s.stateMu.Unlock()
+	if !selected {
 		select {
 		case <-stop:
 		case <-ctx.Done():
@@ -147,7 +150,9 @@ func (s *Session) idleListen(ctx context.Context, w *imapserver.UpdateWriter) er
 	if err := s.reconcile(ctx, w, true); err != nil {
 		return err
 	}
+	s.stateMu.Lock()
 	want := strconv.FormatInt(s.selectedFolderID, 10)
+	s.stateMu.Unlock()
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()

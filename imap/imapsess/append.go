@@ -23,6 +23,8 @@ import (
 // paths. Returns the new UID + UIDVALIDITY for the UIDPLUS APPENDUID
 // response.
 func (s *Session) Append(mailbox string, r imap.LiteralReader, options *imap.AppendOptions) (appendData *imap.AppendData, err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("APPEND", &err)
 	if err := s.requireAuth(); err != nil {
 		return nil, err

@@ -117,6 +117,10 @@ func (b *Backend) Storage() *storage.DB {
 
 // Session is one client connection's state. Created by Backend.NewSession.
 type Session struct {
+	// Commands and asynchronous IDLE callbacks serialize selected-folder state.
+	stateMu  sync.Mutex
+	idleDone chan struct{}
+
 	be *Backend
 
 	// remoteIP is set by NewSessionForConn. Empty when the limiter is
@@ -278,6 +282,13 @@ func (b *Backend) NewSessionForNetConn(conn net.Conn) *Session {
 // session count; per-IP connection count is owned by the listener
 // wrapper, which releases when the underlying net.Conn closes).
 func (s *Session) Close() error {
+	// Cancel work before waiting for IDLE or its state lock.
+	if s.sessCancel != nil {
+		s.sessCancel()
+	}
+	s.waitIdle()
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	if s.closed {
 		return nil
 	}
@@ -326,6 +337,8 @@ func mustDummyHash() string {
 // would want to burn); refuses when the mailbox already has
 // per_mailbox_connections active sessions.
 func (s *Session) Login(username, password string) (err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("LOGIN", &err)
 	// The common cost workset equalizes admitted account categories. Keep the
 	// existing minimum for lookup noise and early throttled/invalid requests.
@@ -554,6 +567,8 @@ func (s *Session) logPacing(level slog.Level, msg string) {
 
 // Subscribe records the (mailbox, folder) row in folder_subscriptions.
 func (s *Session) Subscribe(mailbox string) (err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("SUBSCRIBE", &err)
 	if err := s.requireAuth(); err != nil {
 		return err
@@ -578,6 +593,8 @@ func (s *Session) Subscribe(mailbox string) (err error) {
 
 // Unsubscribe removes the subscription row.
 func (s *Session) Unsubscribe(mailbox string) (err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("UNSUBSCRIBE", &err)
 	if err := s.requireAuth(); err != nil {
 		return err
@@ -604,6 +621,8 @@ func (s *Session) Unsubscribe(mailbox string) (err error) {
 // serve.go requires this method; the upstream server checks the interface at
 // connection start.
 func (s *Session) Namespace() (*imap.NamespaceData, error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	if err := s.requireAuth(); err != nil {
 		return nil, err
 	}
@@ -618,6 +637,8 @@ func (s *Session) Namespace() (*imap.NamespaceData, error) {
 // options.SelectSubscribed=true, so honoring that flag here gives us
 // LSUB for free.
 func (s *Session) List(w *imapserver.ListWriter, ref string, patterns []string, options *imap.ListOptions) (err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("LIST", &err)
 	if err := s.requireAuth(); err != nil {
 		return err
@@ -712,6 +733,8 @@ func patternMatches(name string, patterns []string, ref string) bool {
 // Real MUAs poll non-selected folders with `STATUS ... UNSEEN` to render
 // unread badges, so this path is exercised by essentially every client.
 func (s *Session) Status(mailbox string, options *imap.StatusOptions) (statusData *imap.StatusData, err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("STATUS", &err)
 	if err := s.requireAuth(); err != nil {
 		return nil, err
@@ -791,6 +814,8 @@ func (s *Session) Status(mailbox string, options *imap.StatusOptions) (statusDat
 
 // Select activates a folder for FETCH / SEARCH / STORE / EXPUNGE.
 func (s *Session) Select(mailbox string, options *imap.SelectOptions) (selectData *imap.SelectData, err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("SELECT", &err)
 	if err := s.requireAuth(); err != nil {
 		return nil, err
@@ -815,6 +840,8 @@ func (s *Session) Select(mailbox string, options *imap.SelectOptions) (selectDat
 
 // Unselect deselects without expunging. RFC 3691.
 func (s *Session) Unselect() (err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("UNSELECT", &err)
 	s.selectedFolderID = 0
 	s.selectedFolderName = ""
@@ -836,19 +863,31 @@ func (s *Session) Unselect() (err error) {
 // whole delta is deferred rather than partially applied — the next poll that
 // may speak delivers it.
 func (s *Session) Poll(w *imapserver.UpdateWriter, allowExpunge bool) (err error) {
+	s.waitIdle()
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("POLL", &err)
 	if s.selectedFolderID == 0 {
 		return nil
 	}
 	ctx, cancel := s.queryCtx()
 	defer cancel()
-	return s.reconcile(ctx, w, allowExpunge)
+	return s.reconcileLocked(ctx, w, allowExpunge)
 }
 
 // Idle subscribes to PG NOTIFY on the mail_arrived channel and emits
 // EXISTS updates when a new message lands in the selected folder.
 // The implementation lives in idle.go.
 func (s *Session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) (err error) {
+	s.stateMu.Lock()
+	if s.closed {
+		s.stateMu.Unlock()
+		return nil
+	}
+	done := make(chan struct{})
+	s.idleDone = done
+	s.stateMu.Unlock()
+	defer close(done)
 	defer s.guard("IDLE", &err)
 	// Derive from the SESSION's context, not context.Background() (RA6X-022).
 	// Everything IDLE does — acquiring a pooled connection, issuing LISTEN,
@@ -869,6 +908,8 @@ func (s *Session) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) (err er
 // BodyStructure, and BODY[...] section reads. BINARY[...] is deliberately
 // rejected until decoded binary-part fetches are implemented.
 func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *imap.FetchOptions) (err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("FETCH", &err)
 	if err := s.requireAuth(); err != nil {
 		return err
@@ -1809,6 +1850,8 @@ func specialUseFromOptions(options *imap.CreateOptions) (*string, *imap.Error) {
 }
 
 func (s *Session) Create(mailbox string, options *imap.CreateOptions) (err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("CREATE", &err)
 	if err := s.requireAuth(); err != nil {
 		return err
@@ -1890,6 +1933,8 @@ var (
 )
 
 func (s *Session) Delete(mailbox string) (err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("DELETE", &err)
 	if err := s.requireAuth(); err != nil {
 		return err
@@ -2024,6 +2069,8 @@ func (s *Session) Delete(mailbox string) (err error) {
 }
 
 func (s *Session) Rename(mailbox, newName string, options *imap.RenameOptions) (err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("RENAME", &err)
 	if err := s.requireAuth(); err != nil {
 		return err
@@ -2622,5 +2669,23 @@ func (c *messageSections) prepare(s *Session, r fetchRow, sec *imap.FetchItemBod
 func (c *messageSections) close() {
 	if c.stream != nil {
 		c.stream.Close()
+	}
+}
+
+// The library does not join Idle on malformed DONE or EOF. Wait for our own
+// completion before Poll/Close use the view; cancellation bounds this wait.
+func (s *Session) waitIdle() {
+	s.stateMu.Lock()
+	done, ctx := s.idleDone, s.sessCtx
+	s.stateMu.Unlock()
+	if done == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }

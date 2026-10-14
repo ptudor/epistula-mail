@@ -247,6 +247,13 @@ var errReconcileBackend = errors.New("imapsess: reconcile failed in the database
 // nil. A failed commit or flag read wraps errReconcileBackend, so a caller
 // that polls can retry it rather than stop.
 func (s *Session) reconcile(ctx context.Context, w *imapserver.UpdateWriter, allowExpunge bool) error {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.reconcileLocked(ctx, w, allowExpunge)
+}
+
+// reconcileLocked requires stateMu; Poll already holds it for its own checks.
+func (s *Session) reconcileLocked(ctx context.Context, w *imapserver.UpdateWriter, allowExpunge bool) error {
 	if s.selectedFolderID == 0 || s.view == nil {
 		return nil
 	}

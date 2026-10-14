@@ -21,6 +21,8 @@ import (
 // column gets packaged into the NumSet. Sequence numbers are 1-based
 // positions over (folder_id, ORDER BY uid).
 func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions) (searchData *imap.SearchData, err error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	defer s.guard("SEARCH", &err)
 	if err := s.requireAuth(); err != nil {
 		return nil, err
