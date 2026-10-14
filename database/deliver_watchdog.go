@@ -33,7 +33,7 @@ func (t *deliveryTimer) stop() {
 // Commit replaces the delivery deadline with a separate success-only budget.
 // A callback that already started is joined before any hook can be launched.
 // The hook's own timeout kills its process group; this final one-second grace
-// also bounds terminal logging or a stuck Wait after that cancellation.
+// also bounds terminal logging after group cancellation and the hook's bounded WaitDelay.
 func armDeliveryWatchdogs(a *deliveryAcceptance, delivery, postCommit time.Duration, recipient string) func() {
 	primary := newDeliveryTimer(delivery, func() { deliveryDeadlineExceeded(a, delivery, recipient) })
 	var post *deliveryTimer

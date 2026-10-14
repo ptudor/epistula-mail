@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -56,7 +57,22 @@ func runPostDeliveryHook(cfg *Config, info PostDeliveryHookContext) {
 
 	args := cfg.Delivery.PostHookCommand
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	cmd.Env = append(os.Environ(),
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		} else {
+			return err
+		}
+	}
+	cmd.WaitDelay = 250 * time.Millisecond
+	var env []string
+	for _, key := range []string{"PATH", "TZ", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_COLLATE", "LC_MONETARY", "LC_NUMERIC", "LC_TIME"} {
+		if value, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+value)
+		}
+	}
+	cmd.Env = append(env,
 		"MAIL_DB_ENVELOPE_FROM="+info.EnvelopeFrom,
 		"MAIL_DB_ENVELOPE_TO="+info.EnvelopeTo,
 		"MAIL_DB_MAILBOX_ID="+strconv.FormatInt(info.MailboxID, 10),
@@ -115,7 +131,7 @@ func runPostDeliveryHook(cfg *Config, info PostDeliveryHookContext) {
 
 // isHookTimeout reports whether err is the result of the context deadline
 // firing rather than an exec-level failure. exec.CommandContext kills the
-// child when the deadline fires, and the resulting *exec.ExitError
+// hook process group when the deadline fires, and the resulting *exec.ExitError
 // ("signal: killed") never wraps context.DeadlineExceeded — ctx.Err() is
 // the authoritative signal.
 func isHookTimeout(ctx context.Context, _ error) bool {

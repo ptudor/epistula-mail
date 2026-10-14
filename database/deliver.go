@@ -33,7 +33,8 @@ func runDeliver(args []string) int {
 	recipient := fs.String("recipient", "", "Envelope recipient address (required)")
 	sender := fs.String("sender", "", "Envelope sender address")
 	if err := fs.Parse(args); err != nil {
-		return EX_USAGE
+		slog.Error("deliver: invalid command argument; deferring message", "err", err)
+		return EX_TEMPFAIL
 	}
 	if *recipient == "" {
 		// DEFER, don't bounce. EX_USAGE is a permanent failure to Postfix
@@ -348,6 +349,24 @@ func deliver(ctx context.Context, cfg *Config, accepted *deliveryAcceptance, env
 	if code != EX_OK {
 		return code
 	}
+	// The blob tenant is the resolved mailbox's canonical name. It comes from
+	// the DB (mailboxes.name, constrained to the path-safe charset), so a
+	// parse failure here is an internal/config invariant violation, not a
+	// per-message data error.
+	tenant, err := blob.ParseTenant(match.MailboxName)
+	if err != nil {
+		slog.Error("deliver invalid mailbox name for blob tenant — internal bug",
+			"mailbox", match.MailboxName, "mailbox_id", match.MailboxID, "err", err)
+		return EX_TEMPFAIL
+	}
+
+	if cfg.Production {
+		if err := store.CheckTenantPermissions(tenant); err != nil {
+			slog.Error("blob store permissions", "err", err)
+			return EX_TEMPFAIL
+		}
+	}
+
 	lease, lerr := maintenance.Acquire(ctx, cfg.Storage.Root, db.Pool(), false, false)
 	if lerr != nil {
 		slog.Error("delivery offline maintenance barrier", "err", lerr)
@@ -360,7 +379,7 @@ func deliver(ctx context.Context, cfg *Config, accepted *deliveryAcceptance, env
 		return EX_TEMPFAIL
 	}
 	if dup {
-		dup, err = repairDuplicateDelivery(ctx, db, cfg, match.MailboxID, match.MailboxName, msg, raw, accepted)
+		dup, err = repairDuplicateDelivery(ctx, db, cfg, store, match.MailboxID, match.MailboxName, msg, raw, accepted)
 		if err != nil {
 			slog.Error("deliver duplicate verification failed", "err", err, "envelope_to", envTo)
 			return EX_TEMPFAIL
@@ -372,17 +391,6 @@ func deliver(ctx context.Context, cfg *Config, accepted *deliveryAcceptance, env
 			"envelope_to", envTo, "raw_sha256_short", msg.SHA256Hex[:16], "bytes", len(raw))
 		_ = db.LogRejection(ctx, envFrom, envTo, "duplicate", "", int64(len(raw)))
 		return EX_OK
-	}
-
-	// The blob tenant is the resolved mailbox's canonical name. It comes from
-	// the DB (mailboxes.name, constrained to the path-safe charset), so a
-	// parse failure here is an internal/config invariant violation, not a
-	// per-message data error.
-	tenant, err := blob.ParseTenant(match.MailboxName)
-	if err != nil {
-		slog.Error("deliver invalid mailbox name for blob tenant — internal bug",
-			"mailbox", match.MailboxName, "mailbox_id", match.MailboxID, "err", err)
-		return EX_SOFTWARE
 	}
 
 	// Advisory over-quota pre-check, before any blob reaches disk.
@@ -433,7 +441,7 @@ func deliver(ctx context.Context, cfg *Config, accepted *deliveryAcceptance, env
 	// Sanity: the parser computed the same sha256 we just wrote.
 	if rawSHA != msg.SHA256Hex {
 		slog.Error("deliver sha256 mismatch — internal bug", "blob", rawSHA, "parsed", msg.SHA256Hex)
-		return EX_SOFTWARE
+		return EX_TEMPFAIL
 	}
 
 	// Write attachments under the same bucket so a message and its parts

@@ -69,3 +69,9 @@ func TestParseErrorToExitClassifies(t *testing.T) {
 			"an unclassified error must defer, not bounce", got, EX_TEMPFAIL)
 	}
 }
+
+func TestRunDeliverUnknownFlagDefers(t *testing.T) {
+	if code := runDeliver([]string{"-recipient=a@x.invalid", "-bogus=1"}); code != EX_TEMPFAIL {
+		t.Fatalf("unknown flag: got %d, want EX_TEMPFAIL", code)
+	}
+}

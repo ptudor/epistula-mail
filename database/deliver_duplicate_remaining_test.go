@@ -121,7 +121,7 @@ func TestRemainingDuplicateRepairSerializesWithGC(t *testing.T) {
 	done := make(chan error, 1)
 	a := &deliveryAcceptance{}
 	go func() {
-		ok, err := repairDuplicateDelivery(ctx, db, cfg, mailboxID, tenant, msg, []byte(duplicateAttachmentMessage), a)
+		ok, err := repairDuplicateDelivery(ctx, db, cfg, blob.NewStore(cfg.Storage.Root), mailboxID, tenant, msg, []byte(duplicateAttachmentMessage), a)
 		if err == nil && !ok {
 			err = context.Canceled
 		}

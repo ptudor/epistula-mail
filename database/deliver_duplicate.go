@@ -11,14 +11,10 @@ import (
 	"github.com/ptudor/epistula-mail/database/storage"
 )
 
-func repairDuplicateDelivery(ctx context.Context, db *storage.DB, cfg *Config, mailboxID int64, mailboxName string, msg *ingest.Message, raw []byte, accepted *deliveryAcceptance) (bool, error) {
+func repairDuplicateDelivery(ctx context.Context, db *storage.DB, cfg *Config, store *blob.Store, mailboxID int64, mailboxName string, msg *ingest.Message, raw []byte, accepted *deliveryAcceptance) (bool, error) {
 	tenant, err := blob.ParseTenant(mailboxName)
 	if err != nil {
 		return false, err
-	}
-	store, code := openBlobStore(cfg, true)
-	if code != EX_OK {
-		return false, fmt.Errorf("open blob store: %s", ExitCodeName(code))
 	}
 	return db.RepairDuplicate(ctx, mailboxID, mailboxName, cfg.Delivery.DefaultFolder, msg.SHA256Hex, duplicateContentRepair(ctx, store, tenant, msg, raw), accepted.markCommitted)
 }

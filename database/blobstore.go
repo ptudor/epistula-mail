@@ -37,7 +37,8 @@ func ensureBlobsFunc(store *blob.Store, tenant blob.Tenant, bucket blob.Bucket, 
 	}
 }
 
-// openBlobStore initializes the on-disk blob store. deliverPath selects the
+// openBlobStore initializes an existing on-disk root; it never creates it.
+// deliverPath selects the
 // exit-code policy for a permissions/init failure: in the Postfix-facing LDA
 // path it must DEFER (EX_TEMPFAIL) so an operator can fix a chmod drift on
 // storage_root without Postfix bouncing every inbound message; every other
@@ -60,7 +61,7 @@ func openBlobStore(cfg *Config, deliverPath bool) (*blob.Store, int) {
 // say, because everything the pass reports afterwards is otherwise measured
 // against an empty directory.
 // openBlobStoreFor picks the opener a maintenance command needs: a dry-run
-// gets the read-only form, a live run initializes (RA6X-053).
+// gets the read-only form; a live run prepares the existing root (RA6X-053).
 func openBlobStoreFor(cfg *Config, dryRun bool) (*blob.Store, int) {
 	if dryRun {
 		return openBlobStoreReadOnly(cfg)
@@ -77,7 +78,7 @@ func openBlobStoreMode(cfg *Config, deliverPath, initialize bool) (*blob.Store, 
 	store.SetLogger(slog.Default())
 	store.SetGroupWritable(cfg.Storage.GroupWritable)
 	if initialize {
-		if err := store.Init(); err != nil {
+		if err := store.InitExisting(); err != nil {
 			fmt.Fprintf(os.Stderr, "blob store: %v\n", err)
 			return nil, EX_TEMPFAIL
 		}
@@ -100,7 +101,13 @@ func openBlobStoreMode(cfg *Config, deliverPath, initialize bool) (*blob.Store, 
 			store.SetOnUnknownSubtree(func(name string) { unknown = append(unknown, name) })
 			defer store.SetOnUnknownSubtree(nil)
 		}
-		if err := store.CheckPermissions(); err != nil {
+		var err error
+		if deliverPath {
+			err = store.CheckRootPermissions()
+		} else {
+			err = store.CheckPermissions()
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "blob store permissions: %v\n", err)
 			if deliverPath {
 				return nil, EX_TEMPFAIL

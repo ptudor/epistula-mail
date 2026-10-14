@@ -344,6 +344,17 @@ func (s *Store) Init() error {
 	if err := os.MkdirAll(s.root, s.dirMode); err != nil {
 		return fmt.Errorf("create %s: %w", s.root, err)
 	}
+	return s.InitExisting()
+}
+
+// InitExisting prepares an operator-created root without creating it. Live
+// writers must wait for the configured storage filesystem to be available.
+func (s *Store) InitExisting() error {
+	if info, err := os.Stat(s.root); err != nil {
+		return fmt.Errorf("stat storage root: %w", err)
+	} else if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", s.root)
+	}
 	// In shared-group mode force the mode past umask (MkdirAll masks it).
 	// chmodShared tolerates an operator-created root owned by another user
 	// as long as it already carries the shared bits.
@@ -399,6 +410,27 @@ func (s *Store) CheckPermissions() error {
 			if err := checkDirPerm(p); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// CheckRootPermissions is the constant-cost delivery startup check.
+func (s *Store) CheckRootPermissions() error { return checkDirPerm(s.root) }
+
+// CheckTenantPermissions inspects only the addressed tenant and its existing
+// raw/att/tmp directories. Missing tenant directories are created on demand.
+func (s *Store) CheckTenantPermissions(tenant Tenant) error {
+	if err := tenant.Validate(); err != nil {
+		return err
+	}
+	root := filepath.Join(s.root, string(tenant))
+	for _, dir := range []string{root, filepath.Join(root, "raw"), filepath.Join(root, "att"), filepath.Join(root, "tmp")} {
+		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err := checkDirPerm(dir); err != nil {
+			return err
 		}
 	}
 	return nil
