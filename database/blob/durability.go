@@ -77,9 +77,6 @@ func (s *Store) syncAncestry(dir string) error {
 		return fsyncDir(s.root)
 	}
 	cur := s.root
-	if err := fsyncDir(filepath.Dir(cur)); err != nil {
-		return err
-	}
 	if err := fsyncDir(cur); err != nil {
 		return fmt.Errorf("fsync %s: %w", cur, err)
 	}

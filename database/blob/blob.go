@@ -276,6 +276,10 @@ func (s *Store) ensureDir(dir string) error {
 		return s.durableAncestry(dir)
 	}
 
+	return s.ensureDirSlow(dir)
+}
+
+func (s *Store) ensureDirSlow(dir string) error {
 	rel, relErr := filepath.Rel(s.root, dir)
 	if relErr != nil || rel == "." || rel == "" || strings.HasPrefix(rel, "..") {
 		// dir is the root itself or outside it; create + (shared mode) chmod.
@@ -341,10 +345,33 @@ func (s *Store) Root() string { return s.root }
 // (<tenant>/raw, <tenant>/att, <tenant>/tmp) and their date/shard subdirs are
 // created on demand at write time, since the set of tenants is dynamic.
 func (s *Store) Init() error {
+	// Record the entries MkdirAll may create, including missing ancestors.
+	// Existing roots never require opening their parent for read access.
+	var created []string
+	for dir := s.root; ; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(dir); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		created = append(created, dir)
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
 	if err := os.MkdirAll(s.root, s.dirMode); err != nil {
 		return fmt.Errorf("create %s: %w", s.root, err)
 	}
-	return s.InitExisting()
+	if err := s.InitExisting(); err != nil {
+		return err
+	}
+	for _, dir := range created {
+		parent := filepath.Dir(dir)
+		if err := fsyncDir(parent); err != nil {
+			return fmt.Errorf("fsync created root parent %s: %w", parent, err)
+		}
+	}
+	return nil
 }
 
 // InitExisting prepares an operator-created root without creating it. Live
@@ -363,15 +390,8 @@ func (s *Store) InitExisting() error {
 			return err
 		}
 	}
-	// MkdirAll can create multiple levels above the configured root. Persist
-	// those entries too; syncing only the root cannot persist its own name.
-	for dir := s.root; ; dir = filepath.Dir(dir) {
-		if err := fsyncDir(dir); err != nil {
-			return fmt.Errorf("fsync root ancestry %s: %w", dir, err)
-		}
-		if parent := filepath.Dir(dir); parent == dir {
-			break
-		}
+	if err := fsyncDir(s.root); err != nil {
+		return fmt.Errorf("fsync storage root %s: %w", s.root, err)
 	}
 	return nil
 }
@@ -690,7 +710,12 @@ func (w *Writer) Close() (sha256Hex string, size int64, deduped bool, err error)
 	}
 
 	parent := filepath.Dir(finalPath)
-	if mkErr := w.store.ensureDir(parent); mkErr != nil {
+	mkErr := w.store.ensureDir(parent)
+	if errors.Is(mkErr, os.ErrNotExist) {
+		// GC may remove a level between stat and the ancestry fsync.
+		mkErr = w.store.ensureDirSlow(parent)
+	}
+	if mkErr != nil {
 		_ = os.Remove(w.tmpPath)
 		err = fmt.Errorf("mkdir parent: %w", mkErr)
 		return
