@@ -41,6 +41,10 @@ conn_max_lifetime = "5m"
 root = "/var/spool/epistula-database"
 
 [limits]
+# Maximum time without export write progress; 0s disables the bound.
+# export_write_stall = "30m"
+# Retained bytes per response page (32 MiB).
+# max_page_bytes = 33554432
 default_page_size    = 50
 max_page_size        = 500
 max_export_streams   = 2

@@ -119,13 +119,13 @@ sandbox in step 6 from needing extra socket families for glibc NSS):
 
 ```sh
 # On a build host with Go >= 1.26 with GOTOOLCHAIN=auto (go.mod selects Go 1.27.2), from the project root:
-CGO_ENABLED=0 make build-linux        # produces ./epistula-llm-worker-linux-amd64
+CGO_ENABLED=0 make build-linux        # produces build/epistula-llm-worker-linux-amd64
 ```
 
 Copy it over (your transfer of choice), then on the Fedora box:
 
 ```sh
-sudo install -m 755 epistula-llm-worker-linux-amd64 "${BIN}"
+sudo install -m 755 build/epistula-llm-worker-linux-amd64 "${BIN}"
 "${BIN}" version
 ```
 
@@ -163,10 +163,6 @@ Leave `production = false` and `dry_run = true` for now — step 5 proves the
 wiring before anything is written back. The rest of the file (categories,
 char caps, retries, the loopback admin listener on `127.0.0.1:8790`) ships with
 sane defaults; see `epistula-llm-worker.toml.example` for the full reference.
-
-> Prefer the token out of the file? Drop it from the TOML and instead set
-> `MAIL_LLM_MAIL_API_TOKEN=` in a `0600` `EnvironmentFile=` the unit reads. The
-> config falls back to that env var.
 
 ---
 

@@ -32,6 +32,8 @@ shutdown_timeout_seconds = 30
 # message_annotations and message_classifications, SELECT/DELETE on
 # annotation_pass_required, and EXECUTE on mail_lock_message_for_annotation.
 # password: openssl rand 24 | base64 | sed 's/[/10lO#+=]//g'
+# For a local Unix socket instead: host=/var/run/postgresql dbname=epistula_database user=epistula_api
+# TCP production connections require sslmode=verify-full.
 dsn               = "postgres://epistula_api:<generated>@127.0.0.1:5432/epistula_database?sslmode=disable"
 statement_timeout = "10s"
 max_open_conns    = 20
@@ -43,6 +45,10 @@ conn_max_lifetime = "5m"
 root = "/var/spool/epistula-database"
 
 [limits]
+# Maximum time without export write progress; 0s disables the bound.
+# export_write_stall = "30m"
+# Retained bytes per response page (32 MiB).
+# max_page_bytes = 33554432
 default_page_size    = 50
 max_page_size        = 500
 max_export_streams   = 2

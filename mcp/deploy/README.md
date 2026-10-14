@@ -15,7 +15,7 @@ env, so no config file is needed (see the `.mcp.json` example in `../CLAUDE.md`)
 Use **`-http`** only for a persistent daemon or to give a remote MCP host one
 endpoint.
 
-Port note: the stack already uses 8782/8783 (epistula-imap), 8784/8785 (epistula-api),
+Port note: the stack already uses 8782 (epistula-database admin), 8783 (epistula-imap admin), 8784/8785 (epistula-api),
 and 8790 (llm-worker admin); **8786** is free and is the suggested `-http` port.
 
 ## Files

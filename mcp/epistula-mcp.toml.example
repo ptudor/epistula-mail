@@ -52,6 +52,8 @@ annotate_token = ""
 request_timeout = "30s"
 
 [mcp]
+# Maximum bytes in one MCP tool response (8 MiB).
+# max_response_bytes = 8388608
 # Bearer token required for every -http listener, including loopback; unused by stdio.
 # Clients send Authorization: Bearer <token>. Generate a random secret, for example:
 #   openssl rand 24 | base64 | sed 's/[/10lO#+=]//g'

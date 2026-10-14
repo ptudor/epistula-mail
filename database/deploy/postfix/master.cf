@@ -20,9 +20,6 @@
 # account must be able to read the TOML config, write to ${storage.root},
 # and connect to Postgres.
 #
-# null=epistula-database tells Postfix to use the same user for any null
-# domain bounces — keeps the privilege model tight.
-#
 # argv= is the actual command. ${recipient} and ${sender} are Postfix
 # expansion variables, evaluated per-message before the LDA is exec'd.
 # The -config flag points at the same TOML the serve daemon reads, so

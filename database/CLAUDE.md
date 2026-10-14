@@ -133,8 +133,7 @@ ${storage_root}/<mailbox>/raw/1970/01/01/aa/bb/aabbccdd...eef.eml   # date-undet
 CREATE TABLE domains (
     id              BIGSERIAL PRIMARY KEY,
     name            TEXT NOT NULL UNIQUE,            -- 'example.invalid'
-    is_wildcard     BOOLEAN NOT NULL DEFAULT FALSE,  -- accept *@name
-    catchall_box_id BIGINT REFERENCES mailboxes(id),
+    is_wildcard     BOOLEAN NOT NULL DEFAULT FALSE,  -- enable allowlist gate
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -252,11 +251,10 @@ CREATE TABLE delivery_log (              -- audit trail, retained per policy
 5. Resolve envelope recipient(s) against `domains` + `aliases` + `domain_acl`. Resolution order, applied per recipient:
    1. **Denylist check.** If `(domain_id, localpart, 'deny')` exists in `domain_acl`, reject with `EX_NOUSER` (67), `delivery_log.outcome = 'rejected:denylist'`. Deny ALWAYS wins, even over an explicit alias — operator intent is unambiguous.
    2. **Exact alias.** `aliases(domain_id, localpart)` match → deliver to that mailbox.
-   3. **Wildcard / catchall.** If the domain has `is_wildcard = true` or a `catchall_box_id`, then:
-      - If the domain has any `(domain_id, _, 'allow')` rows configured, the localpart MUST match an allowlist row. Otherwise reject with `delivery_log.outcome = 'rejected:not-allowlisted'`. (An allowlist's presence makes the wildcard opt-in per address.)
-      - If no allowlist rows exist, accept any localpart and route to the catchall mailbox.
-      - **Allow rows on a standard (non-wildcard, no-catchall) domain are intentionally inert.** Resolution on a standard domain ends at step 2: an address either has an explicit alias or it doesn't, so there is no open acceptance for an allowlist to gate. Only deny rows (step 1) are meaningful there. `acl-add -allow` on such a domain is accepted (the domain may become a wildcard later) but has no effect until it does. This is the intended resolver behavior.
-   4. **No match.** Reject `EX_NOUSER`, `outcome = 'rejected:no-mailbox'`.
+   3. **Catchall and allowlist.** The catchall is an `aliases` row with `localpart=''`, created by `admin alias-add -domain D -catchall -mailbox M`. When `is_wildcard=true` or this alias exists, configured allow rows gate unmatched localparts; a nonmatching localpart returns `rejected:not_allowlisted`. Exact aliases already matched in step 2 bypass this gate.
+      - `domain-add -wildcard` and `domain-set -wildcard` select the allowlist policy only. They do not create a destination: without a catchall alias, an allowed or ungated unmatched address still returns `rejected:no_recipient`.
+      - With a catchall alias and no allow rows, any non-denied unmatched localpart routes to that mailbox. Allow rows on a standard domain without a catchall are inert.
+   4. **No match.** Reject `EX_NOUSER`, `outcome = 'rejected:no_recipient'`. An unknown domain is `rejected:unknown_domain`; quota refusal is `rejected:over_quota`.
    Each resolved mailbox gets its own `messages` row and its own copy of the raw blob under its tenant subtree (Postfix invokes the LDA once per recipient).
 6. Write `<mailbox>/raw/<yyyy/mm/dd>/<aa>/<bb>/<sha>.eml` if not present. `fsync` file + dir.
 7. Open one PG transaction:

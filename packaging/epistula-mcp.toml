@@ -22,7 +22,7 @@ base_url = "http://127.0.0.1:8784"
 # The READ token. MINT A DEDICATED TOKEN FOR THE MCP — never reuse the llm-worker's.
 # Least scope: read_metadata + read_content on exactly the mailboxes the model
 # should see, and deliberately NOT write_annotation — see annotate_token below.
-# The secret is printed once at mint time; store it here (0600) or in MAIL_MCP_TOKEN.
+# The secret is printed once at mint time; store it here (root:epistula-mcp 0640) or in MAIL_MCP_TOKEN.
 #
 #   epistula-database admin api-token-add -name epistula-mcp-read \
 #       -mailboxes "jdoe" -permission read_metadata -permission read_content
@@ -54,6 +54,8 @@ annotate_token = ""
 request_timeout = "30s"
 
 [mcp]
+# Maximum bytes in one MCP tool response (8 MiB).
+# max_response_bytes = 8388608
 # Bearer token required for every -http listener, including loopback; unused by stdio.
 # Clients send Authorization: Bearer <token>. Generate a random secret, for example:
 #   openssl rand 24 | base64 | sed 's/[/10lO#+=]//g'

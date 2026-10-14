@@ -90,6 +90,8 @@ jobs:
           cache-dependency-path: '**/go.sum'
       - name: Check module toolchain pins
         run: sh scripts/check-toolchains.sh
+      - name: Check example and package configuration keys
+        run: python3 scripts/check-config-keys.py
       - name: Check workflow and shell syntax
         run: |
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color

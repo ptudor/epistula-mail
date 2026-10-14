@@ -45,7 +45,7 @@ type Limits struct {
 // DefaultLimits returns the production defaults documented in CLAUDE.md.
 func DefaultLimits() Limits {
 	return Limits{
-		MaxMessageBytes:       52 << 20,
+		MaxMessageBytes:       52_428_800,
 		MaxMimeDepth:          10,
 		MaxMimeParts:          200,
 		MaxHeaderBytes:        16 << 10,

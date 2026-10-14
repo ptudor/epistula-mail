@@ -238,3 +238,21 @@ func TestResolveUnicodeDomain(t *testing.T) {
 		t.Fatal(got, err)
 	}
 }
+
+// A wildcard selects the allowlist gate; only an alias supplies a destination.
+func TestResolveWildcardWithoutCatchall(t *testing.T) {
+	db, _ := pgtest.Open(t)
+	ctx := context.Background()
+	domain := mustInsertDomain(t, ctx, db, "wild.invalid", true)
+	r := recipients.New(db.Pool())
+	if _, err := r.Resolve(ctx, "alice@wild.invalid"); !errors.Is(err, recipients.ErrNoMatch) {
+		t.Fatalf("ungated no-catchall: %v", err)
+	}
+	mustInsertACL(t, ctx, db, domain, "alice", "allow")
+	if _, err := r.Resolve(ctx, "alice@wild.invalid"); !errors.Is(err, recipients.ErrNoMatch) {
+		t.Fatalf("allowed no-catchall: %v", err)
+	}
+	if _, err := r.Resolve(ctx, "bob@wild.invalid"); !errors.Is(err, recipients.ErrNotAllowlisted) {
+		t.Fatalf("allowlist miss: %v", err)
+	}
+}

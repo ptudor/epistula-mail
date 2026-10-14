@@ -17,7 +17,7 @@
   and `/etc/epistula/<service>.toml`, where `<service>` is `epistula-database`,
   `epistula-imap`, `epistula-api`, `epistula-llm-worker` or `epistula-mcp`.
   Use `-config` for other locations; the working directory is no longer searched.
-- Security: build with Go 1.27.2 and `golang.org/x/net` v0.60.0, which fix
+- Security: build with Go 1.27.2 and `golang.org/x/net` v0.61.0, which fix
   advisories in `net/http`, HTTP/2, `crypto/tls`, `net/textproto` and `os`
   (GO-2026-6603 through GO-2026-6617). Rebuild and redeploy every component.
 - Dependencies: `pgx` v5.11.0, `prometheus/client_golang` v1.25.0, `go-toml`

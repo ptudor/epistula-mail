@@ -43,6 +43,15 @@ root = "/var/spool/epistula-database"
 group_writable = true
 
 [limits]
+# APPEND MIME ingestion limits, matching the database parser defaults.
+# max_message_bytes = 52428800
+# max_mime_depth = 10
+# max_mime_parts = 200
+# max_header_bytes = 16384
+# max_header_section_bytes = 262144
+# max_transfer_expansion = 10
+# Maximum SEARCH results returned; exceeding this fails the command.
+# max_search_results = 100000
 max_connections         = 1024     # global TCP ceiling before TLS; at most 64 concurrent handshakes
 # These count simultaneous IMAP connections, not devices. Mail clients may
 # keep several connections open per account for folder sync and IDLE.
