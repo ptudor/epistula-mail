@@ -17,9 +17,8 @@ import (
 // marker. epistula-api serves the queue two ways:
 //
 //   - pass_required=true on list, search and export selects the marked
-//     messages. The ids are read out of the queue first and the messages
-//     fetched by primary key, so the cost follows the queue, not the store. Asking
-//     "which messages have no annotation" instead probes every message.
+//     messages. Date-ordered keyset batches probe the marker primary key
+//     without rebuilding an array of the full queue.
 //   - POST /v1/pass-required/prune deletes the markers of messages the
 //     pipeline has finished: annotated by the caller's model and, when asked,
 //     classified into an active category of their mailbox (a mailbox with no
@@ -30,12 +29,9 @@ import (
 // category, mail stored before migration 022 -- is the worker's complete
 // round, which uses not_annotated_by and not_classified as before.
 
-// passQueueFilter is the pass_required=true condition. ARRAY(SELECT ...) is
-// evaluated once, and m.id = ANY(...) then drives an index scan on the
-// messages primary key whatever the queue's size or statistics. The obvious
-// "m.id IN (SELECT ...)" let the planner merge-join in id order instead, and
-// since the queue holds the newest ids it walked every older message first.
-const passQueueFilter = `m.id = ANY(ARRAY(SELECT pr.message_id FROM annotation_pass_required pr))`
+// passQueueFilter lets a date-ordered keyset page probe the queue primary key
+// without materializing every marker again for each export batch.
+const passQueueFilter = `EXISTS (SELECT 1 FROM annotation_pass_required pr WHERE pr.message_id = m.id)`
 
 // maxPassPruneBytes bounds the prune request body; it carries a model name, a
 // mailbox name and a flag.
