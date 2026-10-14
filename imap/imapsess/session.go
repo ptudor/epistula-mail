@@ -38,7 +38,8 @@ type Backend struct {
 	BlobStore      *blob.Store
 	Logger         *slog.Logger
 	StmtTimeout    time.Duration
-	MaxAppendBytes int64 // 0 = 50 MiB default
+	MaxAppendBytes int64         // 0 = 50 MiB default
+	IngestLimits   ingest.Limits // zero value uses ingest.DefaultLimits()
 
 	// MaxSearchResults caps a single SEARCH's result set. 0 = unlimited.
 	// SEARCH accumulates every match into slices and then serializes the

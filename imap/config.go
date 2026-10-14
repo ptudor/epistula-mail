@@ -11,6 +11,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"github.com/ptudor/epistula-mail/database/ingest"
 	"github.com/ptudor/epistula-mail/database/netutil"
 	"github.com/ptudor/epistula-mail/database/pgdsn"
 )
@@ -73,6 +74,12 @@ type StorageConfig struct {
 }
 
 type LimitsConfig struct {
+	MaxMessageBytes       int64 `toml:"max_message_bytes"`
+	MaxMimeDepth          int   `toml:"max_mime_depth"`
+	MaxMimeParts          int   `toml:"max_mime_parts"`
+	MaxHeaderBytes        int   `toml:"max_header_bytes"`
+	MaxHeaderSectionBytes int   `toml:"max_header_section_bytes"`
+	MaxTransferExpansion  int   `toml:"max_transfer_expansion"`
 	// Connection limits count TCP/IMAP sessions, not devices. Desktop and
 	// mobile mail clients commonly keep several sessions open for one account.
 	PerIPConnections      int    `toml:"per_ip_connections"`
@@ -178,6 +185,13 @@ func DefaultConfig() *Config {
 			Root: "/var/spool/epistula-database",
 		},
 		Limits: LimitsConfig{
+			MaxMessageBytes:       ingest.DefaultLimits().MaxMessageBytes,
+			MaxMimeDepth:          ingest.DefaultLimits().MaxMimeDepth,
+			MaxMimeParts:          ingest.DefaultLimits().MaxMimeParts,
+			MaxHeaderBytes:        ingest.DefaultLimits().MaxHeaderBytes,
+			MaxHeaderSectionBytes: ingest.DefaultLimits().MaxHeaderSectionBytes,
+			MaxTransferExpansion:  ingest.DefaultLimits().MaxTransferExpansion,
+
 			// Leave room for connection pools from multiple clients behind the
 			// same NAT. In particular, one Mac plus one phone can legitimately
 			// exceed five simultaneous sessions for a single mailbox.
@@ -203,6 +217,17 @@ func DefaultConfig() *Config {
 			BatchSize:      500,
 		},
 		Logging: LoggingConfig{Level: "info", Format: "text"},
+	}
+}
+
+func (c LimitsConfig) IngestLimits() ingest.Limits {
+	return ingest.Limits{
+		MaxMessageBytes:       c.MaxMessageBytes,
+		MaxMimeDepth:          c.MaxMimeDepth,
+		MaxMimeParts:          c.MaxMimeParts,
+		MaxHeaderBytes:        c.MaxHeaderBytes,
+		MaxHeaderSectionBytes: c.MaxHeaderSectionBytes,
+		MaxTransferExpansion:  c.MaxTransferExpansion,
 	}
 }
 
@@ -365,6 +390,21 @@ func (c *Config) Validate() error {
 	}
 	if c.Limits.MaxSearchResults < 0 {
 		return errors.New("limits.max_search_results must be non-negative (0 disables)")
+	}
+	for name, value := range map[string]int64{
+		"max_message_bytes":        int64(c.Limits.MaxMessageBytes),
+		"max_mime_depth":           int64(c.Limits.MaxMimeDepth),
+		"max_mime_parts":           int64(c.Limits.MaxMimeParts),
+		"max_header_bytes":         int64(c.Limits.MaxHeaderBytes),
+		"max_header_section_bytes": int64(c.Limits.MaxHeaderSectionBytes),
+		"max_transfer_expansion":   int64(c.Limits.MaxTransferExpansion),
+	} {
+		if value <= 0 {
+			return fmt.Errorf("limits.%s must be positive", name)
+		}
+	}
+	if c.Limits.MaxHeaderSectionBytes < c.Limits.MaxHeaderBytes {
+		return errors.New("limits.max_header_section_bytes must be >= limits.max_header_bytes")
 	}
 	if c.Limits.MaxAppendBytes <= 0 {
 		return errors.New("limits.max_append_bytes must be positive")

@@ -52,7 +52,14 @@ login_window            = "60s"
 login_cooldown          = "60s"
 command_rate_per_sec    = 100       # per connection; commands past it wait, never fail
 idle_timeout            = "29m"    # IDLE notification heartbeat, not session expiry
-max_append_bytes        = 52428800  # 50 MiB
+max_append_bytes        = 52428800  # 50 MiB literal cap
+# Parser limits shared with epistula-database.
+max_message_bytes       = 54525952  # 52 MiB
+max_mime_depth          = 10
+max_mime_parts          = 200
+max_header_bytes        = 16384
+max_header_section_bytes = 262144
+max_transfer_expansion  = 10
 tls_handshake_timeout   = "10s"     # drop connections whose TLS handshake stalls
 preauth_timeout         = "60s"     # drop connections that never authenticate
 # Total Argon2id scratch memory allowed in flight across the whole daemon.

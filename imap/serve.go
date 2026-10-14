@@ -84,6 +84,7 @@ func runServe(args []string) int {
 		Logger:            slog.Default(),
 		StmtTimeout:       mustParseDuration(cfg.Postgres.StatementTimeout, 10*time.Second),
 		MaxAppendBytes:    cfg.Limits.MaxAppendBytes,
+		IngestLimits:      cfg.Limits.IngestLimits(),
 		MaxSearchResults:  cfg.Limits.MaxSearchResults,
 		CommandRatePerSec: cfg.Limits.CommandRatePerSec,
 		IdleHeartbeat:     mustParseDuration(cfg.Limits.IdleTimeout, 29*time.Minute),

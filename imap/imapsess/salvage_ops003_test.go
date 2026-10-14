@@ -93,8 +93,13 @@ func TestAppendSalvagesButKeepsLimits(t *testing.T) {
 
 	_, err := sess.Append("Archive", newLiteral([]byte(fixtures["MIME depth exceeds MaxMimeDepth"])), nil)
 	var imapErr *imap.Error
-	if !errors.As(err, &imapErr) || imapErr.Type != imap.StatusResponseTypeNo {
-		t.Errorf("APPEND past MaxMimeDepth: err = %v, want NO", err)
+	if !errors.As(err, &imapErr) || imapErr.Type != imap.StatusResponseTypeNo || imapErr.Code != imap.ResponseCodeLimit {
+		t.Errorf("APPEND past MaxMimeDepth: err = %v, want NO [LIMIT]", err)
+	}
+	sess.be.IngestLimits = ingest.DefaultLimits()
+	sess.be.IngestLimits.MaxMimeDepth = 20
+	if _, err := sess.Append("Archive", newLiteral([]byte(fixtures["MIME depth exceeds MaxMimeDepth"])), nil); err != nil {
+		t.Fatalf("APPEND with raised depth: %v", err)
 	}
 }
 

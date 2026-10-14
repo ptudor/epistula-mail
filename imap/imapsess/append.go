@@ -100,23 +100,22 @@ func (s *Session) Append(mailbox string, r imap.LiteralReader, options *imap.App
 	}
 
 	// Parse via the same ingest used by Postfix-side delivery.
-	parser := ingest.New(ingest.Limits{
-		MaxMessageBytes:       cap,
-		MaxMimeDepth:          10,
-		MaxMimeParts:          200,
-		MaxHeaderBytes:        16_384,
-		MaxHeaderSectionBytes: 262_144,
-		MaxTransferExpansion:  10,
-	})
+	limits := s.be.IngestLimits
+	if limits == (ingest.Limits{}) {
+		limits = ingest.DefaultLimits()
+	}
+	parser := ingest.New(limits)
 	msg, perr := parser.Parse(raw)
 	if perr != nil {
 		s.be.Logger.Warn("APPEND parse rejected",
 			"mailbox", s.mailboxName, "folder", mailbox,
 			"bytes", len(raw), "err", perr)
-		return nil, &imap.Error{
-			Type: imap.StatusResponseTypeNo,
-			Text: "APPEND: malformed RFC 5322 message",
+		if errors.Is(perr, ingest.ErrTooLarge) || errors.Is(perr, ingest.ErrTooDeep) ||
+			errors.Is(perr, ingest.ErrTooManyParts) || errors.Is(perr, ingest.ErrHeaderTooLarge) ||
+			errors.Is(perr, ingest.ErrHeadersTooBig) || errors.Is(perr, ingest.ErrZipBomb) {
+			return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Code: imap.ResponseCodeLimit, Text: "APPEND: parser resource limit exceeded"}
 		}
+		return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "APPEND: malformed RFC 5322 message"}
 	}
 
 	ctx, cancel := s.queryCtx()
