@@ -293,7 +293,7 @@ func (s *server) fallback(mux *http.ServeMux) http.Handler {
 func (s *server) api(route string, h func(http.ResponseWriter, *http.Request, *apiToken)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		rec := &statusRecorder{ResponseWriter: w}
 		defer func() {
 			p := recover()
 			if p != nil && p != http.ErrAbortHandler {
@@ -349,14 +349,18 @@ func (r *statusRecorder) WriteHeader(code int) {
 }
 
 func (r *statusRecorder) Write(b []byte) (int, error) {
-	r.wrote = true
+	if !r.wrote {
+		r.WriteHeader(http.StatusOK)
+	}
 	return r.ResponseWriter.Write(b)
 }
 
 // ResponseController prefers FlushError; preserve the underlying error instead
 // of letting the legacy Flusher wrapper turn a failed stream into success.
 func (r *statusRecorder) FlushError() error {
-	r.wrote = true
+	if !r.wrote {
+		r.WriteHeader(http.StatusOK)
+	}
 	return http.NewResponseController(r.ResponseWriter).Flush()
 }
 

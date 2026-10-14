@@ -337,7 +337,7 @@ func (s *server) handleMessage(w http.ResponseWriter, r *http.Request, tok *apiT
 	rows, err := s.pool.Query(r.Context(),
 		`SELECT part_number, filename, content_type, content_id, disposition, size_bytes,
 		        encode(sha256, 'hex')
-		   FROM attachments WHERE message_id = $1 ORDER BY part_number`, id)
+		   FROM attachments WHERE message_id = $1 ORDER BY string_to_array(part_number, '.')::int[]`, id)
 	if err != nil {
 		slog.Error("attachments query", "message_id", id, "err", err)
 		problemInternal(w, r)

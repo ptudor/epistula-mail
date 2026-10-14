@@ -38,6 +38,17 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request, tok *apiTo
 	}
 	metricExportStreams.Inc()
 	defer metricExportStreams.Dec()
+	outcome := "error"
+	defer func() {
+		p := recover()
+		if p == http.ErrAbortHandler || r.Context().Err() != nil {
+			outcome = "aborted"
+		}
+		metricExportStreamsTotal.WithLabelValues(outcome).Inc()
+		if p != nil {
+			panic(p)
+		}
+	}()
 
 	baseConds, baseArgs, ok := s.searchConds(w, r, tok)
 	if !ok {
@@ -122,6 +133,7 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request, tok *apiTo
 	total := 0
 	for {
 		if len(items) == 0 {
+			outcome = "completed"
 			return
 		}
 		for i := range items {
@@ -147,6 +159,7 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request, tok *apiTo
 		// short by the byte budget, in which case there is more to come from
 		// the same cursor (RA6X-040).
 		if len(items) < pageSize && !truncated {
+			outcome = "completed"
 			return
 		}
 		if r.Context().Err() != nil {
@@ -183,7 +196,7 @@ func (s *server) attachAttachments(ctx context.Context, items []messageItem, bud
 		`SELECT message_id, part_number, filename, content_type, content_id, disposition,
 		        size_bytes, encode(sha256, 'hex')
 		   FROM attachments WHERE message_id = ANY($1)
-		  ORDER BY message_id, part_number`, ids)
+		  ORDER BY message_id, string_to_array(part_number, '.')::int[]`, ids)
 	if err != nil {
 		return nil, false, err
 	}

@@ -256,6 +256,7 @@ func rawExport(t *testing.T, addr, token, query string) (net.Conn, *bufio.Reader
 // (unset, and a whole-response deadline anyway) nor IdleTimeout (which bounds
 // an idle keep-alive connection, not an active write) applies.
 func TestStalledExportReaderReleasesItsSlot(t *testing.T) {
+	before := exportOutcome(t, "aborted")
 	f := newAPIFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -310,6 +311,9 @@ func TestStalledExportReaderReleasesItsSlot(t *testing.T) {
 	}
 	if !freed {
 		t.Fatal("a stalled reader held the export slot indefinitely")
+	}
+	if got := exportOutcome(t, "aborted"); got != before+1 {
+		t.Fatalf("aborted=%v before=%v", got, before)
 	}
 }
 

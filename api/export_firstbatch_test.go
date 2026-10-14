@@ -16,6 +16,7 @@ import (
 // request actually reaches the export handler's first batch.
 func TestAPIExportFirstBatchFailureIsProblem5xx(t *testing.T) {
 	f := newAPIFixture(t)
+	before := exportOutcome(t, "error")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -31,5 +32,8 @@ func TestAPIExportFirstBatchFailureIsProblem5xx(t *testing.T) {
 	}
 	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "application/problem+json") {
 		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+	if got := exportOutcome(t, "error"); got != before+1 {
+		t.Fatalf("errors=%v before=%v", got, before)
 	}
 }

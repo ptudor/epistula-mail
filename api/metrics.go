@@ -32,6 +32,11 @@ var (
 		Help: "NDJSON export streams currently running.",
 	})
 
+	metricExportStreamsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "mail_api_export_streams_total",
+		Help: "Accepted NDJSON export streams by completion outcome.",
+	}, []string{"outcome"})
+
 	metricAnnotationsWritten = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "mail_api_annotations_written_total",
 		Help: "Annotation upserts committed.",
@@ -56,6 +61,7 @@ func init() {
 		metricRequestDuration,
 		metricAuthFailures,
 		metricExportStreams,
+		metricExportStreamsTotal,
 		metricAnnotationsWritten,
 		metricClassificationsWritten,
 		metricPassMarkersPruned,
