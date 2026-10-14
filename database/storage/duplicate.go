@@ -81,7 +81,7 @@ func (db *DB) repairDuplicate(ctx context.Context, mailboxID int64, mailboxName,
 		for i, r := range refs {
 			keys[i] = BlobAdvisoryLockKey(mailboxName, string(r.Kind), string(r.Bucket), r.SHA)
 		}
-		if err := acquireBlobLocks(ctx, tx, keys); err != nil {
+		if err := AcquireBlobLocks(ctx, tx, keys); err != nil {
 			return err
 		}
 		var pinned int64

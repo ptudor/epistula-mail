@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"hash/fnv"
+	"slices"
 	"sort"
 
 	"github.com/jackc/pgx/v5"
@@ -43,26 +44,18 @@ func BlobAdvisoryLockKey(tenant, kind, bucket, shaHex string) int64 {
 	return int64(h.Sum64())
 }
 
-// acquireBlobLocks takes pg_advisory_xact_lock on every key, sorted and
+// AcquireBlobLocks takes pg_advisory_xact_lock on every key, sorted and
 // deduplicated so concurrent multi-blob ingests acquire in a stable order
 // and cannot deadlock against each other (sweep only ever takes one key
 // per transaction). Locks release automatically at commit/rollback.
-func acquireBlobLocks(ctx context.Context, tx pgx.Tx, keys []int64) error {
+func AcquireBlobLocks(ctx context.Context, tx pgx.Tx, keys []int64) error {
 	if len(keys) == 0 {
 		return nil
 	}
 	sorted := make([]int64, len(keys))
 	copy(sorted, keys)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	var prev int64
-	for i, k := range sorted {
-		if i > 0 && k == prev {
-			continue
-		}
-		prev = k
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, k); err != nil {
-			return err
-		}
-	}
-	return nil
+	sorted = slices.Compact(sorted)
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(k) FROM unnest($1::bigint[]) WITH ORDINALITY AS t(k, ord) ORDER BY ord`, sorted)
+	return err
 }

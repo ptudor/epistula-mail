@@ -256,7 +256,7 @@ func (db *DB) Ingest(ctx context.Context, p IngestParams) (IngestResult, error) 
 		// (2) clear any gc_candidates rows — these blobs are referenced
 		// again, (3) re-verify the files survived any sweep that ran before
 		// we held the locks, rewriting from memory if not.
-		if err := acquireBlobLocks(ctx, tx, lockKeys); err != nil {
+		if err := AcquireBlobLocks(ctx, tx, lockKeys); err != nil {
 			return fmt.Errorf("acquire blob locks: %w", err)
 		}
 		for _, r := range refs {

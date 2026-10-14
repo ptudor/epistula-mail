@@ -20,14 +20,14 @@ import (
 // (the same order they were produced in by the MIME walk).
 func ensureBlobsFunc(store *blob.Store, tenant blob.Tenant, bucket blob.Bucket, rawSHA string, raw []byte, atts []ingest.Attachment, attParams []storage.AttachmentParams) func(context.Context) error {
 	return func(context.Context) error {
-		if rewritten, err := store.EnsureContent(blob.KindRaw, tenant, bucket, rawSHA, raw); err != nil {
+		if rewritten, err := store.EnsureContentFast(blob.KindRaw, tenant, bucket, rawSHA, raw); err != nil {
 			return fmt.Errorf("raw blob: %w", err)
 		} else if rewritten {
 			slog.Warn("raw blob rewritten after concurrent gc sweep", "raw_sha256_short", rawSHA[:16])
 		}
 		for i := range atts {
 			sha := attParams[i].SHA256Hex
-			if rewritten, err := store.EnsureContent(blob.KindAttachment, tenant, bucket, sha, atts[i].Data); err != nil {
+			if rewritten, err := store.EnsureContentFast(blob.KindAttachment, tenant, bucket, sha, atts[i].Data); err != nil {
 				return fmt.Errorf("attachment blob %s: %w", attParams[i].PartNumber, err)
 			} else if rewritten {
 				slog.Warn("attachment blob rewritten after concurrent gc sweep", "sha256_short", sha[:16])

@@ -784,6 +784,29 @@ func (s *Store) EnsureContent(kind Kind, tenant Tenant, bucket Bucket, shaHex st
 	return true, nil
 }
 
+// EnsureContentFast rechecks blobs this process just wrote or verified with
+// Writer.Close. Call it under the blob advisory lock: a concurrent sweep can
+// unlink the file, but cannot alter a surviving content-addressed blob.
+// Missing or size-mismatched files take the full verification/rewrite path.
+func (s *Store) EnsureContentFast(kind Kind, tenant Tenant, bucket Bucket, shaHex string, data []byte) (bool, error) {
+	path, err := s.PathFor(kind, tenant, bucket, shaHex)
+	if err != nil {
+		return false, err
+	}
+	fi, err := os.Stat(path)
+	if err == nil {
+		if !fi.Mode().IsRegular() {
+			return false, fmt.Errorf("blob path %s is not a regular file", path)
+		}
+		if fi.Size() == int64(len(data)) {
+			return false, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	return s.EnsureContent(kind, tenant, bucket, shaHex, data)
+}
+
 // WalkFunc receives one blob per visit. tenant is the owning-mailbox subtree
 // and bucket is the on-disk bucket path component the blob was found under.
 type WalkFunc func(kind Kind, tenant Tenant, bucket Bucket, sha256Hex string, path string, info os.FileInfo) error

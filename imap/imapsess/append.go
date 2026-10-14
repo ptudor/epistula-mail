@@ -201,11 +201,11 @@ func (s *Session) Append(mailbox string, r imap.LiteralReader, options *imap.App
 		// GC race protocol: re-verify the blobs inside the transaction
 		// (post advisory-lock) and rewrite any a concurrent sweep removed.
 		EnsureBlobs: func(ctx context.Context) error {
-			if _, err := s.be.BlobStore.EnsureContent(blob.KindRaw, s.tenant, bucket, rawSHA, raw); err != nil {
+			if _, err := s.be.BlobStore.EnsureContentFast(blob.KindRaw, s.tenant, bucket, rawSHA, raw); err != nil {
 				return fmt.Errorf("raw blob: %w", err)
 			}
 			for i := range msg.Attachments {
-				if _, err := s.be.BlobStore.EnsureContent(blob.KindAttachment, s.tenant, bucket, attParams[i].SHA256Hex, msg.Attachments[i].Data); err != nil {
+				if _, err := s.be.BlobStore.EnsureContentFast(blob.KindAttachment, s.tenant, bucket, attParams[i].SHA256Hex, msg.Attachments[i].Data); err != nil {
 					return fmt.Errorf("attachment blob %s: %w", attParams[i].PartNumber, err)
 				}
 			}
