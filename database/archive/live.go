@@ -36,6 +36,7 @@ type SortOptions struct {
 type SortStats struct {
 	Mailboxes int
 	Filed     int
+	Skipped   int // messages left in a refused destination group this pass
 }
 
 // SortOnce files what users have archived. For every mailbox with an \Archive
@@ -91,8 +92,9 @@ func SortOnce(ctx context.Context, db *storage.DB, opts SortOptions) (SortStats,
 	var firstErr error
 	for _, t := range targets {
 		stats.Mailboxes++
-		n, err := sortMailbox(ctx, db, t.mailboxID, t.root, opts, batch, logger)
+		n, skipped, err := sortMailbox(ctx, db, t.mailboxID, t.root, opts, batch, logger)
 		stats.Filed += n
+		stats.Skipped += skipped
 		if err != nil {
 			if ctx.Err() != nil {
 				return stats, ctx.Err()
@@ -142,12 +144,14 @@ func validCategoryKeys(ctx context.Context, db *storage.DB, mailboxID int64, roo
 	return keys, rows.Err()
 }
 
-func sortMailbox(ctx context.Context, db *storage.DB, mailboxID int64, root storage.SpecialUseFolder, opts SortOptions, batch string, logger *slog.Logger) (int, error) {
+func sortMailbox(ctx context.Context, db *storage.DB, mailboxID int64, root storage.SpecialUseFolder, opts SortOptions, batch string, logger *slog.Logger) (int, int, error) {
 	keys, err := validCategoryKeys(ctx, db, mailboxID, root.Name, logger)
 	if err != nil || len(keys) == 0 {
-		return 0, err
+		return 0, 0, err
 	}
-	filed := 0
+	filed, skipped := 0, 0
+	var afterID int64
+	refused := map[string]bool{}
 	for i := 0; i < maxBatchesPerMailbox; i++ {
 		type candidate struct {
 			id         int64
@@ -170,11 +174,19 @@ func sortMailbox(ctx context.Context, db *storage.DB, mailboxID int64, root stor
 			   AND c.confidence >= $4
 			   AND c.category = ANY($5)
 			   AND NOT ('\Deleted' = ANY(m.flags))
+			   AND m.id > $7
+			   AND NOT EXISTS (
+			       SELECT 1 FROM (
+			           SELECT j.reason, j.undone_at, j.to_folder FROM archive_moves j
+			            WHERE j.mailbox_id=$1 AND j.message_id=m.id ORDER BY j.id DESC LIMIT 1
+			       ) latest
+			        WHERE latest.reason IN ('sort', 'reorg')
+			          AND (latest.undone_at IS NOT NULL OR latest.to_folder <> $8))
 			 ORDER BY m.id
 			 LIMIT $6`,
-			mailboxID, root.ID, opts.SettleDelay.Seconds(), opts.MinConfidence, keys, opts.BatchSize)
+			mailboxID, root.ID, opts.SettleDelay.Seconds(), opts.MinConfidence, keys, opts.BatchSize, afterID, root.Name)
 		if err != nil {
-			return filed, fmt.Errorf("find archived messages: %w", err)
+			return filed, skipped, fmt.Errorf("find archived messages: %w", err)
 		}
 		byFolder := map[string][]Move{}
 		found := 0
@@ -182,9 +194,10 @@ func sortMailbox(ctx context.Context, db *storage.DB, mailboxID int64, root stor
 			var c candidate
 			if err := rows.Scan(&c.id, &c.category, &c.confidence, &c.folder, &c.annual, &c.sentLocal, &c.internal); err != nil {
 				rows.Close()
-				return filed, fmt.Errorf("scan archived message: %w", err)
+				return filed, skipped, fmt.Errorf("scan archived message: %w", err)
 			}
 			found++
+			afterID = c.id
 			conf := c.confidence
 			dest := DestinationFolder(c.folder, c.annual, c.sentLocal, c.internal, now)
 			byFolder[dest] = append(byFolder[dest], Move{
@@ -194,7 +207,7 @@ func sortMailbox(ctx context.Context, db *storage.DB, mailboxID int64, root stor
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
-			return filed, fmt.Errorf("find archived messages: %w", err)
+			return filed, skipped, fmt.Errorf("find archived messages: %w", err)
 		}
 		folders := make([]string, 0, len(byFolder))
 		for f := range byFolder {
@@ -202,9 +215,19 @@ func sortMailbox(ctx context.Context, db *storage.DB, mailboxID int64, root stor
 		}
 		sort.Strings(folders)
 		for _, folder := range folders {
+			if refused[folder] {
+				skipped += len(byFolder[folder])
+				continue
+			}
 			moved, err := moveAndJournal(ctx, db, mailboxID, byFolder[folder], batch, "sort", filingDestination)
+			if errors.Is(err, ErrSpecialUseDestination) {
+				refused[folder] = true
+				skipped += len(byFolder[folder])
+				logger.Warn("archive sorter skipped refused destination", "mailbox_id", mailboxID, "folder", folder, "err", err)
+				continue
+			}
 			if err != nil {
-				return filed, fmt.Errorf("file into %q: %w", folder, err)
+				return filed, skipped, fmt.Errorf("file into %q: %w", folder, err)
 			}
 			filed += len(moved)
 		}
@@ -215,7 +238,7 @@ func sortMailbox(ctx context.Context, db *storage.DB, mailboxID int64, root stor
 	if filed > 0 {
 		logger.Info("archive sorter filed messages", "mailbox_id", mailboxID, "filed", filed, "batch", batch)
 	}
-	return filed, nil
+	return filed, skipped, nil
 }
 
 // PurgeOptions configures the Trash purge.

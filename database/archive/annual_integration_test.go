@@ -1,7 +1,9 @@
 package archive_test
 
 import (
-	"errors"
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,15 +86,22 @@ func TestAnnualCategoriesFileByYear(t *testing.T) {
 	}
 	f.mustBeIn(live, "Archive/Finance/Banking/Acme Bank/2021")
 
-	// A year folder that has been given a special-use role is refused as a
-	// destination, by the sorter as by apply.
+	// A refused year folder must not starve another clean destination.
 	trashed := f.message(root, msgOpt{sentLocal: d(2022)})
 	f.classify(trashed, "finance/banking/acme-bank", 0.9)
 	f.age(trashed, time.Hour)
 	f.folder(mb, "Archive/Finance/Banking/Acme Bank/2022", `\Trash`)
-	_, err = archive.SortOnce(ctx, db, archive.SortOptions{SettleDelay: time.Minute, MinConfidence: 0.6})
-	if !errors.Is(err, archive.ErrSpecialUseDestination) {
-		t.Fatalf("sort into a \\Trash year folder: err = %v", err)
+	clean := f.message(root, msgOpt{})
+	f.classify(clean, "finance/banking", 0.9)
+	f.age(clean, time.Hour)
+	var logs bytes.Buffer
+	stats, err := archive.SortOnce(ctx, db, archive.SortOptions{SettleDelay: time.Minute, MinConfidence: 0.6, BatchSize: 1, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	if err != nil || stats.Filed != 1 || stats.Skipped != 1 {
+		t.Fatalf("sort with refused year folder: stats=%+v err=%v", stats, err)
 	}
+	if strings.Count(logs.String(), "level=WARN") != 1 {
+		t.Fatalf("warnings: %s", logs.String())
+	}
+	f.mustBeIn(clean, "Archive/Finance/Banking")
 	f.mustBeIn(trashed, "Archive")
 }

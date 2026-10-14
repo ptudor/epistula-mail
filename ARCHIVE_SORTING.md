@@ -305,5 +305,8 @@ email could do through the LLM pipeline was produce a wrong annotation. The limi
   epistula-mcp's interactive `annotate` tool, the one exposed to prompt injection
   through conversation, cannot touch filing.
 - **Undoable.** Every move is journaled. `archive-undo` reverses a batch.
+  An undone filing, or an owner moving a filed message back into Archive,
+  stays there on later sorter passes. An explicit `archive-reclassify -refile`
+  records a new move back to the root and permits filing again.
 
 The worst case is a message filing itself in the wrong archive folder.

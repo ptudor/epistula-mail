@@ -504,6 +504,10 @@ func moveAndJournal(ctx context.Context, db *storage.DB, mailboxID int64, chunk 
 	}
 	var moved []int64
 	err := db.RunTx(ctx, func(tx pgx.Tx) error {
+		if err := storage.LockMailbox(ctx, tx, mailboxID); err != nil {
+			return err
+		}
+
 		// Categories are validated when imported, but a destination can be a
 		// year folder below one, or a folder given a role since: the
 		// destination's special-use role is checked against the caller's
