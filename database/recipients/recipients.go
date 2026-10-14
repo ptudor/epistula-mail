@@ -21,6 +21,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/net/idna"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -84,7 +85,10 @@ func SplitAddress(addr string) (localpart, domain string, err error) {
 		return "", "", ErrInvalidAddress
 	}
 	localpart = norm.NFC.String(strings.ToLower(rawLocal))
-	domain = norm.NFC.String(strings.ToLower(rawDomain))
+	domain, err = idna.Lookup.ToASCII(norm.NFC.String(strings.ToLower(rawDomain)))
+	if err != nil {
+		return "", "", fmt.Errorf("%w: domain: %v", ErrInvalidAddress, err)
+	}
 	return localpart, domain, nil
 }
 

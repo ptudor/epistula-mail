@@ -127,8 +127,14 @@ func Walk(root string, visit VisitFunc) error {
 				continue
 			}
 			info, err := e.Info()
+			if e.Type()&os.ModeSymlink != 0 {
+				info, err = os.Stat(filepath.Join(dir, e.Name()))
+			}
 			if err != nil {
 				return fmt.Errorf("stat %s/%s: %w", dir, e.Name(), err)
+			}
+			if e.Type()&os.ModeSymlink != 0 && !info.Mode().IsRegular() {
+				continue
 			}
 			all = append(all, Entry{
 				Path:     filepath.Join(dir, e.Name()),

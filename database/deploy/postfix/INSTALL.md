@@ -75,3 +75,13 @@ sudo postconf epistula-database_destination_recipient_limit
 Send a test message through Postfix and verify the Postfix queue, delivery log,
 and retrieval through IMAP or the API. The database `serve` process exposes health
 and metrics; it is separate from the per-message delivery process.
+
+Recipient extensions such as `alice+shop@example.invalid` are matched literally:
+the LDA does not strip Postfix's `recipient_delimiter`. Define explicit extended
+aliases when their routing or ACLs differ. A base alias/deny alone does not cover
+an extension. To have Postfix strip extensions for every recipient instead,
+replace `-recipient=${recipient}` with `-recipient=${user}@${domain}` in the
+pipe transport's argv and configure `recipient_delimiter = +`. This alternative
+applies routing and ACLs to the base localpart and records that base address as
+`envelope_to`; it cannot retain separate extended aliases. Keep `flags=D` and
+the one-recipient transport limit. The macro definitions are in [Postfix pipe(8)](https://www.postfix.org/pipe.8.html).

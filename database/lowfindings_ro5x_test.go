@@ -84,7 +84,7 @@ func TestLoggableHeadersEmpty(t *testing.T) {
 // TestValidateDomainName is the RO5X-033 shape validator.
 func TestValidateDomainName(t *testing.T) {
 	for _, ok := range []string{
-		"example.invalid", "a.b.c.example", "x", "xn--80ak6aa92e.com",
+		"UPPER.example", "café.example", "example.invalid", "a.b.c.example", "x", "xn--80ak6aa92e.com",
 		"has-hyphen.example", "123.example", strings.Repeat("a", 63) + ".net",
 	} {
 		if err := validateDomainName(ok); err != nil {
@@ -94,7 +94,7 @@ func TestValidateDomainName(t *testing.T) {
 	for _, bad := range []string{
 		"", "example .invalid", "example..invalid", ".example.invalid", "example.invalid.",
 		"-lead.example", "trail-.example", "under_score.example",
-		"bad\x00null.example", "UPPER.example", // domains are lower-cased first
+		"bad\x00null.example",
 		strings.Repeat("a", 64) + ".net",  // label too long
 		strings.Repeat("a.", 200) + "net", // over 253 bytes
 	} {
@@ -114,11 +114,11 @@ func TestNormalizeDomainNFC(t *testing.T) {
 	if nfd == nfc {
 		t.Fatal("fixture is not actually decomposed")
 	}
-	if got := normalizeDomain(nfd); got != nfc {
-		t.Errorf("normalizeDomain(NFD) = %q, want the NFC form %q", got, nfc)
+	if got := normalizeDomain(nfd); got != "xn--caf-dma.example" {
+		t.Errorf("normalizeDomain(NFD) = %q, want A-label %q", got, "xn--caf-dma.example")
 	}
-	if got := normalizeDomain(nfc); got != nfc {
-		t.Errorf("normalizeDomain(NFC) = %q, want it unchanged", got)
+	if got := normalizeDomain(nfc); got != "xn--caf-dma.example" {
+		t.Errorf("normalizeDomain(NFC) = %q, want its A-label", got)
 	}
 	// Case and whitespace still handled.
 	if got := normalizeDomain("  EXAMPLE.INVALID  "); got != "example.invalid" {

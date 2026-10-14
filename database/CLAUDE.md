@@ -466,3 +466,13 @@ IMAP `COPY`/`MOVE` (`epistula-imap`) joins the same protocol before it inserts r
 - **The annotation pipeline's work is a queue, not an absence** (migration 022). `storage.Ingest` inserts an `annotation_pass_required` row in the transaction that stores the message (so deliver, import, import-blobs and IMAP APPEND all mark it; epistula-imap's COPY and MOVE carry the marker), and epistula-api's `pass_required=true` reads the queue by primary key. An absence query would instead probe every message. epistula-api's prune clears the markers of finished messages; the worker's periodic complete round still sweeps for what nothing queues (a new model, a retired category, pre-022 mail). The PostgreSQL marker commits or rolls back with the message, the worker reaches it through epistula-api, and there is no second store to back up.
 - **Encryption at rest** is delegated to the storage layer (ZFS native encryption on ZFS hosts, dm-crypt on Linux hosts). Application-layer per-blob encryption added complexity without meaningful threat-model gain; revisit if it's ever wanted. Because blobs are now partitioned per mailbox (`${storage_root}/<mailbox>/…`), a per-user ZFS dataset gives each mailbox its own snapshot schedule, quota, and **encryption key** at the filesystem layer without any application change — the isolation the per-tenant layout was built for.
 - **No `raw_blobs(sha256, refcount)` refcount table.** GC uses `SELECT EXISTS` against `messages.raw_sha256` / `attachments.sha256` joined to `folders.mailbox_id` (the `idx_messages_sha_date_folder` covering index supports the mark-pass walk). Refcount tables are race-prone under concurrent INSERT/DELETE; the two-phase generational mark-and-sweep above replaces them.
+
+Recipient extensions such as `alice+shop@example.invalid` are matched literally:
+the LDA does not strip Postfix's `recipient_delimiter`. Define explicit extended
+aliases when their routing or ACLs differ. A base alias/deny alone does not cover
+an extension. To have Postfix strip extensions for every recipient instead,
+replace `-recipient=${recipient}` with `-recipient=${user}@${domain}` in the
+pipe transport's argv and configure `recipient_delimiter = +`. This alternative
+applies routing and ACLs to the base localpart and records that base address as
+`envelope_to`; it cannot retain separate extended aliases. Keep `flags=D` and
+the one-recipient transport limit. The macro definitions are in [Postfix pipe(8)](https://www.postfix.org/pipe.8.html).

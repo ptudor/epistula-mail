@@ -226,3 +226,15 @@ func mustInsertACL(t *testing.T, ctx context.Context, db poolHandle, domainID in
 		t.Fatalf("insert acl (%d,%q,%q): %v", domainID, localpart, kind, err)
 	}
 }
+
+func TestResolveUnicodeDomain(t *testing.T) {
+	db, _ := pgtest.Open(t)
+	ctx := context.Background()
+	domain := mustInsertDomain(t, ctx, db, "xn--caf-dma.example", false)
+	mailbox := mustInsertMailbox(t, ctx, db, "alice")
+	mustInsertAlias(t, ctx, db, domain, "user", mailbox)
+	got, err := recipients.New(db.Pool()).Resolve(ctx, "user@café.example")
+	if err != nil || got.MailboxID != mailbox {
+		t.Fatal(got, err)
+	}
+}

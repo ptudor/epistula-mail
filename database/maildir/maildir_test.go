@@ -171,3 +171,35 @@ func mustWrite(t *testing.T, root, relpath, contents string) {
 		t.Fatalf("WriteFile %s: %v", relpath, err)
 	}
 }
+
+func TestWalkUsesSymlinkTargetMetadata(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, root, "cur")
+	target := filepath.Join(t.TempDir(), "old-message")
+	if err := os.WriteFile(target, []byte("body"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2003, 6, 15, 1, 2, 3, 0, time.UTC)
+	if err := os.Chtimes(target, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "cur", "linked")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, "cur", "directory")); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	if err := Walk(root, func(e Entry) error {
+		n++
+		if !e.ModTime.Equal(old) || e.Size != 4 {
+			t.Fatalf("entry=%+v", e)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatal(n)
+	}
+}

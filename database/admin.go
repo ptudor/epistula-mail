@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"golang.org/x/net/idna"
 	"golang.org/x/term"
 	"golang.org/x/text/unicode/norm"
 
@@ -847,15 +848,14 @@ func adminACLDelete(args []string) int {
 	return EX_OK
 }
 
-// normalizeDomain lowercases, trims, and NFC-normalizes a domain name.
-//
-// The delivery resolver NFC-normalizes the envelope domain
-// (recipients/recipients.go), but the admin CLI did not — so an
-// internationalized domain added in NFD form could never match a delivery.
-// That is the exact class R-006 fixed for localparts; the domain half was
-// missed (RO5X-033).
+// normalizeDomain converts valid Unicode domains to the stored IDNA A-label.
+// Invalid input stays available for validateDomainName to reject with detail.
 func normalizeDomain(s string) string {
-	return norm.NFC.String(strings.ToLower(strings.TrimSpace(s)))
+	s = norm.NFC.String(strings.ToLower(strings.TrimSpace(s)))
+	if ascii, err := idna.Lookup.ToASCII(s); err == nil {
+		return ascii
+	}
+	return s
 }
 
 // maxDomainBytes is the RFC 1035 limit on a fully-qualified name.
@@ -871,9 +871,13 @@ const maxDomainBytes = 253
 //
 // Deliberately permissive about the TLD (no "must contain a dot") — a
 // single-label internal domain is legitimate in a private deployment.
-// Punycode (xn--) passes as ordinary LDH; a non-ASCII domain must be
-// IDNA-encoded by the operator, which is what the resolver compares against.
+// Unicode and A-label input share IDNA lookup processing.
 func validateDomainName(d string) error {
+	ascii, err := idna.Lookup.ToASCII(d)
+	if err != nil {
+		return fmt.Errorf("invalid domain: %w", err)
+	}
+	d = ascii
 	if d == "" {
 		return errors.New("domain name is empty")
 	}

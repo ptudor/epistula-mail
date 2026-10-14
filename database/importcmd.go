@@ -539,18 +539,19 @@ func importOne(ctx context.Context, db *storage.DB, store *blob.Store, parser *i
 	return parsedResult(msg, false, p.Entry.Path), res.FolderID, nil
 }
 
-// chooseInternalDate prefers Date: header, then the earliest Received: line,
-// then the file mtime, then now() as the last fallback.
+// chooseInternalDate prefers the topmost parseable Received (last hop), then
+// a sane sender Date (1990 through tomorrow), file mtime, and finally now.
 func chooseInternalDate(msg *ingest.Message, e maildir.Entry) time.Time {
-	if !msg.SentDate.IsZero() {
-		return msg.SentDate.UTC()
-	}
 	if vs := msg.Headers["Received"]; len(vs) > 0 {
 		for _, v := range vs {
 			if t, ok := parseReceivedTime(v); ok {
 				return t.UTC()
 			}
 		}
+	}
+	now := time.Now().UTC()
+	if !msg.SentDate.Before(time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC)) && !msg.SentDate.After(now.Add(24*time.Hour)) {
+		return msg.SentDate.UTC()
 	}
 	if !e.ModTime.IsZero() {
 		return e.ModTime.UTC()
