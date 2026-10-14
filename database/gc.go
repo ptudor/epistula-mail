@@ -231,7 +231,7 @@ func pruneEmptyDirs(dir, boundary string) {
 func runGC(args []string) int {
 	fs := flag.NewFlagSet("gc", flag.ContinueOnError)
 	configPath := fs.String("config", "", "Path to TOML config file")
-	manifestPath := fs.String("manifest", "gc-mark", "Path prefix for durable staging-cleanup failure queue/report")
+	manifestPath := fs.String("manifest", "", "Path prefix for durable staging-cleanup failure queue/report (default: <storage.root>/.epistula-database-gc)")
 	phase := fs.String("phase", "", "Phase: mark | sweep | reconcile-quotas")
 	graceSecs := fs.Int("grace-seconds", 86400, "Grace period: mark skips blobs younger than this; sweep defers candidates younger than this")
 	if err := fs.Parse(args); err != nil {
@@ -257,6 +257,9 @@ func runGC(args []string) int {
 		return EX_CONFIG
 	}
 	setupLogging(cfg)
+	if *manifestPath == "" {
+		*manifestPath = filepath.Join(canonicalSource(cfg.Storage.Root), ".epistula-database-gc")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

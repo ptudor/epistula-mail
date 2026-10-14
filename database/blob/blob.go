@@ -804,6 +804,9 @@ func (s *Store) SetOnUnknownSubtree(fn func(name string)) {
 
 // noteUnknownSubtree reports a non-tenant directory, if a callback is set.
 func (s *Store) noteUnknownSubtree(name string) {
+	if strings.HasPrefix(name, ".") {
+		return // Local maintenance state is not an unknown tenant subtree.
+	}
 	if s.onUnknownSubtree != nil {
 		s.onUnknownSubtree(name)
 	}

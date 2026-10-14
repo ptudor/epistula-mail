@@ -269,6 +269,7 @@ curl -s http://127.0.0.1:8782/metrics | head
 "${BIN}" migrate status
 
 # Blob GC (operator-initiated; never automatic)
+# State defaults to <storage.root>/.epistula-database-gc; -manifest overrides it.
 "${BIN}" gc -phase mark
 "${BIN}" gc -phase sweep
 ```

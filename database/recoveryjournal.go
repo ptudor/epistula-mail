@@ -83,15 +83,26 @@ func openRecovery(path string, job jobIdentity, dry, retry bool) (*recoveryJourn
 		return nil, fmt.Errorf("recovery queue is in use: %w", err)
 	}
 	data, err := os.ReadFile(filepath.Join(j.dir, "job.json"))
-	if errors.Is(err, os.ErrNotExist) && !dry && !retry {
+	if errors.Is(err, os.ErrNotExist) {
+		missingIdentity := err
 		// A crash immediately after mkdir is safe only if no records exist.
-		if err = j.each(func(failedItem) error { return fmt.Errorf("queue has records without identity") }); err == nil {
-			err = j.bind(job)
+		if err = j.each(func(failedItem) error {
+			return fmt.Errorf("failure queue %s has records without job.json; rerun the original job or move the directory aside", j.dir)
+		}); err == nil {
+			if retry && !dry {
+				err = missingIdentity
+			} else {
+				err = j.bind(job)
+			}
 		}
 	} else if err == nil {
 		var saved jobIdentity
-		if err = json.Unmarshal(data, &saved); err == nil && saved.Fingerprint() != job.Fingerprint() {
-			err = fmt.Errorf("%w: failure queue %s; use a new checkpoint for a changed job", errCheckpointMismatch, j.dir)
+		if err = json.Unmarshal(data, &saved); err == nil {
+			if !saved.compatible(job) {
+				err = fmt.Errorf("%w: %s failure queue %s; use a new manifest/checkpoint path for a changed job", errCheckpointMismatch, job.Kind, j.dir)
+			} else {
+				j.job = job.withRecordedTargets(saved)
+			}
 		}
 	}
 	if err != nil {

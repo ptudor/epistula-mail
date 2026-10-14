@@ -53,6 +53,14 @@ Import, `import-blobs` and `reparse-bodystructure` salvage a malformed or over-l
 
 `reparse-bodystructure -manifest /path/reparse` records failed message IDs and supports `-retry-failures`. It returns EX_TEMPFAIL for unreadable, corrupt, unparseable or unrepairable surviving messages; expunged rows have no remaining repair work. `gc -phase mark -manifest /path/gc` records staging cleanup failures; fix their cause and rerun mark with the same path. Bookkeeping persistence failures return nonzero. Dry runs never create or update these files, and report what the same real run would leave unresolved; `gc -phase mark` has no dry run.
 
+Without `-manifest`, GC and reparse use absolute prefixes under `storage.root`:
+`.epistula-database-gc` and `.epistula-database-reparse`, respectively. Their
+failure queues and reports therefore stay in one location regardless of the
+working directory. Use `-manifest` to keep maintenance state elsewhere.
+For a periodic invocation with explicit state, use
+`epistula-database gc -phase mark -manifest /var/spool/epistula-database/.epistula-database-gc`;
+the same prefix must be used for subsequent runs.
+
 ### Offline mailbox rename
 
 Deploy the updated writer, IMAP and API binaries before using mailbox maintenance. All participants use the same mounted storage root, which stays in place throughout the move. Stop IMAP/API and Postfix, and wait for all LDA, import, verification, reparse and GC processes to exit. Their shared root-directory leases prevent maintenance entry until readers, cached authenticated sessions and writers have ended. Maintenance affects the whole blob store; it consumes no reserved PostgreSQL connection.

@@ -148,6 +148,7 @@ func runImportBlobs(args []string) int {
 		fmt.Fprintf(os.Stderr, "import-blobs: %v\n", cerr)
 		return EX_USAGE
 	}
+	job = state.Job
 
 	journal, err := openRecovery(*checkpointPath, job, *dryRun, *retryFailures)
 	if err != nil {
@@ -155,6 +156,8 @@ func runImportBlobs(args []string) int {
 		return EX_IOERR
 	}
 	defer journal.Close()
+	job = journal.job
+	state.Job, state.Fingerprint = job, job.Fingerprint()
 
 	resumeKey := state.resumeKey()
 	stats := importStats{startedAt: time.Now()}
@@ -195,7 +198,7 @@ func runImportBlobs(args []string) int {
 			return tenantTarget{}, fmt.Errorf("folder for %q: %w", tenant, ferr)
 		}
 		expected, known := job.Targets[string(tenant)]
-		if !known || expected.MailboxID != mailboxID || expected.FolderID != folderID {
+		if !known || expected.MailboxID != mailboxID || (expected.FolderID != 0 && expected.FolderID != folderID) {
 			return tenantTarget{}, fmt.Errorf("%w: destination changed for %s", errCheckpointMismatch, tenant)
 		}
 		t := tenantTarget{mailboxID: mailboxID, folderID: folderID, ok: true}

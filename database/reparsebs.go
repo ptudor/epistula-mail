@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -45,7 +46,7 @@ func runReparseBodystructure(args []string) int {
 	mailboxName := fs.String("mailbox", "", "Restrict to one mailbox (optional; default: every mailbox)")
 	batchSize := fs.Int("batch", 500, "Rows to scan per query")
 	dryRun := fs.Bool("dry-run", false, "Report what would change without writing")
-	manifestPath := fs.String("manifest", "reparse-bodystructure", "Path prefix for durable failed-item queue/report")
+	manifestPath := fs.String("manifest", "", "Path prefix for durable failed-item queue/report (default: <storage.root>/.epistula-database-reparse)")
 	retryFailures := fs.Bool("retry-failures", false, "Retry only recorded failed message IDs")
 	limit := fs.Int("limit", 0, "Stop after scanning this many rows (0 = no limit)")
 	if err := fs.Parse(args); err != nil {
@@ -62,6 +63,9 @@ func runReparseBodystructure(args []string) int {
 		return EX_CONFIG
 	}
 	setupLogging(cfg)
+	if *manifestPath == "" {
+		*manifestPath = filepath.Join(canonicalSource(cfg.Storage.Root), ".epistula-database-reparse")
+	}
 
 	// A dry-run advertises that it writes nothing (RA6X-053).
 	store, code := openBlobStoreFor(cfg, *dryRun)

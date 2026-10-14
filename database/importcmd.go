@@ -653,7 +653,7 @@ func loadCheckpoint(path string, resume bool, job jobIdentity, allowLegacy bool)
 		}
 		slog.Warn("resuming from a legacy checkpoint whose job identity cannot be verified",
 			"path", path, "job", job.String())
-	case c.Fingerprint != job.Fingerprint() || c.Fingerprint != c.Job.Fingerprint():
+	case !c.Job.compatible(job) || (c.Fingerprint != c.Job.Fingerprint() && c.Fingerprint != c.Job.fullFingerprint()):
 		return checkpoint{}, fmt.Errorf(
 			"%w:\n  checkpoint %s was written by: %s\n  this job is:                %s\n"+
 				"Resuming would skip items this job has not processed. Use a different "+
@@ -662,8 +662,8 @@ func loadCheckpoint(path string, resume bool, job jobIdentity, allowLegacy bool)
 	}
 
 	c.Version = checkpointVersion
-	c.Job = job
-	c.Fingerprint = job.Fingerprint()
+	c.Job = job.withRecordedTargets(c.Job)
+	c.Fingerprint = c.Job.Fingerprint()
 	slog.Info("import resumed", "last_key", c.resumeKey(), "count", c.Count, "job", job.String())
 	return c, nil
 }

@@ -49,11 +49,58 @@ type jobIdentity struct {
 // Fingerprint is the comparison value: a hash over every field, so two jobs
 // match only if all of them do.
 func (j jobIdentity) Fingerprint() string {
+	// Store-wide maintenance keys identify files or messages independently
+	// of the mailbox catalog. Keep the destination's table identity pinned.
+	if j.Kind == "gc-staging" || (j.Kind == "reparse-bodystructure" && j.Mailbox == "") || j.unfilteredBlobImport() {
+		j.Targets = nil
+	}
+	return j.fullFingerprint()
+}
+
+// fullFingerprint also recognizes checksums written before store-wide jobs
+// stopped including the mailbox catalog. This does not relax job comparison.
+func (j jobIdentity) fullFingerprint() string {
 	j.Filters = append([]string(nil), j.Filters...)
 	sort.Strings(j.Filters)
 	data, _ := json.Marshal(j) // struct contains only serializable fields, never credentials
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func (j jobIdentity) unfilteredBlobImport() bool {
+	return j.Kind == "blob-import" && j.Mailbox == ""
+}
+
+// compatible accepts a folder that did not exist when this job was recorded.
+// Once a nonzero destination id is recorded it must continue to match.
+func (j jobIdentity) compatible(current jobIdentity) bool {
+	if !j.unfilteredBlobImport() {
+		targets := make(map[string]jobTarget, len(j.Targets))
+		for name, old := range j.Targets {
+			if now, ok := current.Targets[name]; ok && old.MailboxID == now.MailboxID && old.FolderID == 0 {
+				old.FolderID = now.FolderID
+			}
+			targets[name] = old
+		}
+		j.Targets = targets
+	}
+	return j.Fingerprint() == current.Fingerprint()
+}
+
+// Keep recorded tenant bindings for validation when that tenant is visited.
+// Newly discovered tenants keep the identity just read from the database.
+func (j jobIdentity) withRecordedTargets(saved jobIdentity) jobIdentity {
+	if j.unfilteredBlobImport() {
+		targets := make(map[string]jobTarget, len(j.Targets)+len(saved.Targets))
+		for name, target := range j.Targets {
+			targets[name] = target
+		}
+		for name, target := range saved.Targets {
+			targets[name] = target
+		}
+		j.Targets = targets
+	}
+	return j
 }
 
 // String is the operator-facing description used in mismatch diagnostics.
