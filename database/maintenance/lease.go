@@ -45,14 +45,14 @@ func Acquire(ctx context.Context, root string, pool *pgxpool.Pool, exclusive, al
 	if !exclusive {
 		qctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		var active bool
-		if err := pool.QueryRow(qctx, `SELECT EXISTS(SELECT 1 FROM mailboxes WHERE maintenance_at IS NOT NULL)`).Scan(&active); err != nil {
+		var names string
+		if err := pool.QueryRow(qctx, `SELECT COALESCE(string_agg(name, ', ' ORDER BY name), '') FROM mailboxes WHERE maintenance_at IS NOT NULL`).Scan(&names); err != nil {
 			lease.Close()
 			return nil, fmt.Errorf("check offline maintenance: %w", err)
 		}
-		if active {
+		if names != "" {
 			lease.Close()
-			return nil, ErrOffline
+			return nil, fmt.Errorf("%w: %s", ErrOffline, names)
 		}
 	}
 	return lease, nil

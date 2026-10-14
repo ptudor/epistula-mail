@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -70,7 +72,7 @@ func adminMailboxMaintenance(args []string) int {
 		return code
 	}
 	defer db.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	lease, lerr := maintenance.Acquire(ctx, cfg.Storage.Root, db.Pool(), true, false)
 	if lerr != nil {
@@ -84,6 +86,28 @@ func adminMailboxMaintenance(args []string) int {
 		since     *time.Time
 		changed   bool
 	)
+	var verifiedID int64
+	if *off {
+		if err := db.Pool().QueryRow(ctx, `SELECT id, maintenance_at FROM mailboxes WHERE name=$1`, *name).Scan(&verifiedID, &since); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				fmt.Fprintf(os.Stderr, "mailbox %q not found\n", *name)
+				return EX_USAGE
+			}
+			fmt.Fprintf(os.Stderr, "maintenance lookup: %v\n", err)
+			return EX_TEMPFAIL
+		}
+		if since != nil {
+			missing, _, err := verifyTenantBlobs(ctx, db, verifiedID, cfg.Storage.Root, *name, cfg.StatementTimeoutDuration())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "maintenance verification: %v\n", err)
+				return EX_TEMPFAIL
+			}
+			if len(missing) > 0 {
+				fmt.Fprintf(os.Stderr, "cannot release maintenance: referenced blobs under %s: %s\n", *name, strings.Join(missing, "; "))
+				return EX_TEMPFAIL
+			}
+		}
+	}
 	err = db.RunTx(ctx, func(tx pgx.Tx) error {
 		// The exclusive root lease already drained blob processes. This row
 		// lock also serializes administrative changes to durable identity.
@@ -105,14 +129,10 @@ func adminMailboxMaintenance(args []string) int {
 			}
 			changed = true
 		case *off && since != nil:
-			// Releasing after an incomplete/abandoned move would restart readers
-			// against the wrong tree. Verify through this transaction's connection.
-			missing, _, err := verifyTenantBlobsOn(ctx, tx, mailboxID, cfg.Storage.Root, *name)
-			if err != nil {
-				return err
-			}
-			if len(missing) > 0 {
-				return fmt.Errorf("cannot release maintenance: referenced blobs are missing/corrupt under %s; restore the tree or complete mailbox-rename", *name)
+			// The exclusive root lease excludes blob writers throughout the
+			// pool-based verification; only the flag change needs a transaction.
+			if mailboxID != verifiedID {
+				return fmt.Errorf("mailbox identity changed during verification")
 			}
 			if _, err := tx.Exec(ctx,
 				`UPDATE mailboxes SET maintenance_at = NULL, updated_at = now() WHERE id = $1`,
@@ -185,15 +205,15 @@ func mailboxMaintenanceState(ctx context.Context, tx pgx.Tx, mailboxID int64) (*
 //
 // Returns the missing entries (capped, so a wholly absent tree does not build a
 // million-line slice) and the number of blobs checked.
-func verifyTenantBlobs(ctx context.Context, db *storage.DB, mailboxID int64, storageRoot, destTenant string) ([]string, int64, error) {
-	return verifyTenantBlobsOn(ctx, db.Pool(), mailboxID, storageRoot, destTenant)
+func verifyTenantBlobs(ctx context.Context, db *storage.DB, mailboxID int64, storageRoot, destTenant string, statementTimeout time.Duration) ([]string, int64, error) {
+	return verifyTenantBlobsOn(ctx, db.Pool(), mailboxID, storageRoot, destTenant, statementTimeout)
 }
 
 type renameQuerier interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
-func verifyTenantBlobsOn(ctx context.Context, qdb renameQuerier, mailboxID int64, storageRoot, destTenant string) ([]string, int64, error) {
+func verifyTenantBlobsOn(ctx context.Context, qdb renameQuerier, mailboxID int64, storageRoot, destTenant string, statementTimeout time.Duration) ([]string, int64, error) {
 	tenant, err := blob.ParseTenant(destTenant)
 	if err != nil {
 		return nil, 0, fmt.Errorf("invalid destination tenant %q: %w", destTenant, err)
@@ -204,55 +224,94 @@ func verifyTenantBlobsOn(ctx context.Context, qdb renameQuerier, mailboxID int64
 	var missing []string
 	var checked int64
 
-	// Raw message blobs, then attachment blobs. Both are keyed by
-	// (sha256, blob_date) within the tenant.
+	lastReport := time.Now()
+	type ref struct {
+		sha  string
+		date time.Time
+		size int64
+	}
 	for _, q := range []struct {
 		kind blob.Kind
 		sql  string
 	}{
-		{blob.KindRaw, `
-			SELECT DISTINCT encode(m.raw_sha256, 'hex'), m.raw_blob_date,m.raw_size
-			  FROM messages m
-			  JOIN folders f ON f.id = m.folder_id
-			 WHERE f.mailbox_id = $1`},
-		{blob.KindAttachment, `
-			SELECT DISTINCT encode(a.sha256, 'hex'), a.blob_date,a.size_bytes
-			  FROM attachments a
-			  JOIN messages m ON m.id = a.message_id
-			  JOIN folders f ON f.id = m.folder_id
-			 WHERE f.mailbox_id = $1`},
+		{blob.KindRaw, `SELECT DISTINCT encode(m.raw_sha256, 'hex') AS sha, m.raw_blob_date AS bucket, m.raw_size AS size
+		 FROM messages m JOIN folders f ON f.id=m.folder_id WHERE f.mailbox_id=$1`},
+		{blob.KindAttachment, `SELECT DISTINCT encode(a.sha256, 'hex') AS sha, a.blob_date AS bucket, a.size_bytes AS size
+		 FROM attachments a JOIN messages m ON m.id=a.message_id JOIN folders f ON f.id=m.folder_id WHERE f.mailbox_id=$1`},
 	} {
-		rows, err := qdb.Query(ctx, q.sql, mailboxID)
-		if err != nil {
-			return nil, checked, fmt.Errorf("list %s blobs: %w", q.kind, err)
-		}
-		for rows.Next() {
-			var shaHex string
-			var bucketDate time.Time
-			var size int64
-			if err := rows.Scan(&shaHex, &bucketDate, &size); err != nil {
-				rows.Close()
-				return nil, checked, fmt.Errorf("scan %s blob: %w", q.kind, err)
+		var lastSHA string
+		var lastDate time.Time
+		for {
+			qctx, cancel := context.WithCancel(ctx)
+			if statementTimeout > 0 {
+				cancel()
+				qctx, cancel = context.WithTimeout(ctx, statementTimeout)
 			}
-			checked++
-			path, err := store.PathFor(q.kind, tenant, blob.BucketFromTime(bucketDate.UTC()), shaHex)
+			rows, err := qdb.Query(qctx, `SELECT sha,bucket,size FROM (`+q.sql+`) refs
+			 WHERE $2='' OR (sha,bucket)>($2,$3::date) ORDER BY sha,bucket LIMIT 5000`, mailboxID, lastSHA, lastDate)
 			if err != nil {
-				rows.Close()
-				return nil, checked, fmt.Errorf("path for %s %s: %w", q.kind, shaHex, err)
+				cancel()
+				return nil, checked, fmt.Errorf("list %s blobs: %w", q.kind, err)
 			}
-			if ok, err := store.ContentMatches(q.kind, tenant, blob.BucketFromTime(bucketDate.UTC()), shaHex, size); err != nil || !ok {
-				if len(missing) < maxReported {
-					missing = append(missing, path)
-				} else if len(missing) == maxReported {
-					missing = append(missing, "(further missing blobs not listed)")
+			page := make([]ref, 0, 5000)
+			for rows.Next() {
+				var r ref
+				if err := rows.Scan(&r.sha, &r.date, &r.size); err != nil {
+					rows.Close()
+					cancel()
+					return nil, checked, fmt.Errorf("scan %s blob: %w", q.kind, err)
+				}
+				page = append(page, r)
+			}
+			err = rows.Err()
+			rows.Close()
+			cancel()
+			if err != nil {
+				return nil, checked, fmt.Errorf("iterate %s blobs: %w", q.kind, err)
+			}
+			// No database statement or connection is held during file hashing.
+			for _, r := range page {
+				if err := ctx.Err(); err != nil {
+					return nil, checked, err
+				}
+				bucket := blob.BucketFromTime(r.date.UTC())
+				path, err := store.PathFor(q.kind, tenant, bucket, r.sha)
+				if err != nil {
+					return nil, checked, err
+				}
+				ok, err := store.ContentMatches(q.kind, tenant, bucket, r.sha, r.size)
+				if err != nil {
+					return nil, checked, fmt.Errorf("verify %s: %w", path, err)
+				}
+				checked++
+				if !ok {
+					reason := "corrupt: wrong hash"
+					fi, err := os.Stat(path)
+					switch {
+					case errors.Is(err, os.ErrNotExist):
+						reason = "absent"
+					case err != nil:
+						return nil, checked, fmt.Errorf("stat %s: %w", path, err)
+					case fi.Size() != r.size:
+						reason = "corrupt: wrong size"
+					}
+					if len(missing) < maxReported {
+						missing = append(missing, path+" ("+reason+")")
+					} else if len(missing) == maxReported {
+						missing = append(missing, "(further missing/corrupt blobs not listed)")
+					}
+				}
+				if time.Since(lastReport) >= 10*time.Second {
+					fmt.Fprintf(os.Stderr, "verified %d referenced blobs under %s\n", checked, destTenant)
+					lastReport = time.Now()
 				}
 			}
+			if len(page) < 5000 {
+				break
+			}
+			last := page[len(page)-1]
+			lastSHA, lastDate = last.sha, last.date
 		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return nil, checked, fmt.Errorf("iterate %s blobs: %w", q.kind, err)
-		}
-		rows.Close()
 	}
 	return missing, checked, nil
 }

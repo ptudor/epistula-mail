@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -351,7 +353,7 @@ func adminMailboxList(args []string) int {
 
 	rows, err := db.Pool().Query(ctx,
 		`SELECT id, name, COALESCE(quota_bytes, 0), used_bytes,
-		        disabled_at, created_at
+		        disabled_at, created_at, maintenance_at
 		   FROM mailboxes
 		  ORDER BY name`,
 	)
@@ -369,15 +371,19 @@ func adminMailboxList(args []string) int {
 			name        string
 			quota, used int64
 			disabled    *time.Time
+			maintenance *time.Time
 			created     time.Time
 		)
-		if err := rows.Scan(&id, &name, &quota, &used, &disabled, &created); err != nil {
+		if err := rows.Scan(&id, &name, &quota, &used, &disabled, &created, &maintenance); err != nil {
 			fmt.Fprintf(os.Stderr, "scan: %v\n", err)
 			return EX_TEMPFAIL
 		}
 		state := "active"
 		if disabled != nil {
 			state = "disabled"
+		}
+		if maintenance != nil {
+			state = "maintenance"
 		}
 		quotaStr := "∞"
 		if quota > 0 {
@@ -1075,7 +1081,7 @@ func adminMailboxDelete(args []string) int {
 		return code
 	}
 	defer db.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	// Pre-compute counts so the operator sees what's about to vanish.
@@ -1118,6 +1124,12 @@ func adminMailboxDelete(args []string) int {
 		revokedTokens []string
 	)
 	err = db.RunTx(ctx, func(tx pgx.Tx) error {
+		// Cascades stay atomic and retain the mailbox barrier and token rescope.
+		// A large mailbox can exceed the default statement bound; SIGINT or
+		// SIGTERM still cancels the command and rolls back the entire delete.
+		if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = 0`); err != nil {
+			return err
+		}
 		var mailboxID int64
 		if err := tx.QueryRow(ctx,
 			`SELECT id FROM mailboxes WHERE name = $1 FOR UPDATE`, *name,
@@ -1340,7 +1352,7 @@ func adminMailboxRename(args []string) int {
 		return code
 	}
 	defer db.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	lease, lerr := maintenance.Acquire(ctx, cfg.Storage.Root, db.Pool(), true, false)
 	if lerr != nil {
@@ -1470,7 +1482,7 @@ while its blobs are somewhere this process cannot see.
 	// replicated) is caught here, while it is still recoverable, instead of
 	// surfacing later as a user's missing mail.
 	if storedMsgs > 0 {
-		missing, checked, err := verifyTenantBlobs(ctx, db, mailboxID, cfg.Storage.Root, newName)
+		missing, checked, err := verifyTenantBlobs(ctx, db, mailboxID, cfg.Storage.Root, newName, cfg.StatementTimeoutDuration())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "verify blobs under %s: %v\n", newDir, err)
 			return EX_TEMPFAIL

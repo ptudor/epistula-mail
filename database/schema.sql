@@ -27,10 +27,11 @@ CREATE TABLE IF NOT EXISTS mailboxes (
     -- Declared last because migration 013 appends it, and the bootstrap must
     -- reproduce a migrated database's column order exactly.
     --
-    -- Non-NULL means this mailbox is quiesced for an operation that moves its
-    -- blob tenant tree (RA6X-013): storage.Ingest refuses writes and gc skips
-    -- the tenant, so the window where the database and the filesystem disagree
-    -- about where the blobs live can be crossed with nobody writing into it.
+    -- Non-NULL marks the mailbox whose blob tenant tree is being moved
+    -- (RA6X-013). The maintenance barrier takes the ENTIRE store offline:
+    -- delivery for every mailbox defers, and IMAP/API/import/reparse/GC refuse
+    -- to start until every maintenance flag is cleared. storage.Ingest also
+    -- enforces the mailbox flag as a final write guard.
     -- Distinct from disabled_at, which rejects authentication but still
     -- accepts delivery.
     maintenance_at TIMESTAMPTZ,

@@ -113,6 +113,10 @@ ${storage_root}/<mailbox>/raw/1970/01/01/aa/bb/aabbccdd...eef.eml   # date-undet
   # Restart services after successful size/hash verification and rename.
   ```
   If the move succeeded but `mailbox-rename` failed, nothing is lost: the mailbox stays quiesced so no writer can act on the disagreement. Fix what the command reported and re-run, or restore the complete old tree and `-off` maintenance to abandon the rename. That release also verifies every referenced size/hash. Do not run `gc` until one of those is done.
+  This is a store-wide outage: one mailbox's maintenance flag defers delivery
+  for every account and prevents IMAP/API/import/reparse/GC from starting.
+  Allow enough time for the file verification, and complete the operation
+  before deferred mail reaches the Postfix queue's configured expiry.
 - **Date partitioning** by `yyyy/mm/dd` sits inside the tenant, in front of the sha-shard. Makes per-period rsync / backup / cold-archive policies trivial ("backup only what's new since last week"), keeps any single day's bucket bounded, and gives operators an at-a-glance sense of growth from `du -sh ${storage_root}/jdoe/raw/2026/*`.
 - **Date is the wall-clock arrival time** for live deliveries (`deliver` invokes `time.Now()` once at the start of the LDA run) and the message's parsed `Date:` header (falling back to the file mtime) for the one-time `import` of legacy Maildir trees. Dedup runs only within the (tenant, bucket) — two identical bytes arriving on different days produce two on-disk blobs. That's fine: most spam/newsletter dedup wins are within a single day anyway, and almost every modern message carries per-recipient UUID tracking URLs that defeat cross-day dedup regardless. The simpler model wins.
 - The chosen bucket date is persisted alongside the sha256 in the DB (`messages.raw_blob_date DATE`, `attachments.blob_date DATE`) so reads never have to guess the path; the tenant is the owning mailbox, reachable via `folder_id → folders.mailbox_id → mailboxes.name`.
