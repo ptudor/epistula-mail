@@ -59,18 +59,18 @@ func registerServeMetrics(db *storage.DB) {
 			}))
 	}
 
-	scalar("mail_database_gc_candidates",
-		"Blobs currently queued for GC sweep.",
-		`SELECT count(*)::float8 FROM gc_candidates`)
+	scalar("mail_database_gc_candidates_estimate",
+		"Estimated blobs queued for GC sweep (PostgreSQL live-tuple statistics).",
+		`SELECT COALESCE((SELECT n_live_tup::float8 FROM pg_stat_user_tables WHERE relid='gc_candidates'::regclass),0)`)
 	scalar("mail_database_gc_candidate_oldest_age_seconds",
 		"Age of the oldest gc_candidates row, in seconds. Grows without bound if sweep is not running.",
 		`SELECT COALESCE(EXTRACT(epoch FROM now() - min(first_seen_at)), 0)::float8 FROM gc_candidates`)
 	scalar("mail_database_mailboxes",
 		"Number of mailboxes.",
 		`SELECT count(*)::float8 FROM mailboxes`)
-	scalar("mail_database_messages",
-		"Number of stored messages.",
-		`SELECT count(*)::float8 FROM messages`)
+	scalar("mail_database_messages_estimate",
+		"Estimated stored messages (PostgreSQL live-tuple statistics).",
+		`SELECT COALESCE((SELECT n_live_tup::float8 FROM pg_stat_user_tables WHERE relid='messages'::regclass),0)`)
 	scalar("mail_database_used_bytes_total",
 		"Sum of mailboxes.used_bytes across all mailboxes.",
 		`SELECT COALESCE(sum(used_bytes), 0)::float8 FROM mailboxes`)

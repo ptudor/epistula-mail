@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Database metrics `mail_database_messages` and `mail_database_gc_candidates`
+  are now `mail_database_messages_estimate` and `mail_database_gc_candidates_estimate`.
+  They use PostgreSQL live-tuple statistics to avoid full-table counts per scrape;
+  update dashboards and allow for statistics lag.
+
 - IMAP Trash purge now defaults `purge_all_copies` to false, preserving copies
   in other folders and newer Trash rows. Existing explicit `true` settings
   retain their destructive all-copy behavior; review them before enabling purge.
