@@ -532,6 +532,10 @@ func gcMark(ctx context.Context, db *storage.DB, store *blob.Store, grace time.D
 	// watchdog-exited LDA — nothing in the raw/att walk visits tmp/ (R-031).
 	// Same grace as blob marking so an in-flight write is never touched.
 	staleTmp, err := store.SweepStaleTmp(grace)
+	staleRepairs := 0
+	if err == nil {
+		staleRepairs, err = store.SweepStaleRepairs(grace)
+	}
 	if err != nil {
 		slog.Warn("gc mark tmp sweep", "err", err)
 		if len(journals) > 0 {
@@ -579,6 +583,7 @@ func gcMark(ctx context.Context, db *storage.DB, store *blob.Store, grace time.D
 		"misplaced_blobs", len(misplaced),
 		"orphan_tenant_blobs", orphanTenantBlobs,
 		"stale_tmp_removed", staleTmp,
+		"stale_repairs_removed", staleRepairs,
 		"elapsed", time.Since(start).Truncate(time.Second),
 	)
 	return EX_OK

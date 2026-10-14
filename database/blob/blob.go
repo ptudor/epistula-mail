@@ -411,7 +411,7 @@ func (s *Store) CheckPermissions() error {
 		return fmt.Errorf("read %s: %w", s.root, err)
 	}
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !s.tenantDirectory(e) {
 			continue // stray files (e.g. import checkpoint) are not our concern
 		}
 		if _, terr := ParseTenant(e.Name()); terr != nil {
@@ -433,6 +433,20 @@ func (s *Store) CheckPermissions() error {
 		}
 	}
 	return nil
+}
+
+// tenantDirectory follows only root-level tenant links. Invalid link targets
+// are reported through the same unknown-subtree callback as invalid names.
+func (s *Store) tenantDirectory(e os.DirEntry) bool {
+	if e.Type()&os.ModeSymlink == 0 {
+		return e.IsDir()
+	}
+	info, err := os.Stat(filepath.Join(s.root, e.Name()))
+	if err != nil || !info.IsDir() {
+		s.noteUnknownSubtree(e.Name())
+		return false
+	}
+	return true
 }
 
 // CheckRootPermissions is the constant-cost delivery startup check.
@@ -519,7 +533,7 @@ func (s *Store) SweepStaleTmp(grace time.Duration) (int, error) {
 	cutoff := time.Now().Add(-grace)
 	removed := 0
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !s.tenantDirectory(e) {
 			continue
 		}
 		tenant, terr := ParseTenant(e.Name())
@@ -553,6 +567,72 @@ func (s *Store) SweepStaleTmp(grace time.Duration) (int, error) {
 				return removed, fmt.Errorf("unlink stale tmp %s: %w", f.Name(), rmErr)
 			}
 			removed++
+		}
+	}
+	return removed, nil
+}
+
+// SweepStaleRepairs removes crash leftovers from raw/attachment shard trees.
+// The grace period protects active repairs. Tenant links are followed; links
+// inside a blob tree are not traversed.
+func (s *Store) SweepStaleRepairs(grace time.Duration) (int, error) {
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		return 0, err
+	}
+	cutoff := time.Now().Add(-grace)
+	removed := 0
+	for _, e := range entries {
+		if !s.tenantDirectory(e) {
+			continue
+		}
+		if _, err := ParseTenant(e.Name()); err != nil {
+			s.noteUnknownSubtree(e.Name())
+			continue
+		}
+		for _, sub := range []string{"raw", "att"} {
+			base := filepath.Join(s.root, e.Name(), sub)
+			err := filepath.Walk(base, func(path string, info os.FileInfo, err error) error {
+				if errors.Is(err, os.ErrNotExist) {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				if !info.Mode().IsRegular() || !strings.HasPrefix(info.Name(), ".repair-") || info.ModTime().After(cutoff) {
+					return nil
+				}
+				rel, err := filepath.Rel(base, path)
+				if err != nil {
+					return err
+				}
+				parts := strings.Split(filepath.ToSlash(rel), "/")
+				if len(parts) != 6 {
+					return nil
+				}
+				if err := Bucket(strings.Join(parts[:3], "/")).Validate(); err != nil {
+					return nil
+				}
+				for _, shard := range parts[3:5] {
+					if len(shard) != 2 {
+						return nil
+					}
+					if _, err := hex.DecodeString(shard); err != nil {
+						return nil
+					}
+				}
+				if err := os.Remove(path); err != nil {
+					if errors.Is(err, os.ErrNotExist) {
+						return nil
+					}
+					return err
+				}
+				removed++
+				return nil
+			})
+			if err != nil {
+				return removed, err
+			}
 		}
 	}
 	return removed, nil
@@ -819,9 +899,6 @@ func (s *Store) EnsureContent(kind Kind, tenant Tenant, bucket Bucket, shaHex st
 		s.logf("blob: existing blob does not match its content address; rewriting from the message being stored",
 			"path", path, "sha16", shortSHA(shaHex))
 		// Fall through to the rewrite below, which replaces it atomically.
-		if rmErr := os.Remove(path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-			return false, fmt.Errorf("remove corrupt blob %s: %w", path, rmErr)
-		}
 	}
 	w, err := s.NewWriter(kind, tenant, bucket)
 	if err != nil {
@@ -912,7 +989,7 @@ func (s *Store) Walk(kind Kind, visit WalkFunc) error {
 		return err
 	}
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !s.tenantDirectory(e) {
 			continue
 		}
 		tenant, terr := ParseTenant(e.Name())
