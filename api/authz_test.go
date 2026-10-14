@@ -44,11 +44,11 @@ func TestTokenScope(t *testing.T) {
 	}
 }
 
-func TestClientIPPrefersApacheXFFOnLoopback(t *testing.T) {
+func TestClientIPPrefersXFFFromTrustedProxy(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/v1/mailboxes", nil)
 	r.RemoteAddr = "127.0.0.1:54321"
 	r.Header.Set("X-Forwarded-For", "203.0.113.7, 198.51.100.9")
-	if ip := clientIP(r); ip != "198.51.100.9" {
+	if ip := clientIP(r, []string{"127.0.0.1/32"}); ip != "198.51.100.9" {
 		t.Errorf("clientIP = %q, want the last XFF entry (the one Apache appended)", ip)
 	}
 }
@@ -57,7 +57,7 @@ func TestClientIPIgnoresXFFFromNonLoopback(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/v1/mailboxes", nil)
 	r.RemoteAddr = "192.0.2.10:54321"
 	r.Header.Set("X-Forwarded-For", "203.0.113.7")
-	if ip := clientIP(r); ip != "192.0.2.10" {
+	if ip := clientIP(r, []string{"127.0.0.1/32"}); ip != "192.0.2.10" {
 		t.Errorf("clientIP = %q, want the TCP peer when it is not loopback", ip)
 	}
 }

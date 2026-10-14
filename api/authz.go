@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"runtime"
 	"strings"
 	"sync"
@@ -105,25 +106,33 @@ func newAuthenticator(srv *server) *authenticator {
 	}
 }
 
-// clientIP resolves the caller's IP for throttling. The Go process binds
-// loopback with Apache in front, so when the TCP peer is loopback and
-// Apache appended an X-Forwarded-For entry, the last entry (the one Apache
-// itself added) is the real client. A non-loopback peer's XFF is untrusted
-// and ignored.
-func clientIP(r *http.Request) string {
+// clientIP trusts one proxy hop only when the direct peer is explicitly
+// listed in server.trusted_proxies. The last XFF entry is that proxy's client.
+func clientIP(r *http.Request, trustedProxies []string) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	peer := net.ParseIP(host)
-	if peer == nil || !peer.IsLoopback() {
+	peer, err := netip.ParseAddr(host)
+	trusted := false
+	if err == nil {
+		for _, raw := range trustedProxies {
+			prefix, parseErr := netip.ParsePrefix(raw)
+			if parseErr == nil && prefix.Contains(peer.Unmap()) {
+				trusted = true
+				break
+			}
+			addr, parseErr := netip.ParseAddr(raw)
+			if parseErr == nil && addr.Unmap() == peer.Unmap() {
+				trusted = true
+				break
+			}
+		}
+	}
+	if !trusted {
 		return host
 	}
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff == "" {
-		return host
-	}
-	parts := strings.Split(xff, ",")
+	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
 	last := strings.TrimSpace(parts[len(parts)-1])
 	if net.ParseIP(last) != nil {
 		return last
@@ -185,13 +194,6 @@ func (a *authenticator) recordFailure(ip string) {
 // bad-secret, and revoked outcomes indistinguishable by timing class
 // (Argon2id cost differences remain, as on any verify path).
 func (a *authenticator) authenticate(w http.ResponseWriter, r *http.Request) *apiToken {
-	ip := clientIP(r)
-	if a.throttled(ip) {
-		metricAuthFailures.WithLabelValues("throttled").Inc()
-		problemTooMany(w, r, "Too many failed authentications; retry later.")
-		return nil
-	}
-
 	header := r.Header.Get("Authorization")
 	scheme, bearer, ok := strings.Cut(header, " ")
 	if !ok || !strings.EqualFold(scheme, "Bearer") || bearer == "" {
@@ -210,20 +212,19 @@ func (a *authenticator) authenticate(w http.ResponseWriter, r *http.Request) *ap
 	}
 	a.mu.Unlock()
 
-	// Reserve an Argon2 slot before the (expensive) verify. Non-blocking: a
-	// saturated verifier returns 429 rather than piling up 64 MiB KDFs. The
-	// worker never contends here — its valid token is served from the cache
-	// after the first verify. (R-016)
-	select {
-	case a.argonSem <- struct{}{}:
-		defer func() { <-a.argonSem }()
-	default:
-		metricAuthFailures.WithLabelValues("argon_saturated").Inc()
-		problemTooMany(w, r, "Authentication is busy; retry shortly.")
+	ip := clientIP(r, a.srv.cfg.Server.TrustedProxies)
+	if a.throttled(ip) {
+		metricAuthFailures.WithLabelValues("throttled").Inc()
+		problemTooMany(w, r, "Too many failed authentications; retry later.")
 		return nil
 	}
 
 	tok, err := a.verify(r.Context(), bearer)
+	if errors.Is(err, errArgonSaturated) {
+		metricAuthFailures.WithLabelValues("argon_saturated").Inc()
+		problemTooMany(w, r, "Authentication is busy; retry shortly.")
+		return nil
+	}
 	if err != nil {
 		if !errors.Is(err, errAuthRejected) {
 			slog.Error("token verify", "err", err)
@@ -254,6 +255,7 @@ func (a *authenticator) authenticate(w http.ResponseWriter, r *http.Request) *ap
 // errAuthRejected is the "client presented bad credentials" class; every
 // other verify error is an infrastructure failure (5xx, not 401).
 var errAuthRejected = errors.New("auth rejected")
+var errArgonSaturated = errors.New("argon verifier saturated")
 
 func (a *authenticator) verify(ctx context.Context, bearer string) (*apiToken, error) {
 	id, secret, err := auth.ParseAPIToken(bearer)
@@ -283,7 +285,14 @@ func (a *authenticator) verify(ctx context.Context, bearer string) (*apiToken, e
 	if revokedAt != nil {
 		return nil, errAuthRejected
 	}
+	// Bound only KDF memory/CPU, excluding SQL and the fixed failure delay.
+	select {
+	case a.argonSem <- struct{}{}:
+	default:
+		return nil, errArgonSaturated
+	}
 	ok, err := auth.VerifyPassword(secret, hash)
+	<-a.argonSem
 	if err != nil || !ok {
 		return nil, errAuthRejected
 	}

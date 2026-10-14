@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -33,11 +34,12 @@ type Config struct {
 // ServerConfig is the JSON API listener. Plain HTTP on loopback; Apache
 // terminates TLS (and optional mTLS) in front.
 type ServerConfig struct {
-	ListenAddr         string `toml:"listen_addr"`
-	ReadTimeoutSec     int    `toml:"read_timeout_seconds"`
-	WriteTimeoutSec    int    `toml:"write_timeout_seconds"` // 0 = unlimited (export streams are long-lived)
-	IdleTimeoutSec     int    `toml:"idle_timeout_seconds"`
-	ShutdownTimeoutSec int    `toml:"shutdown_timeout_seconds"`
+	TrustedProxies     []string `toml:"trusted_proxies"` // IPs or CIDRs; one XFF hop, empty trusts none
+	ListenAddr         string   `toml:"listen_addr"`
+	ReadTimeoutSec     int      `toml:"read_timeout_seconds"`
+	WriteTimeoutSec    int      `toml:"write_timeout_seconds"` // 0 = unlimited (export streams are long-lived)
+	IdleTimeoutSec     int      `toml:"idle_timeout_seconds"`
+	ShutdownTimeoutSec int      `toml:"shutdown_timeout_seconds"`
 }
 
 // AdminConfig is the loopback metrics/health listener.
@@ -296,6 +298,13 @@ func (c *Config) Validate() error {
 	}
 	if c.Storage.Root == "" {
 		return errors.New("storage.root is required")
+	}
+	for _, proxy := range c.Server.TrustedProxies {
+		if _, err := netip.ParseAddr(proxy); err != nil {
+			if _, err := netip.ParsePrefix(proxy); err != nil {
+				return fmt.Errorf("server.trusted_proxies: invalid IP or CIDR %q", proxy)
+			}
+		}
 	}
 	if c.Server.ListenAddr == "" {
 		return errors.New("server.listen_addr is required")

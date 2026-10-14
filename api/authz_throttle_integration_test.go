@@ -42,8 +42,8 @@ func TestAuthArgonSemaphoreRejects(t *testing.T) {
 		}
 	}()
 
-	// An uncached bearer reaches the semaphore gate before verify.
-	resp := f.do(http.MethodGet, "/v1/mailboxes", "mapi_uncached_probe_token", nil)
+	// An existing unrevoked token reaches the gate immediately before its KDF.
+	resp := f.do(http.MethodGet, "/v1/mailboxes", f.classifierToken, nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("saturated-Argon request = %d, want 429", resp.StatusCode)

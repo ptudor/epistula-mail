@@ -183,7 +183,7 @@ annotation sidecar).
 
 - `sslmode=verify-full` required when `production=true`; refuses `disable`/`allow`.
 - **Every** query is parameterized (`$1`, `$2`, …); no `fmt.Sprintf` into SQL, no identifier interpolation. Token mailbox-scope is an `= ANY($scope)` bind, never string-built.
-- API tokens stored only as Argon2id PHC hashes; verified with `argon2.IDKey` + `crypto/subtle.ConstantTimeCompare`; bad-token attempts throttled per-IP and per-token.
+- API tokens stored only as Argon2id PHC hashes; verified with `argon2.IDKey` + `crypto/subtle.ConstantTimeCompare`; bad-token attempts throttled per-IP after the verified-token cache; successful requests have the optional per-token rate limit.
 - Blob reads are hash-only: the hex sha256 is validated `^[0-9a-f]{64}$` before any path is built (path-traversal eliminated as a class — inherited from the `blob` package).
 - A `statement_timeout` is set per request transaction.
 - Loopback bind by default; never exposed beyond Apache. mTLS at Apache for external consumers.
@@ -220,6 +220,8 @@ epistula-api check-config -config /usr/local/etc/epistula/epistula-api.toml
 /etc/epistula/epistula-api.toml
 ./epistula-api.toml
 ```
+
+`server.trusted_proxies` is an explicit list of proxy IP addresses or CIDRs, empty by default. Only those direct peers may supply the last `X-Forwarded-For` entry (one proxy hop); other peers, including loopback, are identified by their TCP address.
 
 Required keys: `[server]` (api listen addr, default `127.0.0.1:8784`), `[admin]` (admin listen addr, default `127.0.0.1:8785`), `[postgres]` (DSN, `sslmode=verify-full` in production; ideally the least-privilege role's DSN), `[storage]` (`root`, group-readable blob access), `[limits]` (max page size, per-token rate, max concurrent export streams, statement timeout), `[production]` (gates strict-mode checks).
 

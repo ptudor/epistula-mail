@@ -5,6 +5,9 @@
 production = true
 
 [server]
+# Explicit one-hop X-Forwarded-For trust; enable only for your reverse proxy.
+trusted_proxies = []
+# Example: trusted_proxies = ["127.0.0.1/32", "::1/128"]
 # JSON API listener. Plain HTTP; Apache terminates TLS (and optional mTLS)
 # in front. Loopback only — enforced when production = true.
 listen_addr              = "127.0.0.1:8784"
