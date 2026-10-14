@@ -193,8 +193,8 @@ func (a *authenticator) authenticate(w http.ResponseWriter, r *http.Request) *ap
 	}
 
 	header := r.Header.Get("Authorization")
-	bearer, ok := strings.CutPrefix(header, "Bearer ")
-	if !ok || bearer == "" {
+	scheme, bearer, ok := strings.Cut(header, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || bearer == "" {
 		metricAuthFailures.WithLabelValues("missing").Inc()
 		problemUnauthorized(w, r, "Missing bearer token.")
 		return nil

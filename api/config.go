@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -16,7 +18,6 @@ import (
 var defaultConfigPaths = []string{
 	"/usr/local/etc/epistula/epistula-api.toml",
 	"/etc/epistula/epistula-api.toml",
-	"epistula-api.toml",
 }
 
 type Config struct {
@@ -221,9 +222,19 @@ func loadTOML(path string, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("read config %q: %w", path, err)
 	}
-	if err := toml.Unmarshal(data, cfg); err != nil {
+	if err := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(cfg); err != nil {
+		var missing *toml.StrictMissingError
+		if errors.As(err, &missing) {
+			var details []string
+			for _, e := range missing.Errors {
+				line, _ := e.Position()
+				details = append(details, fmt.Sprintf("%s (line %d)", strings.Join(e.Key(), "."), line))
+			}
+			return fmt.Errorf("parse config %q: unknown keys %s: %w", path, strings.Join(details, ", "), err)
+		}
 		return fmt.Errorf("parse config %q: %w", path, err)
 	}
+	slog.Info("loaded configuration", "path", path)
 	return nil
 }
 
@@ -249,6 +260,24 @@ func applyEnv(cfg *Config) {
 }
 
 func (c *Config) Validate() error {
+	for name, value := range map[string]int{
+		"server.read_timeout_seconds":  c.Server.ReadTimeoutSec,
+		"server.write_timeout_seconds": c.Server.WriteTimeoutSec,
+		"server.idle_timeout_seconds":  c.Server.IdleTimeoutSec,
+		"admin.read_timeout_seconds":   c.Admin.ReadTimeoutSec,
+		"admin.write_timeout_seconds":  c.Admin.WriteTimeoutSec,
+	} {
+		if value < 0 {
+			return fmt.Errorf("%s must be non-negative", name)
+		}
+	}
+	if c.Server.ShutdownTimeoutSec < 1 || c.Admin.ShutdownTimeoutSec < 1 {
+		return errors.New("server/admin.shutdown_timeout_seconds must be at least 1")
+	}
+	if c.Postgres.MaxOpenConns < 1 || c.Postgres.MaxIdleConns > c.Postgres.MaxOpenConns {
+		return errors.New("postgres.max_open_conns must be >= 1 and >= max_idle_conns")
+	}
+
 	if c.Postgres.DSN == "" {
 		return errors.New("postgres.dsn is required")
 	}
