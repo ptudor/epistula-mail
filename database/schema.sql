@@ -227,6 +227,9 @@ CREATE TABLE IF NOT EXISTS delivery_log (
     error_detail       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_delivery_log_received ON delivery_log (received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_delivery_log_message ON delivery_log (message_id) WHERE message_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_delivery_log_mailbox ON delivery_log (matched_mailbox_id) WHERE matched_mailbox_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_delivery_log_alias ON delivery_log (matched_alias_id) WHERE matched_alias_id IS NOT NULL;
 
 -- Bearer API tokens for api (migration 006). The printed
 -- token embeds the row id ("mapi_<id>_<secret>") so verification is one row
@@ -365,7 +368,8 @@ INSERT INTO schema_versions (version, description) VALUES
     (19, 'annotation parent lock'),
     (20, 'archive sorting'),
     (21, 'folder redirects'),
-    (22, 'annotation pass required')
+    (22, 'annotation pass required'),
+    (23, 'delivery log fk indexes')
     ON CONFLICT DO NOTHING;
 
 -- All folder creation/rename paths use this allocator. Never wrap or reset the
