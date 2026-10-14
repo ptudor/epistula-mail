@@ -239,7 +239,6 @@ func (s *Session) Expunge(w *imapserver.ExpungeWriter, uids *imap.UIDSet) (err e
 	}
 
 	type deletion struct {
-		seqNum  uint32
 		uid     int64
 		rawSize int64
 	}
@@ -271,28 +270,9 @@ func (s *Session) Expunge(w *imapserver.ExpungeWriter, uids *imap.UIDSet) (err e
 			return fmt.Errorf("lock folder: %w", err)
 		}
 
-		// Pull candidates inside the tx to compute sequence numbers over the
-		// full pre-delete ordering and to resolve the UID EXPUNGE subset.
-		//
-		// This read is NOT the authority on what gets deleted. At READ
-		// COMMITTED (the server default; nothing here sets a stricter level)
-		// the SELECT takes a statement snapshot, so a concurrent session that
-		// commits `STORE -FLAGS (\Deleted)` between this read and the DELETE
-		// is invisible here. The DELETE below therefore repeats the
-		// `\Deleted` predicate and reports what it actually removed via
-		// RETURNING; a row un-deleted in the interim is re-evaluated against
-		// the latest committed version under the DELETE's row lock and is
-		// skipped (RO5X-001).
-		candidateQuery := `
-			SELECT seqnum, uid, raw_size
-			  FROM (
-			    SELECT row_number() OVER (ORDER BY uid)::bigint AS seqnum,
-			           uid, raw_size, flags
-			      FROM messages
-			     WHERE folder_id = $1
-			  ) m
-			 WHERE '\Deleted' = ANY(m.flags)
-			 ORDER BY seqnum`
+		// Candidates are rechecked by DELETE RETURNING below; sequence numbers
+		// come from the client's view after commit.
+		candidateQuery := `SELECT uid,raw_size FROM messages WHERE folder_id=$1 AND '\Deleted'=ANY(flags) ORDER BY uid`
 
 		// UID EXPUNGE: the subset filter is applied in Go via uidSetContains
 		// so dynamic ranges ("5:*", "*") resolve against the folder's highest
@@ -315,15 +295,13 @@ func (s *Session) Expunge(w *imapserver.ExpungeWriter, uids *imap.UIDSet) (err e
 		var candidates []deletion
 		for rows.Next() {
 			var d deletion
-			var seq int64
-			if err := rows.Scan(&seq, &d.uid, &d.rawSize); err != nil {
+			if err := rows.Scan(&d.uid, &d.rawSize); err != nil {
 				rows.Close()
 				return fmt.Errorf("candidate scan: %w", err)
 			}
 			if uids != nil && !uidSetContains(*uids, imap.UID(d.uid), imap.UID(maxUID)) {
 				continue
 			}
-			d.seqNum = uint32(seq)
 			candidates = append(candidates, d)
 		}
 		rows.Close()
@@ -445,21 +423,20 @@ func (s *Session) Expunge(w *imapserver.ExpungeWriter, uids *imap.UIDSet) (err e
 		return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "EXPUNGE failed"}
 	}
 
-	// Address removals through the client's view, including expunges by a peer
-	// that Poll has not announced yet. A fresh database row_number would name
-	// a different message on the wire. Remove each UID only with its response.
-	for _, d := range deletions {
-		seq := s.view.seqOf(d.uid)
-		if seq == 0 {
-			continue
-		} // arrival never announced to this client
+	// Address removals through the client's view, including pending peer
+	// removals. Unannounced arrivals have no sequence number to emit.
+	removedUIDs := make([]int64, len(deletions))
+	for i, d := range deletions {
+		removedUIDs[i] = d.uid
+	}
+	for _, seq := range s.view.removeMany(removedUIDs) {
 		if w != nil {
 			if err := w.WriteExpunge(seq); err != nil {
 				return err
 			}
 		}
-		s.view.remove(d.uid)
 	}
+
 	return nil
 }
 
@@ -1122,11 +1099,11 @@ func (s *Session) Move(w *imapserver.MoveWriter, numSet imap.NumSet, dest string
 		return &imap.Error{Type: imap.StatusResponseTypeNo, Text: "MOVE failed"}
 	}
 
-	// The source messages have left this folder and the client is about to be
-	// told so; the view must match the wire (RA6X-001).
-	for _, r := range rows {
-		s.view.remove(r.uid)
+	removedUIDs := make([]int64, len(rows))
+	for i, r := range rows {
+		removedUIDs[i] = r.uid
 	}
+	expunges := s.view.removeMany(removedUIDs)
 
 	// Post-commit: emit the protocol responses. The MoveWriter
 	// contract is COPYUID once, then EXPUNGE per source row.
@@ -1134,8 +1111,8 @@ func (s *Session) Move(w *imapserver.MoveWriter, numSet imap.NumSet, dest string
 		if err := w.WriteCopyData(copyData); err != nil {
 			return err
 		}
-		for i, r := range rows {
-			if err := w.WriteExpunge(r.seqNum - uint32(i)); err != nil {
+		for _, seq := range expunges {
+			if err := w.WriteExpunge(seq); err != nil {
 				return err
 			}
 		}

@@ -101,19 +101,28 @@ func (v *sessionView) seqOf(uid int64) uint32 {
 	return uint32(i + 1)
 }
 
-// remove drops uid from the view. Used after this session's own EXPUNGE or
-// MOVE, which have already written the matching untagged responses.
-func (v *sessionView) remove(uid int64) {
-	if v == nil {
-		return
+// removeMany compacts the view once and returns ascending EXPUNGE sequence
+// numbers, adjusted for earlier removals. The input UIDs must be sorted.
+func (v *sessionView) removeMany(uids []int64) []uint32 {
+	if v == nil || len(uids) == 0 {
+		return nil
 	}
-	for i, u := range v.uids {
-		if u == uid {
-			v.uids = append(v.uids[:i], v.uids[i+1:]...)
-			break
+	var seqs []uint32
+	keep, target := 0, 0
+	for _, uid := range v.uids {
+		for target < len(uids) && uids[target] < uid {
+			target++
+		}
+		if target < len(uids) && uids[target] == uid {
+			seqs = append(seqs, uint32(keep+1))
+			delete(v.modSeq, uid)
+		} else {
+			v.uids[keep] = uid
+			keep++
 		}
 	}
-	delete(v.modSeq, uid)
+	v.uids = v.uids[:keep]
+	return seqs
 }
 
 // note records a mod_seq this session has just reported for uid, so a later
@@ -293,13 +302,12 @@ func (s *Session) reconcileLocked(ctx context.Context, w *imapserver.UpdateWrite
 		}
 		return nil
 	}
-	snapshot, err := s.folderSnapshot(ctx, tx, s.selectedFolderID)
+	snapshot, d, incremental, err := s.reconcileSnapshot(ctx, tx)
 	if err != nil {
 		s.be.Logger.Warn("reconcile: folder snapshot", "err", err)
 		return nil
 	}
 
-	d := s.view.diff(snapshot)
 	if len(d.expunged) > 0 && !allowExpunge {
 		// Defer the WHOLE delta. Applying the arrivals now would renumber
 		// nothing (they are appended), but applying the flag changes without
@@ -331,7 +339,16 @@ func (s *Session) reconcileLocked(ctx context.Context, w *imapserver.UpdateWrite
 	for _, uid := range d.flagChanged {
 		previous[uid] = s.view.modSeq[uid]
 	}
-	s.view.apply(snapshot)
+	if incremental {
+		for _, r := range snapshot {
+			if !s.view.contains(r.uid) {
+				s.view.uids = append(s.view.uids, r.uid)
+			}
+			s.view.modSeq[r.uid] = r.modSeq
+		}
+	} else {
+		s.view.apply(snapshot)
+	}
 	// A later flag query can fail or observe a newer commit. Only mark the
 	// version actually written to the client; retain unreported changes.
 	for uid, modSeq := range previous {
@@ -348,6 +365,62 @@ func (s *Session) reconcileLocked(ctx context.Context, w *imapserver.UpdateWrite
 	s.viewFolderModSeq = stamp
 	s.viewStampKnown = true
 	return nil
+}
+
+// reconcileSnapshot reads changed rows by watermark. Count/max detect removals,
+// including a simultaneous removal and arrival, without transferring every UID.
+func (s *Session) reconcileSnapshot(ctx context.Context, tx pgx.Tx) ([]viewRow, viewDelta, bool, error) {
+	if s.viewStampKnown {
+		rows, err := tx.Query(ctx, `SELECT uid,mod_seq FROM messages WHERE folder_id=$1 AND mod_seq > $2 ORDER BY uid`, s.selectedFolderID, s.viewFolderModSeq)
+		if err != nil {
+			return nil, viewDelta{}, false, err
+		}
+		var changed []viewRow
+		var d viewDelta
+		arrivals := 0
+		maxUID := int64(s.view.maxUID())
+		appendOnly := true
+		for rows.Next() {
+			var r viewRow
+			if err := rows.Scan(&r.uid, &r.modSeq); err != nil {
+				rows.Close()
+				return nil, d, false, err
+			}
+			if err := protocolIDs(r.uid); err != nil {
+				rows.Close()
+				return nil, d, false, err
+			}
+			changed = append(changed, r)
+			if !s.view.contains(r.uid) {
+				arrivals++
+				if r.uid <= maxUID {
+					appendOnly = false
+				}
+				maxUID = r.uid
+			} else if s.view.modSeq[r.uid] != r.modSeq {
+				d.flagChanged = append(d.flagChanged, r.uid)
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, d, false, err
+		}
+		var count, currentMax int64
+		if err := tx.QueryRow(ctx, `SELECT count(*),COALESCE(max(uid),0) FROM messages WHERE folder_id=$1`, s.selectedFolderID).Scan(&count, &currentMax); err != nil {
+			return nil, d, false, err
+		}
+		if appendOnly && count == int64(s.view.len()+arrivals) && currentMax == maxUID {
+			d.hasExists = arrivals > 0
+			d.numMessages = uint32(count)
+			return changed, d, true, nil
+		}
+	}
+	snapshot, err := s.folderSnapshot(ctx, tx, s.selectedFolderID)
+	if err != nil {
+		return nil, viewDelta{}, false, err
+	}
+	return snapshot, s.view.diff(snapshot), false, nil
 }
 
 // writeFlagUpdates emits FETCH FLAGS for the given UIDs using the view's
