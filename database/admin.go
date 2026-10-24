@@ -182,6 +182,7 @@ ACL (per-domain allow/deny lists):
 API tokens (bearer credentials for api; secret shown once):
   api-token-add    -name N -mailboxes ("*" | "a,b,c") -permission P [-permission P ...]
                    P ∈ read_metadata | read_content | write_annotation | write_classification
+                   | submit_message
   api-token-list   [-all]
   api-token-revoke -name N
 

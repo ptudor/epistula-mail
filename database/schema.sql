@@ -254,8 +254,8 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     scope_mailboxes     TEXT[],
     permissions         TEXT[] NOT NULL CHECK (
         cardinality(permissions) > 0 AND
-        permissions <@ ARRAY['read_metadata', 'read_content', 'write_annotation', 'write_classification']
-    ),  -- write_classification: migration 020
+        permissions <@ ARRAY['read_metadata', 'read_content', 'write_annotation', 'write_classification', 'submit_message']
+    ),  -- write_classification: migration 020; submit_message: migration 025
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_used_at        TIMESTAMPTZ,
     revoked_at          TIMESTAMPTZ,
@@ -369,7 +369,8 @@ INSERT INTO schema_versions (version, description) VALUES
     (21, 'folder redirects'),
     (22, 'annotation pass required'),
     (23, 'delivery log fk indexes'),
-    (24, 'archive identity and indexes')
+    (24, 'archive identity and indexes'),
+    (25, 'submit message permission')
     ON CONFLICT DO NOTHING;
 
 -- All folder creation/rename paths use this allocator. Never wrap or reset the

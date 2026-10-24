@@ -23,7 +23,11 @@ func runCheckConfig(args []string) int {
 	if cfg.Production {
 		mode = "production"
 	}
-	fmt.Printf("epistula-api: config OK (mode=%s, api=%s, admin=%s)\n",
-		mode, cfg.Server.ListenAddr, cfg.Admin.ListenAddr)
+	submission := "off"
+	if cfg.Submission.Enabled() {
+		submission = fmt.Sprintf("%s as %d mailbox(es)", cfg.Submission.Address, len(cfg.Submission.Accounts))
+	}
+	fmt.Printf("epistula-api: config OK (mode=%s, api=%s, admin=%s, submission=%s)\n",
+		mode, cfg.Server.ListenAddr, cfg.Admin.ListenAddr, submission)
 	return EX_OK
 }

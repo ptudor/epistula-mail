@@ -35,17 +35,23 @@ var ErrInvalidToken = errors.New("auth: invalid api token")
 // category it names (migration 020). An annotation is advisory; the
 // interactive epistula-mcp connector may hold write_annotation, and must not
 // thereby be able to decide where mail goes.
+//
+// submit_message lets epistula-api hand a message to the MTA's submission
+// service as one of the token's mailboxes (migration 025). Its effect leaves
+// the host, so no other permission implies it and it implies nothing.
 const (
 	PermissionReadMetadata        = "read_metadata"
 	PermissionReadContent         = "read_content"
 	PermissionWriteAnnotation     = "write_annotation"
 	PermissionWriteClassification = "write_classification"
+	PermissionSubmitMessage       = "submit_message"
 )
 
 // ValidPermission reports whether p is one of the defined permission levels.
 func ValidPermission(p string) bool {
 	switch p {
-	case PermissionReadMetadata, PermissionReadContent, PermissionWriteAnnotation, PermissionWriteClassification:
+	case PermissionReadMetadata, PermissionReadContent, PermissionWriteAnnotation,
+		PermissionWriteClassification, PermissionSubmitMessage:
 		return true
 	}
 	return false

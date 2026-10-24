@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -138,6 +139,39 @@ func newMockAPI(t *testing.T) *mockAPI {
 		m.lastBody = map[string]any{}
 		_ = json.Unmarshal(body, &m.lastBody)
 		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// Message submission: jdoe is accepted, "unknown" answers the API's
+	// outcome-unknown problem, and "slow" outlasts a short client deadline.
+	mux.HandleFunc("POST /v1/mailboxes/{mailbox}/submissions", func(w http.ResponseWriter, r *http.Request) {
+		m.capture(r)
+		body, _ := io.ReadAll(r.Body)
+		m.lastBody = map[string]any{}
+		_ = json.Unmarshal(body, &m.lastBody)
+		switch r.PathValue("mailbox") {
+		case "unknown":
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(http.StatusGatewayTimeout)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"type": "https://api.ptudor.invalid/errors/submission-outcome-unknown", "title": "Submission Outcome Unknown",
+				"status": 504, "detail": "The message may have been sent: the whole message was sent but the submission service's reply was not received.",
+			})
+			return
+		case "slow":
+			select {
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"queue_id": "4F2D61A3B7", "smtp_reply": "250 2.0.0 Ok: queued as 4F2D61A3B7",
+			"mailbox": r.PathValue("mailbox"), "envelope_from": "jdoe@x.invalid",
+			"recipients": []any{"carol@elsewhere.invalid"}, "size_bytes": 99,
+			"sha256": strings.Repeat("b", 64), "line_endings_normalized": true,
+		})
 	})
 
 	m.server = httptest.NewServer(mux)

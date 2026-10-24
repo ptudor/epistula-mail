@@ -55,6 +55,12 @@ type server struct {
 	// prune endpoint need epistula-database migration 022 and this role's SELECT
 	// and DELETE on annotation_pass_required. Without them they answer 503.
 	passQueueAvailable bool
+
+	// relay hands messages to the MTA's submission service; nil when no
+	// [[submission.accounts]] are configured, and the endpoint answers 503.
+	relay *submissionRelay
+	// submitLimiter is the per-token messages_per_hour budget.
+	submitLimiter *rateLimiter
 }
 
 func runServe(args []string) int {
@@ -114,6 +120,11 @@ func runServe(args []string) int {
 		limiter:   newRateLimiter(cfg.Limits.PerTokenRate, cfg.Limits.PerTokenBurst),
 	}
 	srv.auth = newAuthenticator(srv)
+	if cfg.Submission.Enabled() {
+		srv.relay = newSubmissionRelay(cfg.Submission)
+		n := cfg.Submission.MessagesPerHour
+		srv.submitLimiter = newRateLimiter(float64(n)/3600, n)
+	}
 
 	// The annotation sidecar gates on its epistula-database migration; the
 	// read surface ships regardless.
@@ -191,6 +202,7 @@ func runServe(args []string) int {
 		"annotations", srv.annotationsAvailable,
 		"classifications", srv.classificationsAvailable,
 		"pass_queue", srv.passQueueAvailable,
+		"submission_accounts", len(cfg.Submission.Accounts),
 	)
 
 	rc := EX_OK
@@ -234,6 +246,7 @@ func (s *server) routes() http.Handler {
 	mux.Handle("POST /v1/pass-required/prune", s.api("/v1/pass-required/prune", s.handlePassRequiredPrune))
 	mux.Handle("PUT /v1/messages/{id}/classification", s.api("/v1/messages/{id}/classification", s.handleClassificationPut))
 	mux.Handle("GET /v1/mailboxes/{mailbox}/archive-categories", s.api("/v1/mailboxes/{mailbox}/archive-categories", s.handleArchiveCategories))
+	mux.Handle("POST /v1/mailboxes/{mailbox}/submissions", s.api("/v1/mailboxes/{mailbox}/submissions", s.handleSubmission))
 	mux.Handle("GET /v1/search", s.api("/v1/search", s.handleSearch))
 	mux.Handle("GET /v1/export", s.api("/v1/export", s.handleExport))
 	// No bare "/" catch-all: it would answer unmatched paths as 404 without

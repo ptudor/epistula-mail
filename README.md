@@ -95,7 +95,8 @@ database and IMAP writers must agree on `group_writable`.
 The worker is optional. Its [README](llm-worker/README.md) explains model setup,
 resuming exports, and scheduled rounds. The MCP connector has seven read tools by
 default, including attachment download; configuring a distinct annotation token
-adds its write tool.
+adds its write tool, and a distinct send token adds `send`, which hands a complete
+message unchanged to the MTA's submission service through epistula-api.
 
 ## Operations
 

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -22,13 +24,14 @@ var defaultConfigPaths = []string{
 }
 
 type Config struct {
-	Production bool           `toml:"production"`
-	Server     ServerConfig   `toml:"server"`
-	Admin      AdminConfig    `toml:"admin"`
-	Postgres   PostgresConfig `toml:"postgres"`
-	Storage    StorageConfig  `toml:"storage"`
-	Limits     LimitsConfig   `toml:"limits"`
-	Logging    LoggingConfig  `toml:"logging"`
+	Production bool             `toml:"production"`
+	Server     ServerConfig     `toml:"server"`
+	Admin      AdminConfig      `toml:"admin"`
+	Postgres   PostgresConfig   `toml:"postgres"`
+	Storage    StorageConfig    `toml:"storage"`
+	Limits     LimitsConfig     `toml:"limits"`
+	Logging    LoggingConfig    `toml:"logging"`
+	Submission SubmissionConfig `toml:"submission"`
 }
 
 // ServerConfig is the JSON API listener. Plain HTTP on loopback; Apache
@@ -128,6 +131,145 @@ type LimitsConfig struct {
 	PerTokenBurst int     `toml:"per_token_burst"`
 }
 
+// SubmissionConfig is the optional relay from POST
+// /v1/mailboxes/{mailbox}/submissions to the MTA's authenticated submission
+// service (RFC 6409). It is off until at least one account is configured:
+// with no [[submission.accounts]] the endpoint answers 503.
+//
+// The MTA stays the outbound policy point: it authenticates the account,
+// checks that the envelope sender belongs to it, signs with DKIM, queues and
+// delivers. epistula-api only checks the token, refuses senders the mailbox
+// does not own, and hands the message over byte for byte.
+type SubmissionConfig struct {
+	// Address is host:port of the submission service. STARTTLS is required:
+	// the account password is never sent over a connection without TLS, and
+	// the server certificate is verified against TLSServerName.
+	Address string `toml:"address"`
+	// TLSServerName is the name the server certificate must carry. Empty
+	// uses the host of Address, which must then be a name, not an IP.
+	TLSServerName string `toml:"tls_server_name"`
+	// Timeout bounds one whole SMTP session, connect to QUIT. Keep it below
+	// the request timeout of every client (epistula-mcp's request_timeout
+	// defaults to 30s), so the client hears the outcome rather than timing
+	// out while the message is still being handed over.
+	Timeout string `toml:"timeout"`
+	// MaxMessageBytes bounds one message. The default matches Postfix's
+	// default message_size_limit.
+	MaxMessageBytes int `toml:"max_message_bytes"`
+	// MaxRecipients bounds the envelope recipients of one message.
+	MaxRecipients int `toml:"max_recipients"`
+	// MessagesPerHour is a per-token budget: a burst of this many messages,
+	// refilled at this many per hour. 0 disables the budget.
+	MessagesPerHour int `toml:"messages_per_hour"`
+	// Accounts are the mailboxes that may send, each with the credential it
+	// authenticates to the submission service with.
+	Accounts []SubmissionAccount `toml:"accounts"`
+}
+
+// SubmissionAccount is one mailbox's submission credential.
+type SubmissionAccount struct {
+	// Mailbox is the Epistula mailbox name a token must be scoped to.
+	Mailbox string `toml:"mailbox"`
+	// Username is the SASL username; empty uses Mailbox.
+	Username string `toml:"username"`
+	// Password is the SASL password (secret).
+	Password string `toml:"password"`
+}
+
+// Enabled reports whether any account may send.
+func (c SubmissionConfig) Enabled() bool { return len(c.Accounts) > 0 }
+
+// TimeoutDuration is the validated session timeout.
+func (c SubmissionConfig) TimeoutDuration() time.Duration {
+	d, _ := time.ParseDuration(c.Timeout)
+	return d
+}
+
+// ServerName is the name the submission server's certificate is verified
+// against.
+func (c SubmissionConfig) ServerName() string {
+	if c.TLSServerName != "" {
+		return c.TLSServerName
+	}
+	host, _, _ := net.SplitHostPort(c.Address)
+	return host
+}
+
+// Account returns the credential configured for mailbox.
+func (c SubmissionConfig) Account(mailbox string) (SubmissionAccount, bool) {
+	for _, a := range c.Accounts {
+		if a.Mailbox == mailbox {
+			return a, true
+		}
+	}
+	return SubmissionAccount{}, false
+}
+
+// submissionMailboxRe is the mailboxes.name charset (mailboxes_name_chk).
+var submissionMailboxRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+func (c *SubmissionConfig) validate() error {
+	if c.Timeout == "" {
+		return errors.New("submission.timeout is required")
+	}
+	if d, err := time.ParseDuration(c.Timeout); err != nil || d <= 0 {
+		return fmt.Errorf("submission.timeout must be a positive duration: %q", c.Timeout)
+	}
+	if c.MaxMessageBytes <= 0 {
+		return errors.New("submission.max_message_bytes must be positive")
+	}
+	if c.MaxMessageBytes > maxSubmissionMessageBytes {
+		return fmt.Errorf("submission.max_message_bytes must not exceed %d", maxSubmissionMessageBytes)
+	}
+	if c.MaxRecipients <= 0 {
+		return errors.New("submission.max_recipients must be positive")
+	}
+	if c.MessagesPerHour < 0 {
+		return errors.New("submission.messages_per_hour must be non-negative (0 disables the budget)")
+	}
+	if !c.Enabled() {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(c.Address)
+	if err != nil || host == "" || port == "" {
+		return fmt.Errorf("submission.address must be host:port: %q", c.Address)
+	}
+	if strings.ContainsAny(c.TLSServerName, " \t\r\n") {
+		return errors.New("submission.tls_server_name must be a host name")
+	}
+	if c.TLSServerName == "" {
+		if _, err := netip.ParseAddr(host); err == nil {
+			return fmt.Errorf("submission.address %q is an IP address: set submission.tls_server_name to the name on the server's certificate", c.Address)
+		}
+	}
+	seen := map[string]bool{}
+	for i := range c.Accounts {
+		a := &c.Accounts[i]
+		if !submissionMailboxRe.MatchString(a.Mailbox) {
+			return fmt.Errorf("submission.accounts[%d].mailbox %q is not a mailbox name", i, a.Mailbox)
+		}
+		if seen[a.Mailbox] {
+			return fmt.Errorf("submission.accounts: mailbox %q is listed twice", a.Mailbox)
+		}
+		seen[a.Mailbox] = true
+		if a.Username == "" {
+			a.Username = a.Mailbox
+		}
+		// AUTH PLAIN separates its fields with NUL, so neither field may
+		// contain one. The password is never echoed.
+		if strings.ContainsRune(a.Username, 0) {
+			return fmt.Errorf("submission.accounts[%d].username contains a NUL character", i)
+		}
+		if a.Password == "" {
+			return fmt.Errorf("submission.accounts[%d] (mailbox %q) has no password", i, a.Mailbox)
+		}
+		if strings.ContainsRune(a.Password, 0) {
+			return fmt.Errorf("submission.accounts[%d] (mailbox %q): password contains a NUL character", i, a.Mailbox)
+		}
+	}
+	return nil
+}
+
 type LoggingConfig struct {
 	Level  string `toml:"level"`
 	Format string `toml:"format"`
@@ -173,6 +315,12 @@ func DefaultConfig() *Config {
 			MaxAnnotationBytes: 256 * 1024,
 		},
 		Logging: LoggingConfig{Level: "info", Format: "text"},
+		Submission: SubmissionConfig{
+			Timeout:         "20s",
+			MaxMessageBytes: 10240000,
+			MaxRecipients:   50,
+			MessagesPerHour: 20,
+		},
 	}
 }
 
@@ -363,6 +511,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Limits.MaxAnnotationBytes <= 0 {
 		return errors.New("limits.max_annotation_bytes must be positive")
+	}
+	if err := c.Submission.validate(); err != nil {
+		return err
 	}
 
 	if c.Production {

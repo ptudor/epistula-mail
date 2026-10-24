@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Outbound submission of finished messages, off by default. epistula-database
+  migration 025 adds the `submit_message` token permission (run `migrate up`;
+  `admin api-token-add -permission submit_message` mints it). epistula-api
+  adds `POST /v1/mailboxes/{name}/submissions`, which relays one complete
+  RFC 5322 message to the MTA's authenticated submission service (STARTTLS
+  with a verified certificate, AUTH PLAIN) as that mailbox, changing nothing
+  but line endings to CRLF so DKIM, S/MIME and OpenPGP signatures still
+  verify. The envelope sender and every `From`/`Sender` address must be the
+  mailbox's own explicit aliases; every recipient must be accepted or nothing
+  is sent; the response carries the queue id and the sha256 of the bytes sent,
+  and a `504` says when a message may have been sent without a reply. The
+  relay is configured per mailbox in `[[submission.accounts]]` and bounded by
+  `[submission]` size, recipient, per-token hourly and session-time limits.
+  epistula-mcp adds the `send` tool, registered only with a third credential,
+  `send_token`, which may not equal `token` or `annotate_token`; it is marked
+  destructive and open-world so MCP clients ask before each call, and it never
+  retries.
 - Database metrics `mail_database_messages` and `mail_database_gc_candidates`
   are now `mail_database_messages_estimate` and `mail_database_gc_candidates_estimate`.
   They use PostgreSQL live-tuple statistics to avoid full-table counts per scrape;

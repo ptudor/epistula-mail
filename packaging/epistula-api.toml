@@ -60,3 +60,36 @@ per_token_burst      = 100      # token-bucket capacity when per_token_rate > 0
 [logging]
 level  = "info"   # debug | info | warn | error
 format = "text"   # text | json
+
+[submission]
+# Optional relay from POST /v1/mailboxes/{name}/submissions to the MTA's
+# authenticated submission service (RFC 6409). Off until at least one
+# [[submission.accounts]] entry exists; until then the endpoint answers 503.
+# The MTA still authenticates the account, checks the envelope sender, signs
+# and delivers; epistula-api sends the message bytes unchanged.
+#
+# host:port of the submission service. STARTTLS is required and the
+# certificate is verified against tls_server_name (default: the host here,
+# which must then be a name). On the MTA host itself, loopback works:
+# address = "127.0.0.1:587" with tls_server_name set to the certificate's name.
+address           = "127.0.0.1:587"
+tls_server_name   = "smtp.your-domain.invalid"
+timeout           = "20s"      # whole SMTP session; keep below every client's deadline
+max_message_bytes = 10240000   # Postfix's default message_size_limit
+max_recipients    = 50
+messages_per_hour = 20         # per-token budget; 0 disables
+
+# One entry per mailbox that may send. A token needs submit_message and the
+# mailbox in its scope, and every envelope sender, From and Sender address
+# must be one of the mailbox's own aliases:
+#
+#   epistula-database admin api-token-add -name epistula-mcp-send \
+#       -mailboxes "jdoe" -permission submit_message
+#
+# The password is the account's submission (SASL) password. This file then
+# holds a secret: root:epistula-api 0640.
+#
+# [[submission.accounts]]
+# mailbox  = "jdoe"
+# username = "jdoe"   # SASL username; defaults to mailbox
+# password = ""

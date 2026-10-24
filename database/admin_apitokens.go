@@ -44,9 +44,9 @@ func (p *permissionListFlag) String() string { return strings.Join(*p, ",") }
 func (p *permissionListFlag) Set(v string) error {
 	v = strings.TrimSpace(v)
 	if !auth.ValidPermission(v) {
-		return fmt.Errorf("unknown permission %q (valid: %s, %s, %s, %s)",
+		return fmt.Errorf("unknown permission %q (valid: %s, %s, %s, %s, %s)",
 			v, auth.PermissionReadMetadata, auth.PermissionReadContent, auth.PermissionWriteAnnotation,
-			auth.PermissionWriteClassification)
+			auth.PermissionWriteClassification, auth.PermissionSubmitMessage)
 	}
 	for _, existing := range *p {
 		if existing == v {
@@ -63,7 +63,7 @@ func adminAPITokenAdd(args []string) int {
 	name := fs.String("name", "", "Token name (required; unique among live tokens)")
 	mailboxes := fs.String("mailboxes", "", `Comma-separated mailbox names the token may touch, or "*" for all (required)`)
 	var perms permissionListFlag
-	fs.Var(&perms, "permission", "Permission level (repeatable): read_metadata | read_content | write_annotation | write_classification")
+	fs.Var(&perms, "permission", "Permission level (repeatable): read_metadata | read_content | write_annotation | write_classification | submit_message")
 	if err := fs.Parse(args); err != nil {
 		return EX_USAGE
 	}

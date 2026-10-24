@@ -30,7 +30,7 @@ token = ""
 
 # OPTIONAL second token, used ONLY by the `annotate` tool. Leave it empty unless
 # you want that tool to exist: with no annotate_token the tool is not registered
-# at all, and the connector is purely read-only (seven tools instead of eight).
+# at all, and the connector is purely read-only (seven tools).
 #
 # Why a second credential rather than one token carrying write_annotation: every
 # message body is attacker-controlled input. Anyone who can send you mail can put
@@ -47,6 +47,22 @@ token = ""
 # look like a read/write split while the read tools still held write scope.
 # Env override: MAIL_MCP_ANNOTATE_TOKEN.
 annotate_token = ""
+
+# OPTIONAL third token, used ONLY by the `send` tool, which SENDS REAL MAIL as
+# the token's mailboxes to any recipient. Leave it empty unless you want that
+# tool to exist: with no send_token it is not registered at all. It must carry
+# only submit_message, and epistula-api needs a [[submission.accounts]] entry
+# for the mailbox before anything can be sent.
+#
+#   epistula-database admin api-token-add -name epistula-mcp-send \
+#       -mailboxes "jdoe" -permission submit_message
+#
+# Give it only to a connector whose MCP client asks before each tool call: a
+# message the model reads can tell it to send mail. It may not equal `token` or
+# `annotate_token`. Keep request_timeout above epistula-api's [submission]
+# timeout so the connector hears whether a message was sent.
+# Env override: MAIL_MCP_SEND_TOKEN.
+send_token = ""
 
 # Per-request total deadline. A clean timeout error, never a hang. Default 30s.
 request_timeout = "30s"

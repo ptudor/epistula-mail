@@ -2,15 +2,16 @@
 //
 // Precedence (highest first):
 //  1. Environment (MAIL_MCP_BASE_URL / MAIL_MCP_TOKEN / MAIL_MCP_ANNOTATE_TOKEN /
-//     MAIL_MCP_HTTP_TOKEN) — the MCP client injects these when it launches the
+//     MAIL_MCP_SEND_TOKEN / MAIL_MCP_HTTP_TOKEN) — the MCP client injects these when it launches the
 //     stdio connector, so the stdio path can run with ZERO files and no secret
 //     sits in a file on the client's workstation.
 //  2. The TOML file (-config, or the default search path if a file exists there).
 //  3. Built-in defaults (request_timeout=30s, max_limit=200, max_text_bytes=64KiB,
 //     max_attachment_bytes=10MiB).
 //
-// Three secrets live here and must never leak: the epistula-api read `token`, the
-// optional `annotate_token`, and the `http_token` gating the -http transport.
+// Four secrets live here and must never leak: the epistula-api read `token`, the
+// optional `annotate_token` and `send_token`, and the `http_token` gating the
+// -http transport.
 // None is ever echoed in an error string, a log line, or a URL (see the
 // config-load errors below and client.go).
 package main
@@ -86,6 +87,7 @@ type fileConfig struct {
 		BaseURL        string `toml:"base_url"`
 		Token          string `toml:"token"`
 		AnnotateToken  string `toml:"annotate_token"`
+		SendToken      string `toml:"send_token"`
 		RequestTimeout string `toml:"request_timeout"`
 	} `toml:"mailapi"`
 	MCP struct {
@@ -111,7 +113,13 @@ type config struct {
 	// the model reading it. Splitting the credential means the token exposed
 	// to that content cannot write, enforced upstream at the SQL level rather
 	// than by this proxy's good behaviour.
-	AnnotateToken  string        // secret; empty ⇒ no annotate tool
+	AnnotateToken string // secret; empty ⇒ no annotate tool
+	// SendToken is a THIRD epistula-api token, carrying submit_message, used
+	// only by the `send` tool. Empty (the default) means no send tool at all.
+	// Sending is the one capability whose effect leaves the host and cannot
+	// be undone, so it never shares a credential with the tools that read
+	// attacker-controlled mail or write annotations.
+	SendToken      string        // secret; empty ⇒ no send tool
 	RequestTimeout time.Duration // per-request total deadline
 	HTTPToken      string        // bearer gating the -http transport (secret)
 	MaxLimit       int           // clamp for every list/search limit
@@ -166,6 +174,9 @@ func loadConfig(path string) (config, error) {
 	if v := strings.TrimSpace(os.Getenv("MAIL_MCP_ANNOTATE_TOKEN")); v != "" {
 		fc.MailAPI.AnnotateToken = v
 	}
+	if v := strings.TrimSpace(os.Getenv("MAIL_MCP_SEND_TOKEN")); v != "" {
+		fc.MailAPI.SendToken = v
+	}
 	if v := strings.TrimSpace(os.Getenv("MAIL_MCP_HTTP_TOKEN")); v != "" {
 		fc.MCP.HTTPToken = v
 	}
@@ -174,6 +185,7 @@ func loadConfig(path string) (config, error) {
 		BaseURL:            strings.TrimRight(strings.TrimSpace(fc.MailAPI.BaseURL), "/"),
 		Token:              strings.TrimSpace(fc.MailAPI.Token),
 		AnnotateToken:      strings.TrimSpace(fc.MailAPI.AnnotateToken),
+		SendToken:          strings.TrimSpace(fc.MailAPI.SendToken),
 		HTTPToken:          strings.TrimSpace(fc.MCP.HTTPToken),
 		RequestTimeout:     defaultRequestTimeout,
 		MaxLimit:           defaultMaxLimit,
@@ -191,14 +203,17 @@ func loadConfig(path string) (config, error) {
 	// credentials but supplies one is worse than not splitting at all: it reads
 	// as a read/write separation while the read tools still hold write scope,
 	// so the assurance is false. Fail loud rather than pretend.
-	// Compared with subtle.ConstantTimeCompare out of habit — these are secrets
-	// and there is no reason to leak a length-or-prefix timing signal even here.
-	if cfg.AnnotateToken != "" && len(cfg.AnnotateToken) == len(cfg.Token) &&
-		subtle.ConstantTimeCompare([]byte(cfg.AnnotateToken), []byte(cfg.Token)) == 1 {
+	if sameSecret(cfg.AnnotateToken, cfg.Token) {
 		return config{}, fmt.Errorf("annotate_token is identical to token: the point of the " +
 			"second credential is that the read tools cannot write, so mint a read-only token " +
 			"(read_metadata + read_content) for `token` and a separate write_annotation token " +
 			"for `annotate_token` — or leave annotate_token empty to drop the annotate tool")
+	}
+	// The same rule for the send credential, against both of the others.
+	if sameSecret(cfg.SendToken, cfg.Token) || sameSecret(cfg.SendToken, cfg.AnnotateToken) {
+		return config{}, fmt.Errorf("send_token is identical to token or annotate_token: mint a " +
+			"separate token carrying only submit_message for `send_token`, so neither the read " +
+			"tools nor annotate can send mail — or leave send_token empty to drop the send tool")
 	}
 
 	if cfg.BaseURL == "" {
@@ -260,6 +275,13 @@ func loadConfig(path string) (config, error) {
 		cfg.MaxResponseBytes = minMaxResponseBytes
 	}
 	return cfg, nil
+}
+
+// sameSecret reports whether a non-empty secret equals another. It uses
+// subtle.ConstantTimeCompare out of habit: these are secrets, and there is no
+// reason to leak a length-or-prefix timing signal even here.
+func sameSecret(a, b string) bool {
+	return a != "" && len(a) == len(b) && subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 // isLoopbackHost reports whether a URL hostname refers to loopback. "localhost"

@@ -59,6 +59,35 @@ works the same way: migration 022 grants `annotation_pass_required` to the
 existing role, a role created after it needs the grant above, and without it
 those two answer 503 while everything else works.
 
+## Message submission (optional)
+
+`POST /v1/mailboxes/{name}/submissions` relays a message to the MTA's
+authenticated submission service; see "Message submission" in
+[CLAUDE.md](../CLAUDE.md). It needs no new database grant: the sender check
+reads `mailboxes`, `domains` and `aliases`, which the role above already
+selects. It needs epistula-database migration 025 for the `submit_message`
+permission, and three things only the operator can supply:
+
+1. A `[submission]` section naming the service (`address`, and
+   `tls_server_name` when the address is an IP) and one
+   `[[submission.accounts]]` entry per sending mailbox with that account's
+   submission password. The file now holds a mail credential: keep it
+   `root:epistula-api 0640`.
+2. Network reach from this host to the service, with a certificate that
+   verifies against `tls_server_name`. STARTTLS and AUTH PLAIN are required.
+3. A token of its own:
+
+   ```sh
+   epistula-database admin api-token-add -name epistula-mcp-send \
+       -mailboxes "jdoe" -permission submit_message
+   ```
+
+`check-config` prints `submission=<address> as <n> mailbox(es)` once it is
+configured, and `submission=off` before. Each submission is one log line
+(`message submitted`, with the queue id, or `message submission failed`, with
+the outcome and SMTP stage) and one `mail_api_submissions_total{outcome}`
+increment.
+
 ## Blob access
 
 `GET /v1/messages/{id}/raw` and `GET /v1/messages/{id}/attachments/{part}` stream from epistula-database's per-mailbox blob trees (`<mailbox>/raw/...` and `<mailbox>/att/...`). Put the `epistula-api` user in the storage group (the same group the IMAP server reads with) so the blobs are group-readable; the daemon never writes blobs.

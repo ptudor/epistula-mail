@@ -51,6 +51,11 @@ var (
 		Name: "mail_api_pass_markers_pruned_total",
 		Help: "Annotation pass markers cleared for finished messages.",
 	})
+
+	metricSubmissions = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "mail_api_submissions_total",
+		Help: "Message submissions relayed to the MTA by outcome: queued, rejected, deferred, credential, failed, or unknown (sent, no final reply).",
+	}, []string{"outcome"})
 )
 
 func init() {
@@ -65,6 +70,7 @@ func init() {
 		metricAnnotationsWritten,
 		metricClassificationsWritten,
 		metricPassMarkersPruned,
+		metricSubmissions,
 	)
 }
 

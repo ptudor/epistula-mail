@@ -72,12 +72,13 @@ func TestParseAPITokenRejectsMalformed(t *testing.T) {
 }
 
 func TestValidPermission(t *testing.T) {
-	for _, p := range []string{PermissionReadMetadata, PermissionReadContent, PermissionWriteAnnotation} {
+	for _, p := range []string{PermissionReadMetadata, PermissionReadContent, PermissionWriteAnnotation,
+		PermissionWriteClassification, PermissionSubmitMessage} {
 		if !ValidPermission(p) {
 			t.Errorf("ValidPermission(%q) = false, want true", p)
 		}
 	}
-	for _, p := range []string{"", "admin", "READ_METADATA", "read"} {
+	for _, p := range []string{"", "admin", "READ_METADATA", "read", "send", "SUBMIT_MESSAGE"} {
 		if ValidPermission(p) {
 			t.Errorf("ValidPermission(%q) = true, want false", p)
 		}

@@ -29,8 +29,8 @@ and 8790 (llm-worker admin); **8786** is free and is the suggested `-http` port.
 
 ## The epistula-api tokens (the whole security perimeter)
 
-epistula-mcp holds a epistula-api **read** token and, optionally, a **separate** token
-used only by the `annotate` tool. **Mint dedicated ones — never reuse the
+epistula-mcp holds a epistula-api **read** token and, optionally, **separate** tokens
+used only by the `annotate` and `send` tools. **Mint dedicated ones — never reuse the
 llm-worker's** — each scoped to the least it needs:
 
 ```sh
@@ -41,24 +41,38 @@ epistula-database admin api-token-add -name epistula-mcp-read \
 # WRITE token — only if the annotate tool should exist at all
 epistula-database admin api-token-add -name epistula-mcp-annotate \
     -mailboxes "jdoe" -permission write_annotation
+
+# SEND token — only if the send tool should exist at all
+epistula-database admin api-token-add -name epistula-mcp-send \
+    -mailboxes "jdoe" -permission submit_message
 ```
 
-Put them in the protected config (`/usr/local/etc/epistula/epistula-mcp.toml`) as `token`
-and `annotate_token`, or pass `MAIL_MCP_TOKEN` / `MAIL_MCP_ANNOTATE_TOKEN`. Each
+Put them in the protected config (`/usr/local/etc/epistula/epistula-mcp.toml`) as `token`,
+`annotate_token` and `send_token`, or pass `MAIL_MCP_TOKEN` / `MAIL_MCP_ANNOTATE_TOKEN` /
+`MAIL_MCP_SEND_TOKEN`. Each
 secret is printed once at mint time. Revoke with
 `epistula-database admin api-token-revoke`. Even a bug in this process cannot exceed a
 token's scope — epistula-api enforces it at the SQL level.
 
-**Leaving `annotate_token` empty is the default and the recommended posture.** With
-no write credential the `annotate` tool is not registered at all, so the connector
+**Leaving `annotate_token` and `send_token` empty is the default and the recommended
+posture.** With no write credential the `annotate` tool is not registered at all, so the connector
 advertises seven read tools and nothing that writes. That matters because message
 bodies are attacker-controlled: anyone who can email you can put instructions in
 one, aimed at the model that reads it. Splitting the credential means the token
 exposed to that content cannot write; a single token carrying `write_annotation`
 would leave the write reachable from the same session that read the hostile text.
 
-Setting `token` and `annotate_token` to the same value is rejected at startup — it
-would read as a split while the read tools still carried write scope.
+Setting any two of `token`, `annotate_token` and `send_token` to the same value is
+rejected at startup — it would read as a split while the read tools still carried
+the other scope.
+
+`send` sends real mail as the token's mailboxes, to anyone, through epistula-api's
+submission relay, which also needs a `[[submission.accounts]]` entry for the
+mailbox (see api/deploy/README.md). Configure `send_token` only for a connector
+whose MCP client asks the user before each tool call, and revoke it when sending
+is no longer needed. Keep `request_timeout` above epistula-api's
+`[submission] timeout` (30s against 20s by default) so the connector hears the
+outcome.
 
 The `-http` transport's own `http_token` is a *separate* secret (a bearer gating
 the HTTP endpoint, not a mail credential); generate a random one, for example
@@ -108,7 +122,7 @@ A client-launched stdio process instead uses a client-owned `0600` config.
 
 ```sh
 # stdio: the SDK handshake should list the seven read tools, plus annotate when an
-# annotate_token is configured.
+# annotate_token is configured and send when a send_token is.
 MAIL_MCP_BASE_URL=http://127.0.0.1:8784 MAIL_MCP_TOKEN=... make smoke
 
 # -http daemon: point an MCP client at http://127.0.0.1:8786 (Authorization:

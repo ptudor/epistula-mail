@@ -8,7 +8,8 @@ this week?", "find the invoice from the hosting company", "summarize this thread
 
 **Status: implemented with unit and mock API integration coverage.** Both
 transports, configuration, and deployment artifacts are in place. Seven read tools
-are registered by default; a distinct annotation token enables the eighth tool.
+are registered by default; a distinct annotation token enables `annotate`, and a
+distinct send token enables `send`.
 `go test -race ./...` exercises round trips against an HTTP test server, and
 `make smoke` prints a stdio handshake and tool list. Acceptance against an
 operator's live API and scoped tokens remains a deployment check. This document
@@ -52,9 +53,12 @@ process asks for.
   calls, no business logic. All real logic (scoping, search ranking, annotation
   priority) stays in `epistula-api`.
 - **Read-mostly, exactly like its upstream.** The read tools cover mailboxes →
-  folders → messages → text → search. The single write tool, `annotate`, forwards to
-  `PUT /v1/messages/{id}/annotation` — the one write epistula-api itself performs — and
-  works only if the token carries `write_annotation`.
+  folders → messages → text → search. `annotate` forwards to
+  `PUT /v1/messages/{id}/annotation` and works only if its token carries
+  `write_annotation`. `send` forwards to `POST /v1/mailboxes/{name}/submissions`,
+  which hands a complete message to the mail server's submission service, and
+  works only if its token carries `submit_message`. Each exists only when its own
+  token is configured.
 - **Not a bulk pipe.** `/v1/export` (NDJSON streaming for whole-archive jobs) is the
   llm-worker's interface, not a chat tool; the MCP does not wrap it. A model that
   wants "everything" pages with cursors like any other consumer.
@@ -77,12 +81,21 @@ process asks for.
   split in SQL too. A config setting both to the same value is rejected at load —
   it would read as a split while the read tools still held write scope.
 
+  `send_token` is a **third** optional credential, carrying only `submit_message`,
+  used only by `send`; absent, the tool is not registered. It may equal neither of
+  the other two. Sending is the one effect that leaves the host and cannot be
+  undone, and a model reading mail can be told to send it somewhere, so the tool
+  also carries the MCP hints (`destructiveHint`, `openWorldHint`, not read-only, not
+  idempotent) that make a client ask the user before each call, and its
+  description tells the model to send only what the user asked for.
+
   **Why not simply let an unscoped `annotate` earn a 403:** every message body is
   attacker-controlled input, so a model reading mail can be instructed to write. A
   403 stops the write, but the tool is still reachable and the attempt still
   happens. An unregistered tool cannot be called.
-- **Guard the secrets.** Two of them: the epistula-api bearer token and the `-http`
-  transport's own `http_token`. Never log either, never echo one in an error, never
+- **Guard the secrets.** The epistula-api bearer tokens (`token`, and
+  `annotate_token` and `send_token` when set) and the `-http` transport's own
+  `http_token`. Never log any of them, never echo one in an error, never
   put one in argv or a URL. `Authorization` headers never appear in logs.
 - **Slim the payload.** Project responses to the fields that answer the question and
   omit nulls/empties. Never forward `html_body`. Cap message text at a configured
@@ -120,7 +133,7 @@ Postgres + content-addressed blob store     (schema owned by epistula-database)
 
 ## Tools
 
-Eight tools. Names and argument names are chosen for the model to reason about, not
+Nine tools. Names and argument names are chosen for the model to reason about, not
 for parity with epistula-api's URL shapes. Prefer the domain tools; `search` is the
 free-text entry point.
 
@@ -134,9 +147,24 @@ free-text entry point.
 | `attachment` | `GET /v1/messages/{id}/attachments/{part}` | One attachment's file, by message `id` and the `part_number` that `message` lists. Returned as MCP content rather than JSON — see below. Refused over `max_attachment_bytes`. |
 | `search` | `GET /v1/search` | Full-text search (`q=` over the tsvector) with optional `mailbox`, `folder`, `tag`, `category`, `since`/`before`; cursor-paginated. |
 | `annotate` | `PUT /v1/messages/{id}/annotation` | Store/replace this model's annotation: `tags`, advisory `category`, optional `summary`. Idempotent on `(message_id, model)`. **Registered only when `annotate_token` is configured**, and the write rides that token, never the read one. |
+| `send` | `POST /v1/mailboxes/{m}/submissions` | Send one complete RFC 5322 message, exactly as given (`message` text or `message_base64` octets), as mailbox `m`; optional `envelope_from` and `recipients`, which default to the Sender/From and To/Cc addresses. Returns the queue id and the sha256 of the bytes sent. **Registered only when `send_token` is configured**; marked destructive and open-world. |
 
-Seven tools by default, eight with an `annotate_token`. Read-only is the default
-posture on purpose.
+Seven tools by default, plus `annotate` with an `annotate_token` and `send` with a
+`send_token`. Read-only is the default posture on purpose.
+
+**`send` changes nothing it is given.** epistula-api sends the message with CRLF
+line endings and nothing else altered, so signatures over it still verify, and
+refuses what a server would have to rewrite. All its rules (From, Sender and the
+envelope sender must be the mailbox's own aliases; From and Date are required; no
+Bcc field; every recipient accepted or nothing sent; a per-token hourly budget)
+are epistula-api's, in its "Message submission" section; the tool checks only its
+own arguments. An answer that says the message *may* have been sent (epistula-api's
+`504`, or no answer before `request_timeout`) is passed to the model with an
+instruction not to send it again. The connector never retries a send. Over
+`-http`, the SDK refuses a request body over 4 MiB (`DefaultMaxRequestBodyBytes`),
+so a message sent through the hosted connector must stay under about 4 MiB as
+`message` or 3 MiB as `message_base64`; stdio has no cap below epistula-api's
+`max_message_bytes`.
 
 **`attachment` returns the file itself, in the content type that fits it.** The
 first content block is always a JSON description (`id`, `part_number`,
@@ -198,6 +226,7 @@ then `/etc/epistula/epistula-mcp.toml`, then `./epistula-mcp.toml`; `-config` ov
 base_url        = "http://127.0.0.1:8784"   # https:// required for non-loopback
 token           = ""                         # READ token: read_metadata + read_content
 annotate_token  = ""                         # optional WRITE token: write_annotation only
+send_token      = ""                         # optional SEND token: submit_message only
 request_timeout = "30s"
 
 [mcp]
@@ -208,7 +237,8 @@ max_attachment_bytes = 10485760 # largest file the attachment tool returns
 ```
 
 Env overrides (highest precedence, so the stdio path can run with zero files):
-`MAIL_MCP_BASE_URL`, `MAIL_MCP_TOKEN`, `MAIL_MCP_ANNOTATE_TOKEN`, `MAIL_MCP_HTTP_TOKEN`.
+`MAIL_MCP_BASE_URL`, `MAIL_MCP_TOKEN`, `MAIL_MCP_ANNOTATE_TOKEN`, `MAIL_MCP_SEND_TOKEN`,
+`MAIL_MCP_HTTP_TOKEN`.
 
 **Mint dedicated tokens for the MCP** — never reuse the llm-worker's. Token CRUD is
 `epistula-database admin api-token-{add,list,revoke}`; each secret is printed once at
@@ -222,11 +252,17 @@ epistula-database admin api-token-add -name epistula-mcp-read \
 # write token — only needed if the annotate tool should exist at all
 epistula-database admin api-token-add -name epistula-mcp-annotate \
     -mailboxes "jdoe" -permission write_annotation
+
+# send token — only needed if the send tool should exist at all; epistula-api
+# also needs a [[submission.accounts]] entry for the mailbox
+epistula-database admin api-token-add -name epistula-mcp-send \
+    -mailboxes "jdoe" -permission submit_message
 ```
 
-Leaving `annotate_token` empty is the default and the safe posture: seven read tools,
-no write capability present for a model reading attacker-supplied mail to reach.
-Setting both keys to the same value is rejected at config load.
+Leaving `annotate_token` and `send_token` empty is the default and the safe posture:
+seven read tools, no write or send capability present for a model reading
+attacker-supplied mail to reach. Setting any two of the three tokens to the same
+value is rejected at config load.
 
 ## Layout
 
@@ -234,7 +270,7 @@ Setting both keys to the same value is rejected at config load.
 - `config.go` — TOML + env overrides; https/loopback validation; caps.
 - `client.go` — the epistula-api HTTP client: bearer header, timeouts, RFC 7807
   decoding into bounded tool errors, retry-free (the model retries).
-- `tools.go` — the eight tools, typed input structs, window parsing, slimming,
+- `tools.go` — the nine tools, typed input structs, window parsing, slimming,
   attachment content mapping.
 - `auth.go` — `-http` bearer middleware + loopback-bind guard.
 - `*_test.go` — pure-logic tests + `httptest`-mock-epistula-api integration tests.
@@ -278,7 +314,7 @@ which still means treating `.mcp.json` itself as sensitive if you inline the tok
 
 Smoke test: pipe an `initialize` → `notifications/initialized` → `tools/list`
 JSON-RPC sequence into the binary and confirm the seven read tools come back
-(eight with an `annotate_token`)
+(plus `annotate` with an `annotate_token` and `send` with a `send_token`)
 (`make smoke`; hold stdin open briefly so the SDK flushes before EOF).
 
 ## Security posture
@@ -290,6 +326,10 @@ JSON-RPC sequence into the binary and confirm the seven read tools come back
 - Upstream error passthrough is bounded: status + problem `title`/`detail`, never a
   raw body dump.
 - `-http` refuses startup without `http_token`, including loopback; TLS is Apache's job.
+- A connector holding a `send_token` can send mail as that token's mailboxes to
+  anyone. Give it only to a connector whose client asks before each tool call, and
+  revoke it (`api-token-revoke`) when sending is no longer needed. The send path is
+  never retried, and a possibly-sent outcome is reported as such.
 - No SQL surface at all — injection, scope-bypass, and read-role questions are
   epistula-api's, answered once, there.
 

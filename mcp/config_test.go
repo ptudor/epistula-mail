@@ -22,7 +22,7 @@ func writeTempConfig(t *testing.T, body string) string {
 // process environment can't leak into a case that means to test the file.
 func clearEnv(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{"MAIL_MCP_BASE_URL", "MAIL_MCP_TOKEN", "MAIL_MCP_HTTP_TOKEN", "MAIL_MCP_ANNOTATE_TOKEN"} {
+	for _, k := range []string{"MAIL_MCP_BASE_URL", "MAIL_MCP_TOKEN", "MAIL_MCP_HTTP_TOKEN", "MAIL_MCP_ANNOTATE_TOKEN", "MAIL_MCP_SEND_TOKEN"} {
 		t.Setenv(k, "")
 	}
 }

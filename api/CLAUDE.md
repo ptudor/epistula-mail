@@ -59,8 +59,9 @@ epistula-api serve
    ├─► Postgres (read)    folders, messages (text_body/html_body/headers/fts), mailboxes
    │   Postgres (write)   message_annotations  (tags/category/summary upsert — derived sidecar)
    │                      api_tokens            (verify; read-only)
-   └─► Disk blobs (read-only)   <mailbox>/raw/<yyyy/mm/dd>/<aa>/<bb>/<sha>.eml   →  GET .../raw
-                                <mailbox>/att/<yyyy/mm/dd>/<aa>/<bb>/<sha>.bin   →  GET .../attachments/{part}
+   ├─► Disk blobs (read-only)   <mailbox>/raw/<yyyy/mm/dd>/<aa>/<bb>/<sha>.eml   →  GET .../raw
+   │                            <mailbox>/att/<yyyy/mm/dd>/<aa>/<bb>/<sha>.bin   →  GET .../attachments/{part}
+   └─► MTA submission service (optional; SMTP client, STARTTLS + AUTH PLAIN)    →  POST .../submissions
 ```
 
 Two listeners, mirroring `epistula-imap`:
@@ -74,7 +75,7 @@ Two listeners, mirroring `epistula-imap`:
 The consumer is a **service** (a summarization pipeline), not a person. Reusing mailbox `password_hash` would conflate "a human logging in" with "a batch job reading," and would force the pipeline to hold a user's password. So:
 
 - **Bearer API tokens.** `Authorization: Bearer <token>`. Tokens are random 256-bit secrets, presented once at mint time, stored only as an Argon2id PHC hash in `api_tokens`. Verification reuses the `auth` package and `crypto/subtle`.
-- **Per-token mailbox scope.** Each token carries a scope: a set of durable mailbox IDs (or an explicit all-mailboxes flag) and one or more permission levels (`read_metadata`, `read_content`, `write_annotation`). A classifier token is typically `read_content + write_annotation` limited to exactly the mailboxes it should ever touch; an analytics token might be `read_metadata` only. A token can read without writing, or read-and-annotate — the levels compose.
+- **Per-token mailbox scope.** Each token carries a scope: a set of durable mailbox IDs (or an explicit all-mailboxes flag) and one or more permission levels (`read_metadata`, `read_content`, `write_annotation`, `write_classification`, `submit_message`). A classifier token is typically `read_content + write_annotation` limited to exactly the mailboxes it should ever touch; an analytics token might be `read_metadata` only. A token can read without writing, or read-and-annotate — the levels compose.
 - **Token lifecycle lives in `epistula-database`, not here.** `epistula-database` owns the schema, so `api_tokens` is a `epistula-database` migration and token CRUD is a `epistula-database admin api-token-{add,list,revoke}` subcommand (one secret printed at creation, never recoverable). `epistula-api` only *verifies* — it never mints. This preserves the "Go owns the admin CLI; this reader owns no admin surface" boundary that `epistula-imap` already follows.
 - **Loopback bind + Apache front.** The Go process binds `127.0.0.1`; Apache terminates TLS. For external access (e.g. a summarizer on another host), front with **mTLS at Apache** — defense in depth on top of the bearer token.
 - **Recommended: a dedicated least-privilege Postgres role.** Grant `SELECT` on the read tables and `api_tokens`, `SELECT/INSERT/UPDATE` on `message_annotations` and `message_classifications`, `SELECT/DELETE` on the annotation pass queue, and `EXECUTE` on `mail_lock_message_for_annotation` — nothing else (no other `DELETE`, no write on `messages`/`folders`, no blob access, no quota writes). The function is how an annotation write locks its message against a concurrent MOVE without `UPDATE` on `messages`, which a row lock would otherwise need (OPS-008); `deploy/README.md` has the exact grants. Then even an application bug cannot write outside the annotation sidecar, and can never touch message content, mailbox state, blobs, or quotas.
@@ -108,6 +109,7 @@ All under `/v1`. JSON request/response; RFC 7807 on error. Cursor pagination eve
 | `GET /v1/mailboxes/{name}/archive-categories` | *(see "Archive classification")* The mailbox's active archive categories (`key`, `folder`, `description`) and its `\Archive` folder. `read_metadata`. An empty list means archive sorting is not set up for the mailbox. |
 | `PUT /v1/messages/{id}/classification` | *(see "Archive classification")* Store the classifier's choice: `{category, confidence, model}`. Requires `write_classification`. `422` unless `category` is an ACTIVE category of the message's own mailbox. One row per message; the latest wins. |
 | `POST /v1/pass-required/prune` | *(see "Annotation pass queue")* `{model, require_classification, mailbox?}`: clear the markers of queued messages the pipeline has finished, in the token's scope. Returns `{pruned, remaining}`. Requires `write_annotation`. |
+| `POST /v1/mailboxes/{name}/submissions` | *(see "Message submission")* `{message_base64, envelope_from?, recipients?}`: hand one complete RFC 5322 message, unchanged, to the MTA's submission service as that mailbox. `202` with `{queue_id, smtp_reply, envelope_from, recipients, message_id, size_bytes, sha256, line_endings_normalized}`. Requires `submit_message`; `503` until `[[submission.accounts]]` configures the mailbox. |
 
 Not implemented: `GET /v1/threads/{message_id}` (thread reconstruction via `message_id` / `in_reply_to`).
 
@@ -169,10 +171,82 @@ the interactive connector must never hold. The endpoints answer `503` until
 migration 020 and its grants are in place (probed at startup, like the
 annotation sidecar).
 
+## Message submission (outbound, off by default)
+
+`POST /v1/mailboxes/{name}/submissions` sends mail: it relays one complete
+message to the MTA's authenticated submission service (RFC 6409) as that
+mailbox. It exists so a caller holding a finished message (one that is
+already signed, say) can send exactly those bytes. A mail client would
+rebuild the message and break its signatures. It writes nothing to the
+database and never queues, retries or delivers mail itself.
+
+- **Its own permission.** `submit_message` (epistula-database migration 025) is
+  implied by nothing and implies nothing. Mint it on a token of its own,
+  scoped to the mailboxes that may send. epistula-mcp registers its `send`
+  tool only when it holds such a token, separate from its read and annotate
+  tokens.
+- **Its own credential.** Each sending mailbox needs a
+  `[[submission.accounts]]` entry with the SASL credential that mailbox
+  authenticates to the submission service with. Without one the endpoint
+  answers `503` for that mailbox. Nothing is configured by default.
+- **The MTA stays the outbound policy point.** It authenticates the account,
+  checks that the envelope sender belongs to that login, signs (DKIM), queues
+  and delivers. epistula-api first refuses (`403`) a disabled mailbox and any
+  envelope sender, `From` or `Sender` address that is not an explicit alias of
+  the mailbox. A catchall alias authorizes nothing, as in the submission
+  service's sender map. epistula-api also checks the `From` header, which the
+  MTA does not, so a token cannot send under someone else's name.
+- **Bytes unchanged.** Line endings become CRLF, as SMTP requires, and a
+  missing final line ending is added; nothing else changes. No header is
+  added, removed, refolded or re-encoded, so DKIM, S/MIME and OpenPGP
+  signatures over the message still verify. What a server would have to
+  rewrite is refused with `422` instead: a bare CR, a NUL, or a line over 998
+  octets. The response's `sha256` is the digest of the bytes handed over, and
+  `line_endings_normalized` says whether they differ from the request.
+- **RFC 5322 checks.** A message needs a valid `Date` and a `From`; several
+  `From` authors need a `Sender`. A field that may appear once (`From`, `To`,
+  `Subject`, `Message-ID` and the rest of section 3.6) may not appear twice.
+  A `Bcc` field is refused, because every recipient would receive it: blind
+  recipients go in `recipients`.
+- **Envelope defaults.** `envelope_from` defaults to `Sender`, else the single
+  `From` address. `recipients` defaults to every `To` and `Cc` address,
+  de-duplicated. Both must be bare addresses.
+- **All or nothing.** Every recipient must be accepted before `DATA`. If any
+  is refused, the transaction is reset and nothing is sent. A message never
+  reaches only some of the recipients named.
+- **The status says whether it was sent.** `202`: queued (the queue id is in
+  the response and the mail log). `422 submission-rejected`: refused for good,
+  not sent. `503 submission-deferred`: refused for now, not sent. `502
+  submission-failed`: the service was unreachable, broke off before the end of
+  the message, or refused the configured account; not sent. `504
+  submission-outcome-unknown`: the whole message was written but no reply was
+  read, so it may have been queued. Do not resend until the mail log shows it
+  was not. A session that has started runs to its end even if the client
+  disconnects, so the mail log and this server's log always record the outcome.
+- **Bounded.** `max_message_bytes` (default 10240000, Postfix's default
+  `message_size_limit`), `max_recipients` (50), and a per-token
+  `messages_per_hour` budget (20; `0` disables it). A request spends it once
+  it has passed validation and the sender check and a session is about to
+  start, whatever the outcome; a refused request spends nothing. One SMTP session is bounded by
+  `timeout` (20s), which must stay below every client's own deadline
+  (epistula-mcp's `request_timeout` defaults to 30s).
+- **TLS required.** STARTTLS is mandatory and the server certificate is
+  verified against `tls_server_name` (default: the host of `address`, which
+  must then be a name), so the account password never crosses an
+  unencrypted or unverified connection. AUTH PLAIN is the only mechanism.
+- **Logged without content.** One line per submission: token name, mailbox,
+  outcome, SMTP stage and code, recipient count, size, sha256 prefix, queue
+  id and Message-ID. Never the message, recipient list or password. The
+  metric is `mail_api_submissions_total{outcome}`.
+
+Copies are not filed in the mailbox's `Sent` folder: that would be an IMAP
+`APPEND`, which belongs to epistula-imap. The mail log and the response hold
+the record.
+
 ## What this project does NOT do
 
 - **No message-state mutation at all.** It never moves a message between folders, allocates UIDs, sets/clears IMAP flags, expunges, or runs the interactive STORE/COPY/MOVE/APPEND surface — all of that ("core IMAP") belongs to `epistula-imap`. It never edits a message's bytes/headers/text, never writes blobs, never touches quotas. Its writes are the two derived sidecars (`message_annotations`, `message_classifications`) and clearing finished markers from the annotation pass queue (`annotation_pass_required`).
-- **No IMAP, no SMTP, no POP3.** It is an HTTP/JSON query API, nothing more.
+- **No IMAP, POP3 or SMTP server.** It is an HTTP/JSON API. Its one connection outward is as an SMTP *client* of the MTA's submission service, for the opt-in submission endpoint. It never queues, retries or delivers mail itself.
 - **No schema migrations.** `epistula-database` owns and ships them.
 - **No blob writes, no GC.** It reads blobs; it never participates in the GC advisory-lock protocol because it never creates references.
 - **No mailbox/domain/alias/token CRUD.** Operator management is `epistula-database`'s `admin` CLI.
@@ -191,6 +265,7 @@ annotation sidecar).
 - Pagination caps and a concurrent-export-stream cap prevent a single token from pulling the whole store in one unbounded request.
 - **Never log** message bodies, summaries, attachment content, or token values. Log: remote IP, token id (not the secret), endpoint, mailbox/message ids, byte counts, outcome. Redact `Authorization` and any `(?i)(token|secret|password|key)` header.
 - Recommended dedicated least-privilege Postgres role (read grants + `INSERT/UPDATE` on `message_annotations` + `EXECUTE` on the annotation lock function, and `SELECT, DELETE` on the annotation pass queue; no other `DELETE`, no writes to `messages`/`folders`, no other tables) so the DB enforces the read-plus-sidecar boundary at the grant level, not just in the application.
+- Message submission is off until `[[submission.accounts]]` is configured, requires its own `submit_message` token, refuses senders the mailbox does not own, requires verified STARTTLS before AUTH, and sends the message bytes unchanged. The account passwords live only in the `0640` TOML and are never logged or echoed.
 - `epistula-api` issues **no** message-state SQL — no `UPDATE messages`, no UID allocation, no `pg_notify`. Its only mutating statements are the `message_annotations` and `message_classifications` upserts and the pass-queue prune (a DELETE from `annotation_pass_required`, never from anything else); moving/flagging/expunging is `epistula-imap`'s job.
 
 ## Error responses (RFC 7807)
@@ -224,7 +299,7 @@ epistula-api check-config -config /usr/local/etc/epistula/epistula-api.toml
 
 `server.trusted_proxies` is an explicit list of proxy IP addresses or CIDRs, empty by default. Only those direct peers may supply the last `X-Forwarded-For` entry (one proxy hop); other peers, including loopback, are identified by their TCP address.
 
-Required keys: `[server]` (api listen addr, default `127.0.0.1:8784`), `[admin]` (admin listen addr, default `127.0.0.1:8785`), `[postgres]` (DSN, `sslmode=verify-full` in production; ideally the least-privilege role's DSN), `[storage]` (`root`, group-readable blob access), `[limits]` (max page size, per-token rate, max concurrent export streams), `[production]` (gates strict-mode checks).
+Required keys: `[server]` (api listen addr, default `127.0.0.1:8784`), `[admin]` (admin listen addr, default `127.0.0.1:8785`), `[postgres]` (DSN, `sslmode=verify-full` in production; ideally the least-privilege role's DSN), `[storage]` (`root`, group-readable blob access), `[limits]` (max page size, per-token rate, max concurrent export streams), `[production]` (gates strict-mode checks). Optional: `[submission]` (`address`, `tls_server_name`, `timeout`, `max_message_bytes`, `max_recipients`, `messages_per_hour`, and one `[[submission.accounts]]` per sending mailbox with `mailbox`, `username`, `password`; see "Message submission"). `check-config` reports `submission=off` or the address and number of mailboxes.
 
 ## Subcommands
 

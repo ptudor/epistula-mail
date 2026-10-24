@@ -89,6 +89,20 @@ Implementation items are complete; live deployment acceptance is separate.
       gate; its `403` surfaces as a correctable tool error.
 - [x] Test: request-shaping + upstream-403 mapping against the mock.
 
+## The send tool
+
+- [x] `send` — `POST /v1/mailboxes/{m}/submissions` with `{message_base64,
+      envelope_from?, recipients?}`; the message as `message` text or
+      `message_base64` octets, forwarded unchanged; never retried.
+- [x] Registered only with a third credential, `send_token` (`submit_message`
+      only); a `send_token` equal to `token` or `annotate_token` is refused at load.
+- [x] MCP hints: destructive, open-world, not read-only, not idempotent; the
+      description tells the model to send only what the user asked for and not to
+      resend after a possibly-sent outcome.
+- [x] Tests: absent without the token, rides only the send token, byte-exact
+      forwarding (text and base64), local argument refusals, possibly-sent wording
+      for the API's `504` and for a client timeout.
+
 ## Streamable HTTP transport
 
 - [x] `auth.go` — bearer middleware for `-http` (constant-time compare); 401 with
@@ -105,8 +119,8 @@ Implementation items are complete; live deployment acceptance is separate.
       client without a live store. Matches the repo's integration-test culture
       without needing pgtest (this project has no DB).
 - [x] `make smoke` — stdio `initialize` → `notifications/initialized` → `tools/list`
-      piped into the binary; prints seven read tools, plus `annotate` when a separate
-      annotation token is configured; trailing hold-open so the SDK flushes before EOF.
+      piped into the binary; prints seven read tools, plus `annotate` and `send` when
+      their separate tokens are configured; trailing hold-open so the SDK flushes before EOF.
 - [ ] Operator acceptance against a live epistula-api with minted scoped tokens:
       every read tool returns expected data; `annotate` round-trips and re-`PUT`
       replaces rather than duplicates; an out-of-scope mailbox returns the 403

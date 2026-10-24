@@ -212,6 +212,24 @@ func (c *client) put(ctx context.Context, path string, body any) *apiError {
 	return aerr
 }
 
+// postJSON issues POST {base}/v1{path} with a JSON body and decodes a 2xx JSON
+// response. It is never retried: the one POST this connector makes sends mail.
+func (c *client) postJSON(ctx context.Context, path string, body any) (any, *apiError) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, &apiError{Message: "encode request body: " + err.Error()}
+	}
+	resp, data, aerr := c.do(ctx, http.MethodPost, path, nil, "application/json", raw)
+	if aerr != nil {
+		return nil, aerr
+	}
+	out, err := decodeExactJSON(data)
+	if err != nil {
+		return nil, &apiError{Message: fmt.Sprintf("epistula-api returned an undecodable %d response", resp.StatusCode)}
+	}
+	return out, nil
+}
+
 // getBytes issues GET {base}/v1{path} for a binary body (one attachment) and
 // returns it whole. A body over limit bytes is refused rather than truncated:
 // a cut-off PDF or image is a different, broken file. When epistula-api

@@ -79,8 +79,16 @@ func main() {
 		log.Print("read-only: no annotate_token, annotate tool not registered")
 	}
 
+	// The send tool exists only with a third credential carrying
+	// submit_message; by default no tool can send mail.
+	var sendClient *client
+	if cfg.SendToken != "" {
+		sendClient = newClientWithToken(cfg, cfg.SendToken)
+		log.Print("send tool enabled (separate submit_message epistula-api token)")
+	}
+
 	server := mcp.NewServer(&mcp.Implementation{Name: "mail", Version: Version}, nil)
-	(&toolset{c: readClient, w: writeClient, cfg: cfg}).register(server)
+	(&toolset{c: readClient, w: writeClient, s: sendClient, cfg: cfg}).register(server)
 
 	if *httpAddr != "" {
 		var handler http.Handler = mcp.NewStreamableHTTPHandler(
