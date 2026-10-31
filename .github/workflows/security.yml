@@ -30,7 +30,7 @@ jobs:
           go-version-file: .go-version
           cache-dependency-path: '**/go.sum'
       - name: Install pinned vulnerability scanner
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
       - name: Scan the production target
         working-directory: ${{ matrix.module }}
         env:

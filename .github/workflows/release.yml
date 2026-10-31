@@ -57,7 +57,7 @@ jobs:
       - name: Build and sign a draft release
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
-          version: v2.18.1
+          version: v2.19.0
           args: release --clean --release-notes=docs/release-notes/${{ github.ref_name }}.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -69,7 +69,7 @@ jobs:
       - name: Verify signed package lifecycles
         run: sh scripts/test-packages.sh packaging/release-signing-key.asc
       - name: Attest release assets
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
             dist/*.tar.gz

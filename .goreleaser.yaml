@@ -1,4 +1,4 @@
-# Epistula releases use GoReleaser OSS 2.18.1. RSA OpenPGP signs packages
+# Epistula releases use GoReleaser OSS 2.19.0. RSA OpenPGP signs packages
 # and checksums.txt. Snapshots use the disposable key in scripts/snapshot.sh.
 version: 2
 project_name: epistula-mail
