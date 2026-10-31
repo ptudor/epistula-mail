@@ -90,7 +90,7 @@ func TestSendToolRegisteredWithHints(t *testing.T) {
 	}
 }
 
-func TestSendForwardsExactBytesOnSendToken(t *testing.T) {
+func TestSendForwardsMessageWithUserAgentOnSendToken(t *testing.T) {
 	m := newMockAPI(t)
 	ts := newSendToolset(t, m)
 	msg := "From: jdoe@x.invalid\nTo: carol@elsewhere.invalid\nDate: Sat, 24 Oct 2026 12:00:00 +0000\n\n.dot line\n"
@@ -108,9 +108,12 @@ func TestSendForwardsExactBytesOnSendToken(t *testing.T) {
 	if m.lastPath != "/v1/mailboxes/jdoe/submissions" {
 		t.Errorf("path = %q", m.lastPath)
 	}
+	if m.lastUA != userAgent() {
+		t.Errorf("HTTP User-Agent = %q, want %q", m.lastUA, userAgent())
+	}
 	got, err := base64.StdEncoding.DecodeString(m.lastBody["message_base64"].(string))
-	if err != nil || string(got) != msg {
-		t.Errorf("forwarded message = %q (%v), want the input unchanged", got, err)
+	if want := "User-Agent: " + userAgent() + "\n" + msg; err != nil || string(got) != want {
+		t.Errorf("forwarded message = %q (%v), want the input behind one User-Agent field", got, err)
 	}
 	if m.lastBody["envelope_from"] != "bounces@x.invalid" {
 		t.Errorf("envelope_from = %v", m.lastBody["envelope_from"])
@@ -129,11 +132,34 @@ func TestSendForwardsExactBytesOnSendToken(t *testing.T) {
 		t.Fatalf("send result = %+v", out)
 	}
 	got, _ = base64.StdEncoding.DecodeString(m.lastBody["message_base64"].(string))
-	if !bytes.Equal(got, latin1) {
-		t.Errorf("forwarded octets = %q, want %q", got, latin1)
+	if want := append([]byte("User-Agent: "+userAgent()+"\r\n"), latin1...); !bytes.Equal(got, want) {
+		t.Errorf("forwarded octets = %q, want %q", got, want)
 	}
 	if _, ok := m.lastBody["recipients"]; ok {
 		t.Error("absent recipients were sent as an empty list instead of being left to the API's default")
+	}
+}
+
+// A message that names its composer, or that a DKIM signature may cover the
+// absence of such a field in, goes out byte for byte.
+func TestSendLeavesNamedOrSignedMessageUntouched(t *testing.T) {
+	m := newMockAPI(t)
+	ts := newSendToolset(t, m)
+	base := "From: jdoe@x.invalid\nDate: Sat, 24 Oct 2026 12:00:00 +0000\n\nbody\n"
+	for _, field := range []string{
+		"user-agent: Mutt/2.2\n",
+		"X-Mailer: Some Client 1.0\n",
+		"DKIM-Signature: v=1; a=rsa-sha256; d=x.invalid; s=k1; h=from:date:user-agent;\n bh=abc; b=def\n",
+	} {
+		msg := field + base
+		res, _, err := ts.send(context.Background(), nil, sendInput{Mailbox: "jdoe", Message: msg})
+		if out := decodeResult(t, res, err); out["queue_id"] == nil {
+			t.Fatalf("%q: send result = %+v", field, out)
+		}
+		got, _ := base64.StdEncoding.DecodeString(m.lastBody["message_base64"].(string))
+		if string(got) != msg {
+			t.Errorf("%q: forwarded message = %q, want the input unchanged", field, got)
+		}
 	}
 }
 

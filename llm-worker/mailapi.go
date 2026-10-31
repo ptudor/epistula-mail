@@ -129,7 +129,7 @@ func (c *MailAPIClient) ExportFiltered(ctx context.Context, cfg MailAPIConfig, f
 	if err != nil {
 		return err
 	}
-	c.authorize(req)
+	c.prepareRequest(req)
 
 	resp, err := c.exportClient.Do(req)
 	if err != nil {
@@ -230,7 +230,7 @@ func (c *MailAPIClient) PutAnnotation(ctx context.Context, messageID int64, put 
 	if err != nil {
 		return err
 	}
-	c.authorize(req)
+	c.prepareRequest(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.client.Do(req)
@@ -263,7 +263,7 @@ func (c *MailAPIClient) PutClassification(ctx context.Context, messageID int64, 
 	if err != nil {
 		return err
 	}
-	c.authorize(req)
+	c.prepareRequest(req)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -309,7 +309,7 @@ func (c *MailAPIClient) PrunePassQueue(ctx context.Context, p PassPrune) (PassPr
 	if err != nil {
 		return out, err
 	}
-	c.authorize(req)
+	c.prepareRequest(req)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -376,7 +376,7 @@ func (c *MailAPIClient) getJSON(ctx context.Context, path string, v any) error {
 	if err != nil {
 		return err
 	}
-	c.authorize(req)
+	c.prepareRequest(req)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return err
@@ -393,8 +393,11 @@ func (c *MailAPIClient) getJSON(ctx context.Context, path string, v any) error {
 	return nil
 }
 
-func (c *MailAPIClient) authorize(req *http.Request) {
+// prepareRequest sets the headers every epistula-api request carries: the
+// bearer token and this worker's User-Agent.
+func (c *MailAPIClient) prepareRequest(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("User-Agent", userAgent())
 }
 
 // problemDetail extracts the human-readable part of an RFC 7807 document, or

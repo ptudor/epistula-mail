@@ -27,6 +27,12 @@
   `send_token`, which may not equal `token` or `annotate_token`; it is marked
   destructive and open-world so MCP clients ask before each call, and it never
   retries.
+- epistula-mcp's `send` tool prepends `User-Agent: epistula-mcp/<version>
+  (+https://github.com/ptudor/epistula-mail)` to a message that has no
+  `User-Agent` or `X-Mailer` field and no `DKIM-Signature`, and otherwise sends
+  it unchanged. Its epistula-api requests, and every epistula-llm-worker
+  request to epistula-api and LM Studio, now carry a `User-Agent` of the same
+  form with the project URL; the worker used to send Go's default.
 - Database metrics `mail_database_messages` and `mail_database_gc_candidates`
   are now `mail_database_messages_estimate` and `mail_database_gc_candidates_estimate`.
   They use PostgreSQL live-tuple statistics to avoid full-table counts per scrape;

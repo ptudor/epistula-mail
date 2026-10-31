@@ -115,6 +115,7 @@ func (c *LMStudioClient) complete(ctx context.Context, prompt Prompt, format any
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", userAgent())
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}

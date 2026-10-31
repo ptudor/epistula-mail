@@ -10,3 +10,14 @@ var (
 	Version   = "dev"
 	BuildTime = "unknown"
 )
+
+// projectURL is the comment every User-Agent carries, so an operator reading
+// a mail log or an epistula-api access log can find the software.
+const projectURL = "https://github.com/ptudor/epistula-mail"
+
+// userAgent names this connector and build: the User-Agent of every
+// epistula-api request, and the field the send tool adds to a message that
+// does not name its own composer.
+func userAgent() string {
+	return "epistula-mcp/" + Version + " (+" + projectURL + ")"
+}

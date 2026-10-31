@@ -93,7 +93,9 @@ Implementation items are complete; live deployment acceptance is separate.
 
 - [x] `send` — `POST /v1/mailboxes/{m}/submissions` with `{message_base64,
       envelope_from?, recipients?}`; the message as `message` text or
-      `message_base64` octets, forwarded unchanged; never retried.
+      `message_base64` octets, forwarded with a `User-Agent` field added when
+      the message names no composer and carries no DKIM-Signature, otherwise
+      unchanged; never retried.
 - [x] Registered only with a third credential, `send_token` (`submit_message`
       only); a `send_token` equal to `token` or `annotate_token` is refused at load.
 - [x] MCP hints: destructive, open-world, not read-only, not idempotent; the

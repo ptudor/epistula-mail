@@ -63,7 +63,7 @@ func newClientWithToken(cfg config, token string) *client {
 		base:             cfg.BaseURL,
 		token:            token,
 		maxResponseBytes: cfg.MaxResponseBytes,
-		ua:               "epistula-mcp/" + Version,
+		ua:               userAgent(),
 	}
 }
 

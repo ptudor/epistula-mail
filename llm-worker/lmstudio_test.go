@@ -15,6 +15,9 @@ func TestLMStudioAnnotate(t *testing.T) {
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
+		if got := r.Header.Get("User-Agent"); got != userAgent() {
+			t.Fatalf("User-Agent = %q, want %q", got, userAgent())
+		}
 		var req chatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode request: %v", err)

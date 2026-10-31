@@ -96,7 +96,8 @@ The worker is optional. Its [README](llm-worker/README.md) explains model setup,
 resuming exports, and scheduled rounds. The MCP connector has seven read tools by
 default, including attachment download; configuring a distinct annotation token
 adds its write tool, and a distinct send token adds `send`, which hands a complete
-message unchanged to the MTA's submission service through epistula-api.
+message to the MTA's submission service through epistula-api, adding only a
+`User-Agent` field when the message has none.
 
 ## Operations
 

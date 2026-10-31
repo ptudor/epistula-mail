@@ -15,6 +15,9 @@ func TestMailAPIExportAndPutAnnotation(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer mapi_test" {
 			t.Fatalf("Authorization = %q", got)
 		}
+		if got := r.Header.Get("User-Agent"); got != userAgent() {
+			t.Fatalf("User-Agent = %q, want %q", got, userAgent())
+		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/export":
 			if r.URL.Query().Get("mailbox") != "alice" {

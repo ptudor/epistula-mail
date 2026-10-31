@@ -147,18 +147,23 @@ free-text entry point.
 | `attachment` | `GET /v1/messages/{id}/attachments/{part}` | One attachment's file, by message `id` and the `part_number` that `message` lists. Returned as MCP content rather than JSON — see below. Refused over `max_attachment_bytes`. |
 | `search` | `GET /v1/search` | Full-text search (`q=` over the tsvector) with optional `mailbox`, `folder`, `tag`, `category`, `since`/`before`; cursor-paginated. |
 | `annotate` | `PUT /v1/messages/{id}/annotation` | Store/replace this model's annotation: `tags`, advisory `category`, optional `summary`. Idempotent on `(message_id, model)`. **Registered only when `annotate_token` is configured**, and the write rides that token, never the read one. |
-| `send` | `POST /v1/mailboxes/{m}/submissions` | Send one complete RFC 5322 message, exactly as given (`message` text or `message_base64` octets), as mailbox `m`; optional `envelope_from` and `recipients`, which default to the Sender/From and To/Cc addresses. Returns the queue id and the sha256 of the bytes sent. **Registered only when `send_token` is configured**; marked destructive and open-world. |
+| `send` | `POST /v1/mailboxes/{m}/submissions` | Send one complete RFC 5322 message (`message` text or `message_base64` octets) as mailbox `m`, adding a `User-Agent` field when it has none; optional `envelope_from` and `recipients`, which default to the Sender/From and To/Cc addresses. Returns the queue id and the sha256 of the bytes sent. **Registered only when `send_token` is configured**; marked destructive and open-world. |
 
 Seven tools by default, plus `annotate` with an `annotate_token` and `send` with a
 `send_token`. Read-only is the default posture on purpose.
 
-**`send` changes nothing it is given.** epistula-api sends the message with CRLF
-line endings and nothing else altered, so signatures over it still verify, and
-refuses what a server would have to rewrite. All its rules (From, Sender and the
-envelope sender must be the mailbox's own aliases; From and Date are required; no
-Bcc field; every recipient accepted or nothing sent; a per-token hourly budget)
-are epistula-api's, in its "Message submission" section; the tool checks only its
-own arguments. An answer that says the message *may* have been sent (epistula-api's
+**`send` adds one field and changes nothing else.** The connector is the mail
+user agent on this path, so it prepends `User-Agent: epistula-mcp/<version>
+(+https://github.com/ptudor/epistula-mail)` to a message that has no
+`User-Agent` or `X-Mailer` field and no `DKIM-Signature` (a signature may
+oversign an absent field to forbid adding it). S/MIME and OpenPGP signatures
+cover the MIME entity, not the top-level header, so they still verify.
+epistula-api then sends the message with CRLF line endings and nothing else
+altered, and refuses what a server would have to rewrite. All its rules (From,
+Sender and the envelope sender must be the mailbox's own aliases; From and Date
+are required; no Bcc field; every recipient accepted or nothing sent; a
+per-token hourly budget) are epistula-api's, in its "Message submission"
+section; the tool checks only its own arguments. An answer that says the message *may* have been sent (epistula-api's
 `504`, or no answer before `request_timeout`) is passed to the model with an
 instruction not to send it again. The connector never retries a send. Over
 `-http`, the SDK refuses a request body over 4 MiB (`DefaultMaxRequestBodyBytes`),

@@ -24,6 +24,7 @@ import (
 type mockAPI struct {
 	server   *httptest.Server
 	lastAuth string
+	lastUA   string
 	lastPath string
 	// lastRawPath is the path as it went over the wire, percent-escapes
 	// intact — the only view that shows whether a name reached the server as
@@ -181,6 +182,7 @@ func newMockAPI(t *testing.T) *mockAPI {
 
 func (m *mockAPI) capture(r *http.Request) {
 	m.lastAuth = r.Header.Get("Authorization")
+	m.lastUA = r.Header.Get("User-Agent")
 	m.lastPath = r.URL.Path
 	m.lastRawPath = r.URL.EscapedPath()
 	m.lastQ = r.URL.Query()
