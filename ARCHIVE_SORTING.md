@@ -60,11 +60,16 @@ in the source. Every move is journaled in `archive_moves`.
    idx_messages_folder_id_id ON messages (folder_id, id);` so the transactional
    migration finds it in place instead of locking writers while it builds.
 2. **Folder roles.** The mailbox needs an `\Archive` and a `\Trash` folder.
-   Give existing folders the roles, or create them:
+   Give its `Junk` and `Drafts` folders their roles too: `delete_archives`
+   destroys on EXPUNGE only in `\Trash`, `\Drafts` and `\Junk`, and a folder a
+   client created by name carries no role, so without this step deleting junk
+   would archive it. Give existing folders the roles, or create them:
 
    ```sh
    epistula-database admin folder-set-special-use -mailbox jdoe -folder Archive -use Archive
    epistula-database admin folder-set-special-use -mailbox jdoe -folder "Deleted Messages" -use Trash
+   epistula-database admin folder-set-special-use -mailbox jdoe -folder Junk -use Junk
+   epistula-database admin folder-set-special-use -mailbox jdoe -folder Drafts -use Drafts
    epistula-database admin folder-create -mailbox asmith -folder Archive -use Archive
    epistula-database admin folder-create -mailbox asmith -folder "Deleted Messages" -use Trash
    ```
