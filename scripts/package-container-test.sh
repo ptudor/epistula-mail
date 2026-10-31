@@ -84,8 +84,16 @@ else
 fi
 install -d -m 0700 -o postgres -g postgres /tmp/epistula-package-pg
 runuser -u postgres -- initdb -D /tmp/epistula-package-pg/data -A trust
-runuser -u postgres -- pg_ctl -D /tmp/epistula-package-pg/data \
-    -l /tmp/epistula-package-pg/server.log -o '-h 127.0.0.1 -p 55432' -w start
+# The Unix socket and its lock file stay in the test's own directory: the
+# packaged default (/run/postgresql on Fedora) is created by systemd-tmpfiles,
+# which nothing runs in this container. The server log is the only account of
+# a failed start, so show it rather than pg_ctl's "examine the log output".
+if ! runuser -u postgres -- pg_ctl -D /tmp/epistula-package-pg/data \
+    -l /tmp/epistula-package-pg/server.log \
+    -o '-h 127.0.0.1 -p 55432 -k /tmp/epistula-package-pg' -w start; then
+    cat /tmp/epistula-package-pg/server.log >&2
+    exit 1
+fi
 trap 'runuser -u postgres -- pg_ctl -D /tmp/epistula-package-pg/data -m immediate -w stop' EXIT
 cat > /tmp/epistula-package-deliver.toml <<'EOF'
 production = false
