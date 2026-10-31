@@ -10,7 +10,14 @@ chmod 0640 "$config"
 # Never follow an operator's replacement symlink or adopt another owner's tree.
 spool=/var/spool/epistula-database
 if [ -d "$spool" ] && [ ! -L "$spool" ] && [ "$(stat -c %U "$spool")" = root ]; then
-    foreign=$(find "$spool" -mindepth 1 -maxdepth 1 ! -user epistula-database ! -user epistula-imap -print -quit)
+    # epistula-imap may not exist yet: RPM runs this before that package's
+    # own pre-install when both install in one transaction, and find rejects
+    # an unknown user name. A user that does not exist owns nothing here.
+    if getent passwd epistula-imap >/dev/null 2>&1; then
+        foreign=$(find "$spool" -mindepth 1 -maxdepth 1 ! -user epistula-database ! -user epistula-imap -print -quit)
+    else
+        foreign=$(find "$spool" -mindepth 1 -maxdepth 1 ! -user epistula-database -print -quit)
+    fi
     if [ -z "$foreign" ]; then
         chown epistula-database:epistula "$spool"
         chmod 2770 "$spool"

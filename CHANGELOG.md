@@ -33,6 +33,11 @@
   it unchanged. Its epistula-api requests, and every epistula-llm-worker
   request to epistula-api and LM Studio, now carry a `User-Agent` of the same
   form with the project URL; the worker used to send Go's default.
+- The epistula-database Linux package's post-install no longer fails when the
+  `epistula-imap` user does not exist yet. RPM runs it before epistula-imap's
+  own pre-install when both packages install in one transaction, and the spool
+  ownership check named that user to `find`, which rejects an unknown name; on
+  Fedora 43 the failed scriptlet fails the whole transaction.
 - Database metrics `mail_database_messages` and `mail_database_gc_candidates`
   are now `mail_database_messages_estimate` and `mail_database_gc_candidates_estimate`.
   They use PostgreSQL live-tuple statistics to avoid full-table counts per scrape;
