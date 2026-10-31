@@ -118,7 +118,7 @@ Build it **CGO-disabled** so it uses Go's pure resolver (this keeps the systemd
 sandbox in step 6 from needing extra socket families for glibc NSS):
 
 ```sh
-# On a build host with Go >= 1.26 with GOTOOLCHAIN=auto (go.mod selects Go 1.27.2), from the project root:
+# On a build host with Go >= 1.26 with GOTOOLCHAIN=auto (go.mod selects Go 1.27.3), from the project root:
 CGO_ENABLED=0 make build-linux        # produces build/epistula-llm-worker-linux-amd64
 ```
 

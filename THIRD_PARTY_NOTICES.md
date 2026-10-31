@@ -35,7 +35,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-## Go runtime and standard library (go1.27.2)
+## Go runtime and standard library (go1.27.3)
 
 Source: https://go.dev/LICENSE
 
@@ -1977,7 +1977,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-## golang.org/x/net v0.61.0
+## golang.org/x/net v0.62.0
 
 ### LICENSE
 
