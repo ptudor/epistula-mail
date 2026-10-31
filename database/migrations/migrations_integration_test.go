@@ -2,6 +2,7 @@ package migrations_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,5 +111,25 @@ func TestSchemaDropsLegacyAdminTables(t *testing.T) {
 		if exists {
 			t.Errorf("%s should not be present after migrations applied", table)
 		}
+	}
+}
+
+// TestSchemaHasFolderIDIndex is a smoke test that migration 026 added the
+// (folder_id, id) index the live sorter's candidate scan runs index-only on.
+func TestSchemaHasFolderIDIndex(t *testing.T) {
+	db, _ := pgtest.Open(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var indexdef string
+	if err := db.Pool().QueryRow(ctx, `
+		SELECT indexdef FROM pg_indexes
+		 WHERE schemaname = current_schema()
+		   AND tablename = 'messages'
+		   AND indexname = 'idx_messages_folder_id_id'`).Scan(&indexdef); err != nil {
+		t.Fatalf("idx_messages_folder_id_id not present after migrations applied: %v", err)
+	}
+	if want := "(folder_id, id)"; !strings.HasSuffix(indexdef, want) {
+		t.Errorf("idx_messages_folder_id_id columns: got %q, want suffix %q", indexdef, want)
 	}
 }

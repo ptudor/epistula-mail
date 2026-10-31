@@ -1,0 +1,13 @@
+-- The live sorter (archive.SortOnce) scans a mailbox's \Archive folder every
+-- interval for messages whose classification qualifies them for filing. It
+-- reads messages by (folder_id, id), ordered and paged by id, and must not
+-- touch the wide messages heap for the many rows that do not qualify. This
+-- index lets that candidate scan run index-only. The unique (folder_id, uid)
+-- key cannot serve it: the sorter's cursor is the message id, not the UID.
+--
+-- Migrations run transactionally, so CREATE INDEX CONCURRENTLY cannot be used
+-- here. On large stores, operators may pre-create the index CONCURRENTLY under
+-- the same name; IF NOT EXISTS then leaves it in place:
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_folder_id_id
+--     ON messages (folder_id, id);
+CREATE INDEX IF NOT EXISTS idx_messages_folder_id_id ON messages (folder_id, id);

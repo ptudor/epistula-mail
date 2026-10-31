@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- The live archive sorter no longer reads every row of a mailbox's `\Archive`
+  folder on each pass. Its candidate query first joins only `(folder_id, id)`
+  against `message_classifications`, which epistula-database migration 026's
+  `idx_messages_folder_id_id` serves index-only, and reads the wide `messages`
+  heap for qualifying candidates alone. On a 274k-message store the old pass
+  touched ~6,000 heap pages a minute to file nothing and intermittently hit
+  the 10 s statement timeout. Run `migrate up`; large stores may pre-create the
+  index `CONCURRENTLY` under the same name first (see `ARCHIVE_SORTING.md`).
 - Outbound submission of finished messages, off by default. epistula-database
   migration 025 adds the `submit_message` token permission (run `migrate up`;
   `admin api-token-add -permission submit_message` mints it). epistula-api

@@ -206,6 +206,7 @@ CREATE INDEX messages_fts_idx        ON messages USING GIN (fts);
 CREATE INDEX messages_headers_idx    ON messages USING GIN (headers);
 CREATE INDEX messages_folder_date    ON messages (folder_id, internal_date DESC);
 CREATE INDEX messages_message_id_idx ON messages (message_id);
+CREATE INDEX messages_folder_id_idx  ON messages (folder_id, id);  -- live sorter candidate scan, index-only (migration 026)
 
 CREATE TABLE attachments (
     id            BIGSERIAL PRIMARY KEY,

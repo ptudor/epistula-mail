@@ -53,6 +53,12 @@ in the source. Every move is journaled in `archive_moves`.
 
 1. **Schema.** `epistula-database migrate` applies migration 020, which also grants
    the new tables to the existing roles that already hold the API and IMAP privileges.
+   Migration 026 adds `idx_messages_folder_id_id`, the index the live sorter's
+   candidate scan runs index-only on, so a pass over a large `\Archive` folder
+   no longer reads every message row. On a store with hundreds of thousands of
+   messages, create it first with `CREATE INDEX CONCURRENTLY IF NOT EXISTS
+   idx_messages_folder_id_id ON messages (folder_id, id);` so the transactional
+   migration finds it in place instead of locking writers while it builds.
 2. **Folder roles.** The mailbox needs an `\Archive` and a `\Trash` folder.
    Give existing folders the roles, or create them:
 

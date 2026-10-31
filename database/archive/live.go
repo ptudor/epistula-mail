@@ -148,6 +148,50 @@ func validCategoryKeys(ctx context.Context, db *storage.DB, mailboxID int64, roo
 	return keys, rows.Err()
 }
 
+// sortCandidates finds the next batch of \Archive messages the live sorter
+// may file: $1 mailbox, $2 \Archive folder id, $3 settle delay in seconds,
+// $4 minimum confidence, $5 active category keys, $6 batch size, $7 id cursor,
+// $8 \Archive folder name.
+//
+// The \Archive folder of a large store holds thousands of messages the
+// classifier has not placed yet, or placed below MinConfidence, and the
+// sorter re-reads it every interval. A messages row is wide (headers,
+// bodies, tsvector), so visiting the heap for each of them only to find
+// no qualifying classification costs a random page read per message;
+// on a 274k-message store that pass exceeded the 10s statement timeout
+// under I/O load. The MATERIALIZED candidate set joins only the columns
+// idx_messages_folder_id_id (migration 026) serves index-only against
+// the narrow classification table; the outer query reads the heap for
+// candidates alone, applies the settle, \Deleted and reversed-filing
+// rules there, and keeps the ordering and paging contract.
+const sortCandidates = `
+	WITH cand AS MATERIALIZED (
+	    SELECT m.id, c.category, c.confidence
+	      FROM messages m
+	      JOIN message_classifications c ON c.message_id = m.id
+	     WHERE m.folder_id = $2
+	       AND m.id > $7
+	       AND c.confidence >= $4
+	       AND c.category = ANY($5)
+	)
+	SELECT m.id, cand.category, cand.confidence, ac.folder, ac.annual, m.sent_date_local, m.internal_date
+	  FROM cand
+	  JOIN messages m ON m.id = cand.id
+	  JOIN archive_categories ac
+	    ON ac.mailbox_id = $1 AND ac.key = cand.category AND ac.retired_at IS NULL
+	 WHERE m.folder_id = $2
+	   AND m.created_at <= now() - make_interval(secs => $3)
+	   AND NOT ('\Deleted' = ANY(m.flags))
+	   AND NOT EXISTS (
+	       SELECT 1 FROM (
+	           SELECT j.reason, j.undone_at, j.to_folder, j.to_folder_id FROM archive_moves j
+	            WHERE j.mailbox_id=$1 AND j.message_id=m.id ORDER BY j.id DESC LIMIT 1
+	       ) latest
+	        WHERE latest.reason IN ('sort', 'reorg')
+	          AND (latest.undone_at IS NOT NULL OR COALESCE(latest.to_folder_id <> $2, latest.to_folder <> $8)))
+	 ORDER BY m.id
+	 LIMIT $6`
+
 func sortMailbox(ctx context.Context, db *storage.DB, mailboxID int64, root storage.SpecialUseFolder, opts SortOptions, batch string, logger *slog.Logger) (int, int, error) {
 	keys, err := validCategoryKeys(ctx, db, mailboxID, root.Name, logger)
 	if err != nil || len(keys) == 0 {
@@ -167,27 +211,7 @@ func sortMailbox(ctx context.Context, db *storage.DB, mailboxID int64, root stor
 			internal   time.Time
 		}
 		now := time.Now()
-		rows, err := db.Pool().Query(ctx, `
-			SELECT m.id, c.category, c.confidence, ac.folder, ac.annual, m.sent_date_local, m.internal_date
-			  FROM messages m
-			  JOIN message_classifications c ON c.message_id = m.id
-			  JOIN archive_categories ac
-			    ON ac.mailbox_id = $1 AND ac.key = c.category AND ac.retired_at IS NULL
-			 WHERE m.folder_id = $2
-			   AND m.created_at <= now() - make_interval(secs => $3)
-			   AND c.confidence >= $4
-			   AND c.category = ANY($5)
-			   AND NOT ('\Deleted' = ANY(m.flags))
-			   AND m.id > $7
-			   AND NOT EXISTS (
-			       SELECT 1 FROM (
-			           SELECT j.reason, j.undone_at, j.to_folder, j.to_folder_id FROM archive_moves j
-			            WHERE j.mailbox_id=$1 AND j.message_id=m.id ORDER BY j.id DESC LIMIT 1
-			       ) latest
-			        WHERE latest.reason IN ('sort', 'reorg')
-			          AND (latest.undone_at IS NOT NULL OR COALESCE(latest.to_folder_id <> $2, latest.to_folder <> $8)))
-			 ORDER BY m.id
-			 LIMIT $6`,
+		rows, err := db.Pool().Query(ctx, sortCandidates,
 			mailboxID, root.ID, opts.SettleDelay.Seconds(), opts.MinConfidence, keys, opts.BatchSize, afterID, root.Name)
 		if err != nil {
 			return filed, skipped, fmt.Errorf("find archived messages: %w", err)

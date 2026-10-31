@@ -170,6 +170,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_folder_sha   ON messages (folder_id, raw
 CREATE INDEX IF NOT EXISTS idx_messages_sha_date_folder ON messages (raw_sha256, raw_blob_date, folder_id);
 CREATE INDEX IF NOT EXISTS idx_messages_folder_modseq ON messages (folder_id, mod_seq);
 CREATE INDEX IF NOT EXISTS idx_messages_deleted_folder ON messages (folder_id) WHERE '\Deleted' = ANY(flags);
+-- The live sorter's candidate scan over the \Archive folder, ordered and paged
+-- by id, runs index-only on this (migration 026).
+CREATE INDEX IF NOT EXISTS idx_messages_folder_id_id ON messages (folder_id, id);
 
 -- Attachments extracted from multipart messages. filename is metadata only;
 -- the on-disk file is named by sha256
@@ -370,7 +373,8 @@ INSERT INTO schema_versions (version, description) VALUES
     (22, 'annotation pass required'),
     (23, 'delivery log fk indexes'),
     (24, 'archive identity and indexes'),
-    (25, 'submit message permission')
+    (25, 'submit message permission'),
+    (26, 'messages folder id index')
     ON CONFLICT DO NOTHING;
 
 -- All folder creation/rename paths use this allocator. Never wrap or reset the
