@@ -58,21 +58,32 @@ func TestTLSHandshakeListenerRecoversRealFDExhaustion(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer inner.Close()
-	var peers []net.Conn
+	// One queued connection is what accept fails on. Every other spare
+	// descriptor is held by /dev/null rather than by more connections: a
+	// backlog of closed peers would be accepted during recovery and could
+	// exhaust descriptors a second time, and on BSD an accept that fails
+	// with EMFILE discards the queued connection, which could then be the
+	// fresh one this test waits for (the macOS runner saw exactly that).
+	queued, err := net.DialTimeout("tcp", inner.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer queued.Close()
+	var held []*os.File
 	defer func() {
-		for _, peer := range peers {
-			_ = peer.Close()
+		for _, f := range held {
+			_ = f.Close()
 		}
 	}()
 	for {
-		peer, err := net.DialTimeout("tcp", inner.Addr().String(), time.Second)
+		f, err := os.Open(os.DevNull)
 		if errors.Is(err, syscall.EMFILE) {
 			break
 		}
 		if err != nil {
 			t.Fatal(err)
 		}
-		peers = append(peers, peer)
+		held = append(held, f)
 	}
 	log := &fdExhaustionLog{hit: make(chan struct{}, 1)}
 	l := NewTLSHandshakeListener(inner, time.Second, slog.New(log))
@@ -82,12 +93,15 @@ func TestTLSHandshakeListenerRecoversRealFDExhaustion(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("real accept did not report EMFILE")
 	}
-	for _, peer := range peers {
-		_ = peer.Close()
+	for _, f := range held {
+		_ = f.Close()
 	}
-	peers = nil
-	// BSD may discard the queued connection on EMFILE; recovery must admit a
-	// fresh connection after descriptors are released.
+	held = nil
+	// Closed now so that, where the kernel kept it queued, it is accepted
+	// and read as EOF at once instead of holding the drain for a deadline.
+	_ = queued.Close()
+	// BSD may have discarded the queued connection on EMFILE; recovery must
+	// admit a fresh connection after descriptors are released.
 	recovered, err := net.DialTimeout("tcp", l.Addr().String(), time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +122,8 @@ func TestTLSHandshakeListenerRecoversRealFDExhaustion(t *testing.T) {
 			var b [1]byte
 			_, err = io.ReadFull(conn, b[:])
 			_ = conn.Close()
-			// Earlier connections were closed; only the fresh client sends x.
+			// The queued connection, if it survived, reads as EOF; only the
+			// fresh client sends x.
 			if err == nil && b[0] == 'x' {
 				result <- nil
 				return
