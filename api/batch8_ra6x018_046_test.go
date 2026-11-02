@@ -128,13 +128,21 @@ func TestMessageDocumentProjection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	id := f.aliceMsgIDs[0]
+	// A multipart/alternative message, so the document has both bodies: the
+	// text from the row, the HTML derived from the raw blob (epistula-database
+	// migration 030 dropped the html_body column).
 	text := strings.Repeat("t", 4096) + "é"
-	if _, err := f.pool.Exec(ctx,
-		`UPDATE messages SET text_body = $2, html_body = $3 WHERE id = $1`,
-		id, text, strings.Repeat("<p>h</p>", 512)); err != nil {
-		t.Fatalf("seed bodies: %v", err)
+	html := strings.Repeat("<p>h</p>", 512)
+	raw := []byte("Subject: projection\r\nMIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/alternative; boundary=\"b1\"\r\n\r\n" +
+		"--b1\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + text + "\r\n" +
+		"--b1\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" + html + "\r\n" +
+		"--b1--\r\n")
+	var folderID int64
+	if err := f.pool.QueryRow(ctx, `SELECT folder_id FROM messages WHERE id = $1`, f.aliceMsgIDs[0]).Scan(&folderID); err != nil {
+		t.Fatalf("alice folder: %v", err)
 	}
+	id := f.insertRawMessage(ctx, f.srv.store, "alice", folderID, 900, raw, text, time.Now().UTC(), false)
 
 	// Default: unchanged. Both bodies present in full, no projection fields.
 	var full map[string]any

@@ -123,7 +123,7 @@ func TestOversizedTextMessageIngestsAndIsRetrievable(t *testing.T) {
 		var n int64
 		if err := db.Pool().QueryRow(ctx,
 			`SELECT count(*) FROM messages
-			  WHERE id = $1 AND fts @@ plainto_tsquery('simple', $2)`,
+			  WHERE id = $1 AND mail_fts(subject, text_body) @@ plainto_tsquery('simple', $2)`,
 			res.MessageID, tc.term,
 		).Scan(&n); err != nil {
 			t.Fatalf("search %q: %v", tc.term, err)
@@ -177,7 +177,7 @@ func TestOrdinaryMessageSearchIsUnchanged(t *testing.T) {
 	for _, term := range []string{"quarterly", "invoice", "attached"} {
 		var n int64
 		if err := db.Pool().QueryRow(ctx,
-			`SELECT count(*) FROM messages WHERE folder_id = $1 AND fts @@ plainto_tsquery('simple', $2)`,
+			`SELECT count(*) FROM messages WHERE folder_id = $1 AND mail_fts(subject, text_body) @@ plainto_tsquery('simple', $2)`,
 			folderID, term,
 		).Scan(&n); err != nil {
 			t.Fatalf("search %q: %v", term, err)

@@ -4,7 +4,7 @@ A read-mostly HTTP/JSON API over the Postgres + content-addressed blob store wri
 
 ## Why this exists (and why it is a separate process)
 
-IMAP is a stateful, connection-oriented protocol designed for interactive mail clients. Pulling "every message in this mailbox older than a year, give me the plaintext" over IMAP means SELECT → SEARCH → per-message `FETCH BODY[TEXT]` with UID bookkeeping. But the decoded plaintext the summarizer wants is already a column — `messages.text_body`, with the HTML→text projection computed once at ingest — indexed by the `fts` tsvector. A single parameterized query returns it.
+IMAP is a stateful, connection-oriented protocol designed for interactive mail clients. Pulling "every message in this mailbox older than a year, give me the plaintext" over IMAP means SELECT → SEARCH → per-message `FETCH BODY[TEXT]` with UID bookkeeping. But the decoded plaintext the summarizer wants is already a column — `messages.text_body`, with the HTML→text projection computed once at ingest — indexed by the `mail_fts(subject, text_body)` expression index. A single parameterized query returns it.
 
 This daemon is **not** a `epistula-database serve` mode: that listener is deliberately metrics/health only, binds loopback, and has *zero* message-access surface by design (no auth to harden, no privileged data). It is **not** an `epistula-imap` extension: that is the IMAP protocol server. Keeping content-API as its own stateless process means:
 
@@ -56,7 +56,7 @@ Apache (TLS termination, optional client-cert)
    │  HTTP, loopback
    ▼
 epistula-api serve
-   ├─► Postgres (read)    folders, messages (text_body/html_body/headers/fts), mailboxes
+   ├─► Postgres (read)    folders, messages (text_body/headers, the mail_fts search index), mailboxes
    │   Postgres (write)   message_annotations  (tags/category/summary upsert — derived sidecar)
    │                      api_tokens            (verify; read-only)
    ├─► Disk blobs (read-only)   <mailbox>/raw/<yyyy/mm/dd>/<aa>/<bb>/<sha>.eml   →  GET .../raw
@@ -99,11 +99,11 @@ All under `/v1`. JSON request/response; RFC 7807 on error. Cursor pagination eve
 | `GET /v1/mailboxes` | Mailboxes visible to the token. |
 | `GET /v1/mailboxes/{name}/folders` | Folders in a mailbox (name, uidvalidity, message count). |
 | `GET /v1/mailboxes/{name}/folders/{folder}/messages` | Paginated message list. Filters: `since`, `before` (on `internal_date`), `sent_since`/`sent_before`, `flag`/`not_flag`, `larger`/`smaller`, `tag`, `category` (on a stored classification), `annotated_by`/`not_annotated_by` (by annotation model). Projection: `fields=metadata` (default, `read_metadata`); add `text` to inline `text_body` (**requires `read_content`**); add `annotation` to inline stored tags/category/summary — ranked, see "Annotations" — which **requires `read_content`** because `summary` is body-derived LLM prose (R-012). |
-| `GET /v1/messages/{id}` | One message: subject, from/to/cc, dates, flags, headers (JSONB), text_body, html_body, attachment metadata, BODYSTRUCTURE. |
+| `GET /v1/messages/{id}` | One message: subject, from/to/cc, dates, flags, headers (JSONB), text_body, html_body, attachment metadata, BODYSTRUCTURE. `html_body` is derived from the raw blob on each request that asks for it (the default; `html=false` skips the read): epistula-database migration 030 stopped storing the decoded HTML, which was 24% of the database and read by nothing. Byte-for-byte what ingest used to store. |
 | `GET /v1/messages/{id}/text` | `text/plain` body only — the ready-to-summarize input (HTML→text projection already applied at ingest). |
 | `GET /v1/messages/{id}/raw` | Original RFC 5322 bytes, streamed from the blob (`message/rfc822`). For reprocessing / re-parsing. |
 | `GET /v1/messages/{id}/attachments/{part}` | One attachment's decoded bytes, streamed from its blob in the mailbox's `att` tree. `{part}` is the `part_number` the message document lists (dotted decimal, e.g. `2` or `1.2`). **Requires `read_content`**; the message's mailbox is scope-checked before the part is looked up, so an out-of-scope message is `403` whatever part is asked for, and an absent or malformed part is `404`. The file comes from the sender, so it is served as a download that must not be rendered: the stored type re-validated as `Content-Type` (`application/octet-stream` when it does not parse), `Content-Disposition: attachment` with the filename quoted or RFC 2231-encoded, `X-Content-Type-Options: nosniff`, and `Content-Security-Policy: sandbox`. `Content-Length` is the stored size, checked against the file on disk before any header is written, as for `/raw`. |
-| `GET /v1/search` | FTS over the `fts` tsvector (`q=`, optional `mailbox=`, `folder=`, `tag=`, `category=`, date filters). Cursor-paginated. **Requires `read_content`**: the tsvector indexes `text_body`, so a `q=` probe is a body-content oracle even though results are metadata-shaped (R-014). |
+| `GET /v1/search` | FTS over the `mail_fts(subject, text_body)` expression index (`q=`, optional `mailbox=`, `folder=`, `tag=`, `category=`, date filters). Cursor-paginated. **Requires `read_content`**: the vector indexes `text_body`, so a `q=` probe is a body-content oracle even though results are metadata-shaped (R-014). Answers 503 until epistula-database migration 027 has created the function (probed at startup). |
 | `GET /v1/export` | Bulk **NDJSON stream** of messages matching a filter, for "summarize the whole archive." Streams row-by-row so the consumer pipelines without the server buffering the whole corpus. Annotations are always included when the sidecar table exists (not gated on `fields`). Each row also lists the message's attachments (the objects `GET /v1/messages/{id}` lists: part number, name, type, disposition, size, sha256), counted against the page byte budget, so a classifier sees what a message carries and not only how many attachments it has (OPS-009). Honors the token scope and a server-side hard cap on concurrent export streams. Note: each cursor batch materializes up to `export_page_size` full `text_body` values before streaming, so peak memory scales with `export_page_size × mean body size`; lower `export_page_size` for corpora with very large bodies (the LDA caps raw at 50 MiB). |
 | `PUT /v1/messages/{id}/annotation` | *(see "Annotations")* Store/replace a message's annotation — `tags`, an advisory sort `category`, optional `summary`. Idempotent on `(message_id, model)`. Requires a `write_annotation`-scoped token. |
 | `GET /v1/mailboxes/{name}/archive-categories` | *(see "Archive classification")* The mailbox's active archive categories (`key`, `folder`, `description`) and its `\Archive` folder. `read_metadata`. An empty list means archive sorting is not set up for the mailbox. |
@@ -122,16 +122,23 @@ means probing every message even when there is no work. Epistula's database
 migration 022 records the work as a presence instead:
 every message is marked in `annotation_pass_required` in the transaction that
 stores it, and epistula-imap's COPY and MOVE carry the marker. `pass_required=true`
-reads the ids out of that queue and fetches the messages by primary key
-(`m.id = ANY(ARRAY(SELECT ...))`; an `IN (SELECT ...)` let the planner walk every
-older message first), so the work scales with the queue rather than the archive.
+is a semi-join from the page's messages to the queue, so a date-ordered keyset
+page probes the marker primary key for its own rows and never materializes the
+queue (RM51X-114). The queue carries each marker's `mailbox_id` (migration 029)
+and the semi-join is scoped on it — the token's mailboxes, or the one mailbox a
+folder listing is in — so a scoped worker costs what *its* queue holds: with
+nothing of its own queued the planner reads its (empty) slice of the queue
+through `idx_annotation_pass_required_mailbox` and stops, where before it
+walked every message in date order probing a queue that held 357K markers for
+mailboxes nobody annotates (1.5 s a round on a production store).
 The worker's fast round asks for `pass_required` with its usual filters and then
 calls prune, which deletes the markers of messages annotated by its model and,
 with `require_classification`, classified into an active category (a mailbox
-with no categories needs none). A message still missing either stays queued and
-is retried. What no insert marks (a new model, a retired category, mail stored
-before migration 022) is the worker's complete round, which still uses
-`not_annotated_by` and `not_classified`. Both answer 503 until migration 022 and
+with no categories needs none); prune is one set of hash joins over the scoped
+queue, not a subquery per marker. A message still missing either stays queued
+and is retried. What no insert marks (a new model, a retired category, mail
+stored before migration 022) is the worker's complete round, which still uses
+`not_annotated_by` and `not_classified`. Both answer 503 until migration 029 and
 this role's `SELECT, DELETE` on the table are in place.
 
 ### Pagination — never `OFFSET`

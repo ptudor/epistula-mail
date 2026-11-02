@@ -249,11 +249,13 @@ func (s *server) upsertClassification(ctx context.Context, id, mailboxID int64, 
 //
 // mailboxCol is the SQL expression, in the caller's query, for the message's
 // mailbox id: f.mailbox_id where the query joins folders as f, or an
-// uncorrelated subquery where the folder is fixed. It is a constant from the
-// call site, never request data.
+// uncorrelated subquery where the folder is fixed. queueScope is the SQL
+// boolean over pr.mailbox_id that bounds the pass queue to what the caller
+// may see (passQueueFilter). Both are constants from the call site, never
+// request data.
 //
 // Writes the error response and returns false on a bad value.
-func (s *server) addArchiveFilters(w http.ResponseWriter, r *http.Request, mailboxCol string, conds *[]string, args *[]any) bool {
+func (s *server) addArchiveFilters(w http.ResponseWriter, r *http.Request, mailboxCol, queueScope string, conds *[]string, args *[]any) bool {
 	q := r.URL.Query()
 	if v := q.Get("not_classified"); v != "" {
 		want, err := strconv.ParseBool(v)
@@ -290,7 +292,7 @@ func (s *server) addArchiveFilters(w http.ResponseWriter, r *http.Request, mailb
 				problemPassQueueUnavailable(w, r, "The annotation pass queue needs epistula-database migration 022 and its grants.")
 				return false
 			}
-			*conds = append(*conds, passQueueFilter)
+			*conds = append(*conds, passQueueFilter(queueScope))
 		}
 	}
 	if v := q.Get("sample_ppm"); v != "" {

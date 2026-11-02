@@ -491,11 +491,10 @@ func (b *searchSQL) substringClause(term string, scope bodyScope) string {
 	var fields []string
 	switch scope {
 	case bodyScopeBody:
-		// The body projections only. Subject is deliberately absent: including
+		// The body projection only. Subject is deliberately absent: including
 		// it is what let BODY match a subject-only word.
 		fields = []string{
 			"COALESCE(text_body, '')",
-			"COALESCE(html_body, '')",
 		}
 	case bodyScopeText:
 		// The whole message: every header value as well as the body. The
@@ -504,7 +503,6 @@ func (b *searchSQL) substringClause(term string, scope bodyScope) string {
 		// participate in matching. Body decoding stays identical to ingest.
 		fields = []string{
 			"COALESCE(text_body, '')",
-			"COALESCE(html_body, '')",
 			"COALESCE(subject, '')",
 			headerTextProjection,
 		}

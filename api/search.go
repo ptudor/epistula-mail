@@ -10,11 +10,19 @@ import (
 	"github.com/ptudor/epistula-mail/database/auth"
 )
 
-// GET /v1/search — full-text search over the fts tsvector (subject +
-// text_body, weighted at ingest). Results are metadata-shaped, but the
-// matching itself is content-shaped (q= can probe body words), so the
-// handler requires read_content (R-014); consumers fetch the matched
-// bodies with /v1/messages/{id}/text under the same permission.
+// GET /v1/search — full-text search over the mail_fts expression index
+// (subject + text_body, weighted; epistula-database migration 027). Results are
+// metadata-shaped, but the matching itself is content-shaped (q= can probe
+// body words), so the handler requires read_content (R-014); consumers fetch
+// the matched bodies with /v1/messages/{id}/text under the same permission.
+
+// fullTextCond is the q= predicate. It must be spelled exactly as the index
+// expression, mail_fts(subject, text_body), for the planner to use
+// idx_messages_search; the function is the one definition of what search
+// covers (the first 200,000 characters of each, see migration 014/023).
+func fullTextCond(argIdx int) string {
+	return fmt.Sprintf("mail_fts(m.subject, m.text_body) @@ plainto_tsquery('simple', $%d)", argIdx)
+}
 
 // searchConds builds the shared scope + filter WHERE clause for search and
 // export. Returns the conditions and bind args; the caller appends its own
@@ -24,6 +32,9 @@ func (s *server) searchConds(w http.ResponseWriter, r *http.Request, tok *apiTok
 	all, scope := scopeParams(tok)
 	args = []any{all, scope}
 	conds = []string{"($1::bool OR mb.id = ANY($2::bigint[]))"}
+	// The pass queue is bounded the same way the messages are, and further
+	// to the one mailbox when the request names it (passQueueFilter).
+	queueScope := "($1::bool OR pr.mailbox_id = ANY($2::bigint[]))"
 	addCond := func(format string, val any) {
 		args = append(args, val)
 		conds = append(conds, fmt.Sprintf(format, len(args)))
@@ -38,6 +49,7 @@ func (s *server) searchConds(w http.ResponseWriter, r *http.Request, tok *apiTok
 			return nil, nil, false
 		}
 		addCond("mb.id = $%d", mailboxID)
+		queueScope += fmt.Sprintf(" AND pr.mailbox_id = $%d", len(args))
 		if folder := r.URL.Query().Get("folder"); folder != "" {
 			addCond("f.name = $%d", folder)
 		}
@@ -61,7 +73,7 @@ func (s *server) searchConds(w http.ResponseWriter, r *http.Request, tok *apiTok
 	if !s.addAnnotationFilters(w, r, tok, &conds, &args) {
 		return nil, nil, false
 	}
-	if !s.addArchiveFilters(w, r, "f.mailbox_id", &conds, &args) {
+	if !s.addArchiveFilters(w, r, "f.mailbox_id", queueScope, &conds, &args) {
 		return nil, nil, false
 	}
 	return conds, args, true
@@ -159,7 +171,7 @@ func (s *server) scanDatePageBudget(r *http.Request, query string, args []any, b
 }
 
 func (s *server) handleSearch(w http.ResponseWriter, r *http.Request, tok *apiToken) {
-	// The fts tsvector indexes text_body (weight B), so a `q=` probe confirms
+	// The search vector indexes text_body (weight B), so a `q=` probe confirms
 	// arbitrary words/phrases in message bodies — the exact content inference
 	// read_content is meant to gate. Require read_content (results themselves
 	// stay metadata-shaped). (R-014)
@@ -169,6 +181,10 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request, tok *apiTo
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if q == "" {
 		problemUnprocessable(w, r, "q is required")
+		return
+	}
+	if !s.fullTextAvailable {
+		problemUnavailable(w, r, "Full-text search needs epistula-database migration 027.")
 		return
 	}
 	limit, err := s.pageSize(r)
@@ -182,7 +198,7 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request, tok *apiTo
 		return
 	}
 	args = append(args, q)
-	conds = append(conds, fmt.Sprintf("m.fts @@ plainto_tsquery('simple', $%d)", len(args)))
+	conds = append(conds, fullTextCond(len(args)))
 	if !datePageWindow(w, r, &conds, &args) {
 		return
 	}

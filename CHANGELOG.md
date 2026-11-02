@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- The `messages` table no longer stores two projections nothing read, and its
+  indexes follow the readers. epistula-database migrations 027–030: the
+  full-text vector is the expression of the new IMMUTABLE `mail_fts(subject,
+  text_body)` function and lives only in the `idx_messages_search` GIN index
+  (027); the UNIQUE `(folder_id, uid)` constraint INCLUDEs `mod_seq` so the
+  IMAP session view reads index-only, `idx_messages_unseen_folder` serves
+  STATUS UNSEEN, and the never-scanned headers GIN and
+  `idx_attachments_sha256` are dropped (028); `annotation_pass_required`
+  carries each marker's `mailbox_id`, indexed (029); and the stored `fts`
+  and `html_body` columns are dropped (030). On a 630K-message store the two
+  columns and the headers GIN held 6.2 GB of the 13 GB database. 027–029
+  build their indexes `CONCURRENTLY` through the migration runner's new
+  `-- migrate: no-transaction` mode, and `migrate up -to N` lets the
+  rollout stay online: `migrate up -to 29`, deploy, `migrate up`.
+  `DROP COLUMN` returns no disk space by itself; `DATABASE_OPERATIONS.md`
+  at the repository root has the `VACUUM FULL`/`pg_repack` runbook and the
+  measurements.
+- epistula-api derives `html_body` of `GET /v1/messages/{id}` from the raw
+  blob on each request that asks for it, byte-for-byte what ingest stored
+  before; `html=false` skips the read. `/v1/search` and `q=` on `/v1/export`
+  use the expression index and answer 503 until migration 027 exists.
+  `pass_required=true` is scoped on the queue's own `mailbox_id`, so a
+  worker whose mailbox has nothing queued reads its empty slice of the queue
+  through its index instead of walking every message (1.5 s a round before,
+  with 357K markers queued for mailboxes nobody annotates), and
+  `POST /v1/pass-required/prune` is one set of hash joins over the scoped
+  queue rather than a correlated subquery per marker. Both answer 503 until
+  migration 029.
+- epistula-imap STATUS computes only the aggregates the client asked for,
+  each from an index: on a 46K-message INBOX the poll every client issues for
+  every folder dropped from 121 ms and 19,308 buffers (a scan of the folder's
+  rows, the largest read on the store) to an index-only count. SEARCH BODY
+  and TEXT match the text projection only: the decoded HTML is no longer
+  stored, so a word present only in the HTML alternative of a
+  multipart/alternative message, or only in markup, is no longer found. The
+  daemon logs an error at startup when the schema is behind migration 029
+  (COPY and MOVE write the marker's `mailbox_id`).
 - The live archive sorter no longer reads every row of a mailbox's `\Archive`
   folder on each pass. Its candidate query first joins only `(folder_id, id)`
   against `message_classifications`, which epistula-database migration 026's

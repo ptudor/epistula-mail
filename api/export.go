@@ -55,8 +55,12 @@ func (s *server) handleExport(w http.ResponseWriter, r *http.Request, tok *apiTo
 		return
 	}
 	if q := strings.TrimSpace(r.URL.Query().Get("q")); q != "" {
+		if !s.fullTextAvailable {
+			problemUnavailable(w, r, "Full-text search needs epistula-database migration 027.")
+			return
+		}
 		baseArgs = append(baseArgs, q)
-		baseConds = append(baseConds, fmt.Sprintf("m.fts @@ plainto_tsquery('simple', $%d)", len(baseArgs)))
+		baseConds = append(baseConds, fullTextCond(len(baseArgs)))
 	}
 	includeAnnotations := s.annotationsAvailable
 

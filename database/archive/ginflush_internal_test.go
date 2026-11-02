@@ -10,8 +10,8 @@ import (
 )
 
 // TestGINFlusherFindsMessageIndexes: the flusher targets exactly the GIN
-// indexes on messages (the full-text vector and the headers) and can flush
-// them as the schema owner.
+// indexes on messages (since migration 024, only the full-text expression
+// index; the headers GIN is gone) and can flush them as the schema owner.
 func TestGINFlusherFindsMessageIndexes(t *testing.T) {
 	db, _ := pgtest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -20,7 +20,7 @@ func TestGINFlusherFindsMessageIndexes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(f.indexes, ","); got != "idx_messages_fts,idx_messages_headers" {
+	if got := strings.Join(f.indexes, ","); got != "idx_messages_search" {
 		t.Fatalf("GIN indexes = %q", got)
 	}
 	if err := f.flush(ctx); err != nil || f.disabled {

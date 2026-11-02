@@ -855,6 +855,34 @@ func patternMatches(name string, patterns []string, ref string) bool {
 	return false
 }
 
+// statusCountsQuery answers STATUS from the indexes, computing only what the
+// client asked for.
+//
+// Every mail client polls `STATUS <folder> (MESSAGES UNSEEN)` for every
+// folder it shows, and this used to be one scan of the folder's rows with
+// FILTER aggregates: the flags and raw_size of every message, 121 ms and
+// 19,308 buffers for a 46K-message INBOX on a production store, and in total
+// the largest read on the database (17M scans fetching 640M heap tuples).
+// MESSAGES is an index-only count of the (folder_id, uid) key; UNSEEN and
+// DELETED are index-only counts of idx_messages_unseen_folder (migration 028)
+// and idx_messages_deleted_folder (migration 024), whose partial predicates
+// are these exact expressions: the test asserts the match, since a rephrased
+// predicate would silently fall back to the scan. SIZE still needs raw_size
+// from every row, so it is the one aggregate that reads the heap, and only
+// when asked for. The CASE arms keep the unrequested subqueries from running
+// at all.
+const statusCountsQuery = `
+	SELECT (SELECT count(*) FROM messages WHERE folder_id = $1),
+	       CASE WHEN $2::boolean THEN
+	            (SELECT count(*) FROM messages WHERE folder_id = $1 AND NOT ('\Seen' = ANY(flags)))
+	       ELSE 0 END,
+	       CASE WHEN $3::boolean THEN
+	            (SELECT count(*) FROM messages WHERE folder_id = $1 AND '\Deleted' = ANY(flags))
+	       ELSE 0 END,
+	       CASE WHEN $4::boolean THEN
+	            (SELECT COALESCE(SUM(raw_size), 0) FROM messages WHERE folder_id = $1)
+	       ELSE 0 END`
+
 // Status returns counts for the named folder. It honors the requested
 // StatusOptions: MESSAGES, UIDNEXT, UIDVALIDITY, HIGHESTMODSEQ come from the
 // folders row; UNSEEN, DELETED, SIZE are aggregated from the folder's
@@ -902,17 +930,11 @@ func (s *Session) folderStatus(ctx context.Context, mailbox string, folderID int
 		return nil, err
 	}
 
-	// One scan of the folder yields every count STATUS can ask for. The FILTER
-	// aggregates are cheap relative to the scan itself, so we compute them all
-	// regardless of which items were requested and derive pointers below.
+	// Only the aggregates the client asked for, each from its index
+	// (statusCountsQuery); the unrequested CASE arms never run.
 	var numMessages, numUnseen, numDeleted, totalSize int64
-	if err := s.be.Pool.QueryRow(ctx,
-		`SELECT count(*),
-		        count(*) FILTER (WHERE NOT ('\Seen' = ANY(flags))),
-		        count(*) FILTER (WHERE '\Deleted' = ANY(flags)),
-		        COALESCE(SUM(raw_size), 0)
-		   FROM messages WHERE folder_id = $1`,
-		folderID,
+	if err := s.be.Pool.QueryRow(ctx, statusCountsQuery,
+		folderID, options.NumUnseen, options.NumDeleted, options.Size,
 	).Scan(&numMessages, &numUnseen, &numDeleted, &totalSize); err != nil {
 		return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "status: count"}
 	}

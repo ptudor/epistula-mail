@@ -229,7 +229,7 @@ func reparseAll(ctx context.Context, db *storage.DB, store *blob.Store, parser *
 		}
 		rows, err := db.Pool().Query(ctx, `
 			SELECT m.id, mb.name, encode(m.raw_sha256, 'hex'), m.raw_blob_date, m.bodystructure,
-			       COALESCE(m.text_body, ''), COALESCE(m.html_body, ''),
+			       COALESCE(m.text_body, ''),
 			       m.sent_date_local,
 			       ARRAY(SELECT a.part_number FROM attachments a WHERE a.message_id = m.id)
 			  FROM messages m
@@ -255,7 +255,6 @@ func reparseAll(ctx context.Context, db *storage.DB, store *blob.Store, parser *
 			// what a re-parse produces for these; RA6X-048 adds sentLocal;
 			// OPS-004 renumbers attachment parts).
 			textBody  string
-			htmlBody  string
 			sentLocal *time.Time
 			attParts  []string
 		}
@@ -263,7 +262,7 @@ func reparseAll(ctx context.Context, db *storage.DB, store *blob.Store, parser *
 		for rows.Next() {
 			var r row
 			if err := rows.Scan(&r.id, &r.mailbox, &r.shaHex, &r.blobDate, &r.current,
-				&r.textBody, &r.htmlBody, &r.sentLocal, &r.attParts); err != nil {
+				&r.textBody, &r.sentLocal, &r.attParts); err != nil {
 				rows.Close()
 				return st, fmt.Errorf("scan row: %w", err)
 			}
@@ -417,7 +416,7 @@ func reparseAll(ctx context.Context, db *storage.DB, store *blob.Store, parser *
 			if msg.SentDateLocal != "" {
 				nextSentLocal = msg.SentDateLocal
 			}
-			contentChanged := msg.TextBody != r.textBody || msg.HTMLBody != r.htmlBody || !sameAttachmentParts(r.attParts, msg.Attachments)
+			contentChanged := msg.TextBody != r.textBody || !sameAttachmentParts(r.attParts, msg.Attachments)
 			changed := !jsonEquivalent(r.current, next) || contentChanged ||
 				sentLocalDiffers(r.sentLocal, msg.SentDateLocal)
 			if !changed {
@@ -663,10 +662,9 @@ func repairDerived(
 			`UPDATE messages
 			    SET bodystructure = $1,
 			        text_body = NULLIF($3, ''),
-			        html_body = NULLIF($4, ''),
-			        sent_date_local = $5::date
+			        sent_date_local = $4::date
 			  WHERE id = $2`,
-			nextBS, messageID, msg.TextBody, msg.HTMLBody, sentLocal)
+			nextBS, messageID, msg.TextBody, sentLocal)
 		if err != nil {
 			return fmt.Errorf("update message: %w", err)
 		}
@@ -710,7 +708,14 @@ func repairDerived(
 			}
 		}
 		if enqueue {
-			if _, err := tx.Exec(ctx, `INSERT INTO annotation_pass_required(message_id) VALUES($1) ON CONFLICT DO NOTHING`, messageID); err != nil {
+			// The marker carries the message's mailbox (migration 029), read
+			// from the row being repaired.
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO annotation_pass_required (message_id, mailbox_id)
+				SELECT m.id, f.mailbox_id
+				  FROM messages m JOIN folders f ON f.id = m.folder_id
+				 WHERE m.id = $1
+				ON CONFLICT DO NOTHING`, messageID); err != nil {
 				return fmt.Errorf("enqueue repaired message: %w", err)
 			}
 		}

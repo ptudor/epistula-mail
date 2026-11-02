@@ -42,7 +42,7 @@ func traceScopeQueries(t *testing.T, f *apiFixture) *scopeQueryTrace {
 
 func TestOutOfScopeBodyQueriesNeverRun(t *testing.T) {
 	f := newAPIFixture(t)
-	if _, err := f.pool.Exec(context.Background(), `UPDATE messages SET text_body=repeat('x',20*1024*1024), html_body=repeat('y',20*1024*1024) WHERE id=$1`, f.bobMsgID); err != nil {
+	if _, err := f.pool.Exec(context.Background(), `UPDATE messages SET text_body=repeat('x',20*1024*1024) WHERE id=$1`, f.bobMsgID); err != nil {
 		t.Fatal(err)
 	}
 	q := traceScopeQueries(t, f)

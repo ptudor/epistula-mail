@@ -26,7 +26,7 @@ func TestCopyAndMoveCarryPassMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := sess.be.Pool.Exec(ctx,
-		`INSERT INTO annotation_pass_required (message_id, marked_at) VALUES ($1, $2)`, pending, markedAt,
+		`INSERT INTO annotation_pass_required (message_id, mailbox_id, marked_at) VALUES ($1, $2, $3)`, pending, sess.mailboxID, markedAt,
 	); err != nil {
 		t.Fatal(err)
 	}

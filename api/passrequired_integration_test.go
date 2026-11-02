@@ -29,7 +29,8 @@ func (f *archiveFixture) mark(ids ...int64) {
 	f.t.Helper()
 	for _, id := range ids {
 		if _, err := f.pool.Exec(context.Background(),
-			`INSERT INTO annotation_pass_required (message_id) VALUES ($1)`, id); err != nil {
+			`INSERT INTO annotation_pass_required (message_id, mailbox_id)
+			 SELECT m.id, f.mailbox_id FROM messages m JOIN folders f ON f.id = m.folder_id WHERE m.id = $1`, id); err != nil {
 			f.t.Fatal(err)
 		}
 	}

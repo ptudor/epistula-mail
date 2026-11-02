@@ -509,8 +509,10 @@ func (s *server) handleFolderMessages(w http.ResponseWriter, r *http.Request, to
 		return
 	}
 	// This query does not join folders; every row is in folder $1, so its
-	// mailbox is one value, looked up once.
-	if ok := s.addArchiveFilters(w, r, "(SELECT lf.mailbox_id FROM folders lf WHERE lf.id = $1)", &conds, &args); !ok {
+	// mailbox is one value, looked up once — and the pass queue is read for
+	// that one mailbox.
+	const mailboxOfFolder = "(SELECT lf.mailbox_id FROM folders lf WHERE lf.id = $1)"
+	if ok := s.addArchiveFilters(w, r, mailboxOfFolder, "pr.mailbox_id = "+mailboxOfFolder, &conds, &args); !ok {
 		return
 	}
 

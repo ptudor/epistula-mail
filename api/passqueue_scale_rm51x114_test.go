@@ -16,7 +16,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const semiJoinPassQueue = `EXISTS (SELECT 1 FROM annotation_pass_required pr WHERE pr.message_id = m.id)`
+// tokenQueueScope is the scope every list/search/export call site passes
+// (searchConds): the token's mailboxes, or everything for a wildcard token.
+const tokenQueueScope = `($1::bool OR pr.mailbox_id = ANY($2::bigint[]))`
 
 func seedLargePassQueue(t *testing.T, f *apiFixture) {
 	t.Helper()
@@ -28,7 +30,8 @@ func seedLargePassQueue(t *testing.T, f *apiFixture) {
 		t.Fatal(err)
 	}
 	for _, sql := range []string{
-		`INSERT INTO annotation_pass_required(message_id) SELECT id FROM messages ON CONFLICT DO NOTHING`,
+		`INSERT INTO annotation_pass_required(message_id, mailbox_id)
+		 SELECT m.id, f.mailbox_id FROM messages m JOIN folders f ON f.id = m.folder_id ON CONFLICT DO NOTHING`,
 		`ANALYZE messages`, `ANALYZE annotation_pass_required`,
 	} {
 		if _, err := f.pool.Exec(ctx, sql); err != nil {
@@ -124,15 +127,23 @@ func TestLargePassQueueExport(t *testing.T) {
 func TestLargePassQueueExplain(t *testing.T) {
 	f := newAPIFixture(t)
 	seedLargePassQueue(t, f)
-	for _, tc := range []struct{ name, filter string }{
-		{"original", `m.id = ANY(ARRAY(SELECT pr.message_id FROM annotation_pass_required pr))`},
-		{"semi-join", semiJoinPassQueue},
-	} {
-		q := fmt.Sprintf(messagePageSelect, "m.text_body", "($1::bool OR mb.id = ANY($2::bigint[])) AND "+tc.filter, 3)
-		rows, err := f.pool.Query(context.Background(), "EXPLAIN (ANALYZE, BUFFERS) "+q, true, []int64{}, 500)
+	ctx := context.Background()
+	var bobMailbox int64
+	if err := f.pool.QueryRow(ctx, `SELECT f.mailbox_id FROM messages m JOIN folders f ON f.id = m.folder_id WHERE m.id = $1`, f.bobMsgID).Scan(&bobMailbox); err != nil {
+		t.Fatal(err)
+	}
+	// bob has messages but nothing queued: the shape of a worker whose
+	// mailbox is idle while the queue holds 200K markers for someone else.
+	if _, err := f.pool.Exec(ctx, `DELETE FROM annotation_pass_required WHERE mailbox_id = $1`, bobMailbox); err != nil {
+		t.Fatal(err)
+	}
+	explain := func(filter string, all bool, scope []int64) string {
+		q := fmt.Sprintf(messagePageSelect, "m.text_body", "($1::bool OR mb.id = ANY($2::bigint[])) AND "+filter, 3)
+		rows, err := f.pool.Query(ctx, "EXPLAIN (ANALYZE, BUFFERS) "+q, all, scope, 500)
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer rows.Close()
 		var plan strings.Builder
 		for rows.Next() {
 			var line string
@@ -141,13 +152,57 @@ func TestLargePassQueueExplain(t *testing.T) {
 			}
 			plan.WriteString(line + "\n")
 		}
-		rows.Close()
 		if err := rows.Err(); err != nil {
 			t.Fatal(err)
 		}
-		t.Logf("%s:\n%s", tc.name, plan.String())
-		if tc.name == "semi-join" && (!strings.Contains(plan.String(), "idx_messages_date_id") || !strings.Contains(plan.String(), "annotation_pass_required_pkey")) {
-			t.Fatal("semi-join did not walk date order and probe the queue primary key")
-		}
+		return plan.String()
 	}
+
+	// The shape RM51X-114 replaced, for the log.
+	t.Logf("original:\n%s", explain(`m.id = ANY(ARRAY(SELECT pr.message_id FROM annotation_pass_required pr))`, true, nil))
+
+	// A wildcard token over a 200K-marker queue walks date order and probes
+	// the queue primary key: cost per batch is the batch, not the queue.
+	plan := explain(passQueueFilter(tokenQueueScope), true, nil)
+	t.Logf("wildcard semi-join:\n%s", plan)
+	if !strings.Contains(plan, "idx_messages_date_id") || !strings.Contains(plan, "annotation_pass_required_pkey") {
+		t.Fatal("wildcard semi-join did not walk date order and probe the queue primary key")
+	}
+
+	// A token scoped to the idle mailbox must not read the other mailbox's
+	// markers or walk its messages to find nothing: the scope's own markers
+	// come from idx_annotation_pass_required_mailbox (migration 029).
+	plan = explain(passQueueFilter(tokenQueueScope), false, []int64{bobMailbox})
+	t.Logf("scoped, nothing queued:\n%s", plan)
+	if !strings.Contains(plan, "idx_annotation_pass_required_mailbox") {
+		t.Fatal("scoped semi-join with nothing queued did not read the queue through its mailbox index")
+	}
+	if n := sharedHitsRead(t, plan); n > 2000 {
+		t.Fatalf("scoped semi-join with nothing queued touched %d buffers", n)
+	}
+}
+
+// sharedHitsRead returns the top node's shared buffer hits plus reads from an
+// EXPLAIN (ANALYZE, BUFFERS) plan, the cheapest honest measure of how much a
+// query touched.
+func sharedHitsRead(t *testing.T, plan string) int {
+	t.Helper()
+	for _, line := range strings.Split(plan, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Buffers: shared") {
+			continue
+		}
+		total := 0
+		for _, field := range strings.Fields(line) {
+			if k, v, ok := strings.Cut(field, "="); ok && (k == "hit" || k == "read") {
+				var n int
+				if _, err := fmt.Sscanf(v, "%d", &n); err == nil {
+					total += n
+				}
+			}
+		}
+		return total
+	}
+	t.Fatalf("no Buffers line in plan:\n%s", plan)
+	return 0
 }

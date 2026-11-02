@@ -97,4 +97,14 @@ live sorter and Trash purge (epistula-imap `[archive]`), and the one-time
 reorganization (`admin archive-plan / archive-apply / archive-undo`). Shared
 logic lives in epistula-database's `archive` package and `storage/archive.go`.
 
+## Database operations
+
+`DATABASE_OPERATIONS.md` is the physical-layout reference for the store: what
+each `messages` column and index costs and which reader needs it (measured on
+a 630K-message production store), why the search vector is an expression
+index and the HTML part is derived from the blob (migrations 027–030), the
+rollout order that keeps every daemon serving across the schema change, and
+the space-reclaim and planner-maintenance runbooks. Read it before adding a
+column or an index.
+
 See each project's own `CLAUDE.md` and README for deployment details.

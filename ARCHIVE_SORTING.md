@@ -59,6 +59,10 @@ in the source. Every move is journaled in `archive_moves`.
    messages, create it first with `CREATE INDEX CONCURRENTLY IF NOT EXISTS
    idx_messages_folder_id_id ON messages (folder_id, id);` so the transactional
    migration finds it in place instead of locking writers while it builds.
+   (Migrations from 027 on build their indexes `CONCURRENTLY` themselves.) A
+   large one-time reorganization rewrites every moved row's entries in the
+   full-text GIN index, `idx_messages_search`; `DATABASE_OPERATIONS.md` says
+   when to drop and rebuild it around the run instead.
 2. **Folder roles.** The mailbox needs an `\Archive` and a `\Trash` folder.
    Give its `Junk` and `Drafts` folders their roles too: `delete_archives`
    destroys on EXPUNGE only in `\Trash`, `\Drafts` and `\Junk`, and a folder a

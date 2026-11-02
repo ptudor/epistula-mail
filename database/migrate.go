@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -52,10 +53,14 @@ func printMigrateUsage() {
 	fmt.Fprintln(os.Stderr, `migrate subcommands:
   status   List applied and pending migrations.
   up       Apply every pending migration in order. Each migration runs in its
-           own transaction; a failure aborts the run and leaves prior
-           migrations applied. Accepts -timeout <dur> (default 1h, 0 disables)
-           to bound the whole run — raise it for large index-building
-           migrations on hot tables.
+           own transaction (or, for a "-- migrate: no-transaction" migration,
+           statement by statement so it can build indexes CONCURRENTLY); a
+           failure aborts the run and leaves prior migrations applied.
+           Accepts -timeout <dur> (default 1h, 0 disables) to bound the whole
+           run — raise it for large index-building migrations on hot tables —
+           and -to <version> to stop after that version, for a rollout that
+           applies the additive migrations, deploys the binaries, then applies
+           the rest.
 
 All subcommands accept -config <path>.`)
 }
@@ -110,13 +115,22 @@ func migrateUp(args []string) int {
 	// it, after which the ctx cancel rolls the migration back and the command
 	// can never complete without a code change (R-050). Default to a generous
 	// hour and let operators disable the bound entirely with -timeout 0 for a
-	// very large build. Index-adding migrations on hot tables should ship as
-	// `CREATE INDEX CONCURRENTLY` in a non-transactional migration mode (a
-	// "no-tx" migration flag) so they don't lock out concurrent deliveries;
-	// that mode is future work — the runner is still one-tx-per-migration.
+	// very large build. Index-adding migrations on hot tables ship as
+	// `CREATE INDEX CONCURRENTLY` in a `-- migrate: no-transaction` migration
+	// (migrations 027-029), so they don't lock out concurrent deliveries.
 	timeout := fs.Duration("timeout", time.Hour,
 		"Overall time budget for the whole run; 0 disables the bound (raise for large index builds).")
+	// A bounded run is what makes a zero-downtime rollout possible: the
+	// additive migrations first, then the binaries, then the migration that
+	// drops what only the old binaries used (migrations 027-030 are the
+	// worked example in deploy/README.md).
+	through := fs.Int("to", 0,
+		"Apply pending migrations up to and including this version only; 0 applies every pending migration.")
 	if err := fs.Parse(args); err != nil {
+		return EX_USAGE
+	}
+	if *through < 0 {
+		fmt.Fprintln(os.Stderr, "migrate up: -to must be a migration version")
 		return EX_USAGE
 	}
 	cfg, err := LoadConfig(*configPath)
@@ -134,16 +148,23 @@ func migrateUp(args []string) int {
 	}
 	defer db.Close()
 
-	applied, err := migrations.Apply(ctx, db.Pool())
+	applied, err := migrations.ApplyUpTo(ctx, db.Pool(), *through)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "migrate up: %v\n", err)
 		if len(applied) > 0 {
 			fmt.Fprintf(os.Stderr, "%d migration(s) succeeded before failure\n", len(applied))
 		}
+		if errors.Is(err, migrations.ErrNoSuchVersion) {
+			return EX_USAGE
+		}
 		return EX_TEMPFAIL
 	}
 	if len(applied) == 0 {
-		fmt.Println("no pending migrations")
+		if *through > 0 {
+			fmt.Printf("no pending migrations up to %03d\n", *through)
+		} else {
+			fmt.Println("no pending migrations")
+		}
 		return EX_OK
 	}
 	for _, m := range applied {

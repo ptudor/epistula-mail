@@ -36,6 +36,13 @@ GRANT SELECT, INSERT, UPDATE ON message_classifications TO epistula_api;
 -- the annotation pass queue (epistula-database migration 022): read it, and clear
 -- the markers of messages the pipeline has finished
 GRANT SELECT, DELETE ON annotation_pass_required TO epistula_api;
+-- migration 029 adds the queue's mailbox_id column, which this binary's
+-- scoped reads require: run `epistula-database migrate up -to 29` before
+-- deploying, or pass_required and prune answer 503 until it lands.
+-- Full-text search calls mail_fts, the IMMUTABLE function migration 027
+-- creates and indexes; a new function is executable by every role by
+-- default and this one is pure, so no grant is needed. The daemon probes
+-- for it at startup and answers /v1/search with 503 until it exists.
 -- no other DELETE; no writes to messages/folders; no sequence grants needed
 -- (no table this role writes has a serial column).
 ```

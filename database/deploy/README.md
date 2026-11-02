@@ -43,6 +43,29 @@ On FreeBSD, use `/usr/local/etc/epistula/epistula-database.toml`. The
 the `epistula_database` PostgreSQL role. `schema.sql` is kept in sync with the
 migrations and is an alternative bootstrap for operators using the source tree.
 
+A migration whose first line is `-- migrate: no-transaction` runs statement by
+statement outside a transaction, so it can `CREATE INDEX CONCURRENTLY` on a
+live table; every statement in it is idempotent and a failed run is simply
+rerun. `migrate up -to N` stops after migration N, which is how a change rolls
+out without a window in which either the old or the new binaries fail.
+
+### Migrations 027–030 (stored projections and index hygiene)
+
+These replace the stored search vector with an expression index, drop the
+unread `html_body` column, reconcile the indexes with what the readers use, and
+scope the annotation pass queue by mailbox (`../../DATABASE_OPERATIONS.md`).
+027–029 are additive and concurrent; 030 removes what only the old binaries
+named. Run them around the deploy, in this order:
+
+```sh
+epistula-database migrate up -to 29 -timeout 0   # builds indexes CONCURRENTLY; tens of minutes on a large store
+# deploy epistula-database, epistula-imap and epistula-api built with these migrations
+epistula-database migrate up                     # 030: instant, drops the two columns
+```
+
+030 frees nothing on disk by itself; see the space-reclaim runbook in
+`DATABASE_OPERATIONS.md` for `VACUUM FULL` (offline) or `pg_repack` (online).
+
 ### Maintenance failure queues
 
 Import checkpoints use version 3 durable destination identity. Resuming from an older marker requires the explicit `-accept-legacy-checkpoint` override (on `import` and `import-blobs`) or a complete deduplicating scan. A changed database, recreated target, or changed filters requires a new checkpoint path.

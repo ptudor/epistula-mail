@@ -190,20 +190,21 @@ CREATE TABLE messages (
     cc_addrs        TEXT[],
     sent_date       TIMESTAMPTZ,                      -- parsed Date: header
     headers         JSONB NOT NULL,                   -- full header set, case-preserved
-    text_body       TEXT,                             -- decoded text/plain part(s)
-    html_body       TEXT,                             -- decoded text/html part(s)
+    text_body       TEXT,                             -- decoded text/plain part(s), or the HTML's text
     bodystructure   JSONB NOT NULL,                   -- precomputed IMAP BODYSTRUCTURE
     flags           TEXT[] NOT NULL DEFAULT '{}',     -- \Seen, \Answered, \Flagged, ...
-    fts             TSVECTOR                          -- generated from subject + text_body
-        GENERATED ALWAYS AS (
-            setweight(to_tsvector('simple', coalesce(subject, '')), 'A') ||
-            setweight(to_tsvector('simple', coalesce(text_body, '')), 'B')
-        ) STORED,
-    UNIQUE (folder_id, uid)
+    mod_seq         BIGINT NOT NULL DEFAULT 1,        -- CONDSTORE
+    -- INCLUDE (mod_seq): the IMAP session view reads (uid, mod_seq) for a
+    -- whole folder in UID order, index-only (migration 028)
+    CONSTRAINT messages_folder_uid_key UNIQUE (folder_id, uid) INCLUDE (mod_seq)
 );
 
-CREATE INDEX messages_fts_idx        ON messages USING GIN (fts);
-CREATE INDEX messages_headers_idx    ON messages USING GIN (headers);
+-- The search vector is the expression of an IMMUTABLE function and lives only
+-- in this index (migration 027); queries write mail_fts(m.subject, m.text_body).
+CREATE INDEX idx_messages_search     ON messages USING GIN (mail_fts(subject, text_body));
+-- STATUS counts UNSEEN/DELETED from the flagged few, index-only (migrations 024, 028)
+CREATE INDEX idx_messages_unseen_folder  ON messages (folder_id) WHERE NOT ('\Seen' = ANY(flags));
+CREATE INDEX idx_messages_deleted_folder ON messages (folder_id) WHERE '\Deleted' = ANY(flags);
 CREATE INDEX messages_folder_date    ON messages (folder_id, internal_date DESC);
 CREATE INDEX messages_message_id_idx ON messages (message_id);
 CREATE INDEX messages_folder_id_idx  ON messages (folder_id, id);  -- live sorter candidate scan, index-only (migration 026)
@@ -237,7 +238,8 @@ CREATE TABLE delivery_log (              -- audit trail, retained per policy
 
 - **One `messages` row per recipient mailbox.** IMAP flags (`\Seen`, `\Flagged`, etc.) are per-mailbox; modelling them on a shared row forces a `message_flags(message_id, mailbox_id, flags[])` join and every STORE becomes a multi-row mutation. The storage cost of duplicating metadata rows is negligible vs. the blob, which is already deduped on disk. The win for IMAP semantics is large.
 - **`mailboxes.used_bytes` maintained transactionally in Go, not by SQL triggers.** Every `INSERT INTO messages` and `DELETE FROM messages` updates `used_bytes` in the same transaction. No triggers — keeping the logic in Go makes it visible, testable, and free of `pg_dump`/`pg_restore` ordering hazards. `epistula-database gc reconcile-quotas` walks all mailboxes and rewrites `used_bytes` from `SUM(raw_size)`; safe to run hot, takes a brief `FOR UPDATE` row lock per mailbox.
-- **HTML stored as decoded UTF-8 in `html_body`; IMAP serves it untouched.** Sanitization is the MUA's responsibility, not ours. Full-text search runs over `subject + text_body` only. If a message has *only* `text/html` and no `text/plain` part, we generate a plain-text projection at ingest using `golang.org/x/net/html` (tokenize, strip tags, collapse whitespace) and store it in `text_body` — so FTS still works and plaintext-only IMAP clients can FETCH something useful. The original raw bytes are always preserved on disk; this projection is purely derived.
+- **The HTML part is not stored; the raw blob is its source of truth.** `html_body` was a decoded copy of the `text/html` part(s) that no reader needed: IMAP serves body sections from the blob, the LLM pipeline reads `text_body`, epistula-mcp never forwarded it — and on a production store it was 2.9 GB, 24% of the database (migration 030; `../DATABASE_OPERATIONS.md`). epistula-api derives it from the blob on demand for `GET /v1/messages/{id}` (the parser still extracts `Message.HTMLBody`). Sanitization remains the consumer's responsibility. Full-text search runs over `subject + text_body` only, through the `mail_fts` expression index. If a message has *only* `text/html` and no `text/plain` part, we generate a plain-text projection at ingest using `golang.org/x/net/html` (tokenize, strip tags, collapse whitespace) and store it in `text_body` — so search still works and plaintext-only IMAP clients can FETCH something useful. The original raw bytes are always preserved on disk; this projection is purely derived.
+- **Derived columns are stored only when a reader needs them as a column.** `text_body` is: three readers want it as SQL. The search vector is not: only its index was ever read, so since migration 027 it exists only there (2.6 GB of TOAST on the same store held a copy nothing opened). The test is "which query reads this column", answered from `pg_stat_user_indexes` and the readers' SQL, not from what might be convenient later.
 
 ## Delivery flow (the LDA hot path)
 
@@ -246,7 +248,7 @@ CREATE TABLE delivery_log (              -- audit trail, retained per policy
 3. Parse with `net/mail` to get headers and recursive MIME parts.
 4. Walk MIME tree:
    - `text/plain` → accumulate into `text_body` (decode transfer-encoding, decode charset to UTF-8).
-   - `text/html` → accumulate into `html_body`.
+   - `text/html` → accumulate into `Message.HTMLBody`, which is used only to derive `text_body` when there is no `text/plain` part; it is not stored (migration 030).
    - Anything else → write to `att/<aa>/<bb>/<sha>.bin` if not present, record `(filename, content_type, sha256, size)` for the attachment row.
    - A `text/plain` or `text/html` part that is explicitly attached (`Content-Disposition: attachment`, or `inline` with a filename) is both: text and an attachment row (RA6X-049). Every part yields at most one attachment row (OPS-006).
 5. Resolve envelope recipient(s) against `domains` + `aliases` + `domain_acl`. Resolution order, applied per recipient:

@@ -122,28 +122,30 @@ CREATE TABLE IF NOT EXISTS messages (
     sent_date     TIMESTAMPTZ,
     headers       JSONB NOT NULL DEFAULT '{}'::jsonb,
     text_body     TEXT,
+    -- Historical: migration 030 drops this (the decoded text/html part, which
+    -- epistula-api now derives from the raw blob on demand). Declared and
+    -- dropped below so a bootstrapped database has the same attnum layout as
+    -- a migrated one. Delete this line and the DROP below together, never
+    -- separately.
     html_body     TEXT,
     bodystructure JSONB NOT NULL DEFAULT '{}'::jsonb,
     flags         TEXT[] NOT NULL DEFAULT '{}',
     -- Historical: migration 014 drops this and re-adds it with a bounded
-    -- expression. Declared and dropped below so a bootstrapped database has
-    -- the same attnum layout as a migrated one — PostgreSQL does not renumber
-    -- attnums after DROP COLUMN. Delete this line and the DROP below together,
-    -- never separately.
+    -- expression, and migration 030 drops that in favour of the mail_fts
+    -- expression index. Declared and dropped below so a bootstrapped database
+    -- has the same attnum layout as a migrated one — PostgreSQL does not
+    -- renumber attnums after DROP COLUMN. Delete this line and the DROPs
+    -- below together, never separately.
     fts           TSVECTOR,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     raw_blob_date DATE NOT NULL DEFAULT CURRENT_DATE,  -- migration 003
     mod_seq       BIGINT NOT NULL DEFAULT 1,           -- migration 004
-    UNIQUE (folder_id, uid)
+    -- INCLUDE (mod_seq) (migration 028): the IMAP session view and every
+    -- reconcile after a folder changes read (uid, mod_seq) for the whole
+    -- folder in UID order, which this makes an ordered index-only scan.
+    CONSTRAINT messages_folder_uid_key UNIQUE (folder_id, uid) INCLUDE (mod_seq)
 );
 ALTER TABLE messages DROP COLUMN IF EXISTS fts;
--- The vector is built from a BOUNDED prefix (migration 014, RA6X-030).
--- PostgreSQL caps a tsvector at 1 MiB while the parser accepts 50 MiB
--- messages, so indexing the whole projection made a legitimate ~1.6 MB text
--- message impossible to STORE. text_body keeps the full projection and the raw
--- blob is untouched; only the index is bounded. Full-text search therefore
--- covers the first 200,000 characters of subject + text_body — see migration
--- 014 for why that number.
 ALTER TABLE messages ADD COLUMN fts TSVECTOR GENERATED ALWAYS AS (
     setweight(to_tsvector('simple', left(coalesce(subject, ''), 200000)), 'A') ||
     setweight(to_tsvector('simple', left(coalesce(text_body, ''), 200000)), 'B')
@@ -160,16 +162,42 @@ ALTER TABLE messages ADD COLUMN fts TSVECTOR GENERATED ALWAYS AS (
 -- header, an unparseable one, or a row predating this column; search falls back
 -- to the UTC reduction for those.
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS sent_date_local DATE;
+-- Migration 030: the stored projections nothing reads. The raw blob is the
+-- source of truth for the HTML part, and the search vector lives only in
+-- idx_messages_search below.
+ALTER TABLE messages DROP COLUMN IF EXISTS fts;
+ALTER TABLE messages DROP COLUMN IF EXISTS html_body;
+
+-- Full-text search (migration 027). The vector is the expression of this
+-- IMMUTABLE function and exists only in the GIN index on it; a query written
+-- as `mail_fts(m.subject, m.text_body) @@ plainto_tsquery('simple', $1)`
+-- uses the index. The function is the one definition of what search covers.
+--
+-- The vector is built from a BOUNDED prefix (migration 014, RA6X-030).
+-- PostgreSQL caps a tsvector at 1 MiB while the parser accepts 50 MiB
+-- messages, so indexing the whole projection made a legitimate ~1.6 MB text
+-- message impossible to STORE. text_body keeps the full projection and the raw
+-- blob is untouched; only the index is bounded. Full-text search therefore
+-- covers the first 200,000 characters of subject + text_body — see migration
+-- 014 for why that number.
+CREATE OR REPLACE FUNCTION mail_fts(subject TEXT, text_body TEXT) RETURNS TSVECTOR
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+RETURN setweight(to_tsvector('simple', left(coalesce(subject, ''), 200000)), 'A') ||
+       setweight(to_tsvector('simple', left(coalesce(text_body, ''), 200000)), 'B');
+
 CREATE INDEX IF NOT EXISTS idx_messages_sent_date_local
     ON messages (sent_date_local) WHERE sent_date_local IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_messages_fts          ON messages USING GIN (fts);
-CREATE INDEX IF NOT EXISTS idx_messages_headers      ON messages USING GIN (headers);
+CREATE INDEX IF NOT EXISTS idx_messages_search       ON messages USING GIN (mail_fts(subject, text_body));
 CREATE INDEX IF NOT EXISTS idx_messages_folder_date  ON messages (folder_id, internal_date DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_message_id   ON messages (message_id) WHERE message_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_messages_folder_sha   ON messages (folder_id, raw_sha256);
 CREATE INDEX IF NOT EXISTS idx_messages_sha_date_folder ON messages (raw_sha256, raw_blob_date, folder_id);
 CREATE INDEX IF NOT EXISTS idx_messages_folder_modseq ON messages (folder_id, mod_seq);
+-- STATUS (migrations 024 and 028): DELETED and UNSEEN are counted from the
+-- few rows that carry the flag, index-only, instead of a scan of the folder's
+-- rows. The deleted one also drives the live sorter and the Trash purge.
 CREATE INDEX IF NOT EXISTS idx_messages_deleted_folder ON messages (folder_id) WHERE '\Deleted' = ANY(flags);
+CREATE INDEX IF NOT EXISTS idx_messages_unseen_folder ON messages (folder_id) WHERE NOT ('\Seen' = ANY(flags));
 -- The live sorter's candidate scan over the \Archive folder, ordered and paged
 -- by id, runs index-only on this (migration 026).
 CREATE INDEX IF NOT EXISTS idx_messages_folder_id_id ON messages (folder_id, id);
@@ -190,7 +218,6 @@ CREATE TABLE IF NOT EXISTS attachments (
     blob_date    DATE NOT NULL DEFAULT CURRENT_DATE
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_message  ON attachments (message_id);
-CREATE INDEX IF NOT EXISTS idx_attachments_sha256   ON attachments (sha256);
 CREATE INDEX IF NOT EXISTS idx_attachments_sha_date ON attachments (sha256, blob_date);
 
 -- Two-phase blob GC candidates. kind is 'raw' or 'att'. generation_marked
@@ -374,7 +401,11 @@ INSERT INTO schema_versions (version, description) VALUES
     (23, 'delivery log fk indexes'),
     (24, 'archive identity and indexes'),
     (25, 'submit message permission'),
-    (26, 'messages folder id index')
+    (26, 'messages folder id index'),
+    (27, 'fts expression index'),
+    (28, 'index hygiene'),
+    (29, 'pass queue mailbox'),
+    (30, 'drop stored projections')
     ON CONFLICT DO NOTHING;
 
 -- All folder creation/rename paths use this allocator. Never wrap or reset the
@@ -506,10 +537,19 @@ CREATE TABLE IF NOT EXISTS folder_redirects (
 -- a primary key instead of an absence found by scanning the store. epistula-api
 -- serves the marked messages (pass_required=true) and prunes the markers of
 -- finished ones; the worker's complete round finds whatever no insert marks.
+--
+-- mailbox_id (migration 029) is the message's mailbox, denormalized so a
+-- reader scoped to some mailboxes costs what their queue holds rather than
+-- the whole queue. It is immutable for a message id (a folder belongs to one
+-- mailbox; COPY and MOVE make a new id) and cascades with the message, so it
+-- carries no foreign key of its own. Declared last: migration 029 appends it.
 CREATE TABLE IF NOT EXISTS annotation_pass_required (
     message_id BIGINT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
-    marked_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    marked_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    mailbox_id BIGINT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_annotation_pass_required_mailbox
+    ON annotation_pass_required (mailbox_id, message_id);
 
 -- Grants for roles that already exist, as migration 020 makes them.
 DO $$

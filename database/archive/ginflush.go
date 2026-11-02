@@ -12,8 +12,10 @@ import (
 )
 
 // ginFlusher merges the pending lists of the messages table's GIN indexes
-// (the full-text vector and the headers) into the indexes proper, between the
-// batches of a bulk move.
+// (the full-text expression index; the headers GIN was dropped by migration
+// 024) into the indexes proper, between the batches of a bulk move. The
+// indexes are discovered from the catalog, so a schema change needs no edit
+// here.
 //
 // A move rewrites a row in place, and a row that changes folder is a new
 // tuple version with new entries in every index, GIN included. GIN buffers

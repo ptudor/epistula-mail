@@ -44,7 +44,7 @@ IMAP client (Mail.app, Thunderbird, mutt, Aerc, K-9, ...)
    ▼
 epistula-imap serve
    │
-   ├─► Postgres  (folders, messages, mailboxes, headers JSONB, text_body, html_body, flags)
+   ├─► Postgres  (folders, messages, mailboxes, headers JSONB, text_body, flags)
    │     │
    │     └─► LISTEN mail_arrived  →  wakes IDLE clients
    │
@@ -270,6 +270,14 @@ No `import`, no `gc`, no `deliver` — those are epistula-database's responsibil
 - Sieve via ManageSieve (RFC 5804). Out of scope; spam/rules belong upstream of Postfix.
 - ACL extension (RFC 4314). N/A in single-tenant deployment.
 
+BODY and TEXT match the message's text projection, `text_body`: the decoded
+text/plain part, or for an HTML-only message the HTML's text with the markup
+stripped. The decoded HTML itself is no longer stored (epistula-database
+migration 030), so a word present only in the HTML alternative of a
+multipart/alternative message, or only in markup, is not found; a search of
+what the message says still is. STATUS computes only the aggregates the client
+asked for, each from an index (`idx_messages_unseen_folder`,
+`idx_messages_deleted_folder`); SIZE is the one that reads the folder's rows.
 IMAP BODY, TEXT and HEADER substring searches use PostgreSQL’s `und-x-icu`
 collation for Unicode case folding, including databases initialized with C locale.
 The PostgreSQL installation must provide this ICU collation.

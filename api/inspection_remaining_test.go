@@ -72,7 +72,7 @@ func TestInspectionBoundsLargeBodiesHeadersAndSidecars(t *testing.T) {
 	id := f.aliceMsgIDs[0]
 	// Generate large values in PostgreSQL so the allocation measurement does
 	// not include the fixture. Each old eager field alone exceeds MCP's cap.
-	if _, err := f.pool.Exec(ctx, `UPDATE messages SET text_body=repeat('é',6*1024*1024),html_body=repeat('h',12*1024*1024),
+	if _, err := f.pool.Exec(ctx, `UPDATE messages SET text_body=repeat('é',6*1024*1024),
  headers=jsonb_build_object('X-Large',repeat('x',12*1024*1024)),bodystructure=jsonb_build_object('large',repeat('x',12*1024*1024)) WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}

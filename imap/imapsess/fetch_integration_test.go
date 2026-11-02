@@ -118,12 +118,12 @@ func newFetchFixture(t *testing.T) *fetchTestFixture {
 			folder_id, uid, raw_sha256, raw_blob_date, raw_size, internal_date,
 			message_id, in_reply_to, subject, from_addr,
 			to_addrs, cc_addrs, sent_date, headers,
-			text_body, html_body, bodystructure, flags
+			text_body, bodystructure, flags
 		) VALUES (
 			$1, 1, $2, $3, $4, $5,
 			$6, NULL, $7, $8,
 			$9, $10, $11, $12,
-			'body', NULL, $13, ARRAY['\Seen','\Flagged']
+			'body', $13, ARRAY['\Seen','\Flagged']
 		) RETURNING uid`,
 		folderID, sum[:], internalDate, int64(len(rawBytes)), internalDate,
 		"msg-1@example.invalid", "Hello FETCH", "Bob <bob@example.invalid>",

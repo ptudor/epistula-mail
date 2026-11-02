@@ -397,18 +397,23 @@ func (db *DB) Ingest(ctx context.Context, p IngestParams) (IngestResult, error) 
 			ccAddrs = []string{}
 		}
 
+		// The decoded HTML part (Message.HTMLBody) is deliberately not stored
+		// (migration 030): the raw blob is the source of truth and epistula-api
+		// derives it from there on demand. text_body is stored because three
+		// readers want it as a column — the LLM pipeline, epistula-api's text
+		// endpoints and IMAP SEARCH — and the search index is built from it.
 		var messageID int64
 		if err := tx.QueryRow(ctx,
 			`INSERT INTO messages (
 				folder_id, uid, raw_sha256, raw_blob_date, raw_size, internal_date,
 				message_id, in_reply_to, subject, from_addr,
 				to_addrs, cc_addrs, sent_date, sent_date_local, headers,
-				text_body, html_body, bodystructure, flags, mod_seq
+				text_body, bodystructure, flags, mod_seq
 			) VALUES (
 				$1, $2, $3, $4, $5, $6,
 				$7, $8, $9, $10,
 				$11, $12, $13, $14::date, $15,
-				$16, $17, $18, $19, $20
+				$16, $17, $18, $19
 			)
 			RETURNING id`,
 			folderID, uid, rawSHA, rawBlobDate, p.RawSize, internalDate,
@@ -417,7 +422,7 @@ func (db *DB) Ingest(ctx context.Context, p IngestParams) (IngestResult, error) 
 			nullStr(p.Message.Subject),
 			nullStr(p.Message.From),
 			toAddrs, ccAddrs, sentDate, sentDateLocal, headersJSON,
-			nullStr(p.Message.TextBody), nullStr(p.Message.HTMLBody), bsJSON, flags, modSeq,
+			nullStr(p.Message.TextBody), bsJSON, flags, modSeq,
 		).Scan(&messageID); err != nil {
 			return fmt.Errorf("insert message: %w", err)
 		}
@@ -449,9 +454,12 @@ func (db *DB) Ingest(ctx context.Context, p IngestParams) (IngestResult, error) 
 
 		// Queue the message for the annotation pipeline (migration 022). In
 		// this transaction, so a stored message is never unmarked and a
-		// rolled-back one leaves no marker behind.
+		// rolled-back one leaves no marker behind. The mailbox travels with
+		// the marker (migration 029) so a reader scoped to this mailbox finds
+		// its queue through an index instead of reading everyone's.
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO annotation_pass_required (message_id) VALUES ($1)`, messageID,
+			`INSERT INTO annotation_pass_required (message_id, mailbox_id) VALUES ($1, $2)`,
+			messageID, p.MailboxID,
 		); err != nil {
 			return fmt.Errorf("mark annotation pass required: %w", err)
 		}

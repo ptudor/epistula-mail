@@ -746,12 +746,12 @@ func (s *Session) copyInTx(ctx context.Context, tx pgx.Tx, rows []targetRef, des
 			folder_id, uid, raw_sha256, raw_blob_date, raw_size,
 			internal_date, message_id, in_reply_to, subject,
 			from_addr, to_addrs, cc_addrs, sent_date, sent_date_local, headers,
-			text_body, html_body, bodystructure, flags, mod_seq
+			text_body, bodystructure, flags, mod_seq
 		)
 		SELECT $3, $4 + src.ord, src.raw_sha256, src.raw_blob_date, src.raw_size,
 		       src.internal_date, src.message_id, src.in_reply_to, src.subject,
 		       src.from_addr, src.to_addrs, src.cc_addrs, src.sent_date, src.sent_date_local, src.headers,
-		       src.text_body, src.html_body, src.bodystructure, src.flags,
+		       src.text_body, src.bodystructure, src.flags,
 		       $5 + src.ord
 		  FROM src
 		 ORDER BY src.uid
@@ -876,18 +876,20 @@ func (s *Session) copyInTx(ctx context.Context, tx pgx.Tx, rows []targetRef, des
 	// 6. And the annotation pipeline's marker (migration 022): a message the
 	//    worker has not finished yet stays queued under its new id, which a
 	//    MOVE would otherwise drop with the source row. A finished one has no
-	//    marker, and its copy arrives finished, sidecars and all.
+	//    marker, and its copy arrives finished, sidecars and all. The marker
+	//    carries the mailbox (migration 029); COPY never crosses mailboxes,
+	//    so it is this session's.
 	if _, err := tx.Exec(ctx, `
 		WITH map AS (
 			SELECT * FROM unnest($1::bigint[], $2::bigint[]) AS t(old_uid, new_id)
 		)
-		INSERT INTO annotation_pass_required (message_id, marked_at)
-		SELECT map.new_id, p.marked_at
+		INSERT INTO annotation_pass_required (message_id, mailbox_id, marked_at)
+		SELECT map.new_id, $4, p.marked_at
 		  FROM map
 		  JOIN messages sm ON sm.folder_id = $3 AND sm.uid = map.old_uid
 		  JOIN annotation_pass_required p ON p.message_id = sm.id
 		ON CONFLICT (message_id) DO NOTHING`,
-		oldUIDs, newIDs, s.selectedFolderID,
+		oldUIDs, newIDs, s.selectedFolderID, s.mailboxID,
 	); err != nil {
 		s.be.Logger.Error("COPY annotation pass markers", "err", err)
 		return nil, &imap.Error{Type: imap.StatusResponseTypeNo, Text: "COPY annotation pass markers failed"}

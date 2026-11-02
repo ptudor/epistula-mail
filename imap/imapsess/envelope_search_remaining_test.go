@@ -55,10 +55,10 @@ func TestRemainingTextSearchUsesHeaderText(t *testing.T) {
 	s := mutationFixture(t)
 	ctx := context.Background()
 	headers, _ := json.Marshal(map[string][]string{"X-Quote": {`a "quoted" value`}, "X-Path": {`c:\folder\file`}, "X-Repeated": {"first", "second"}})
-	if _, err := s.be.Pool.Exec(ctx, `UPDATE messages SET headers=$2,html_body='<p>HTMLmarker</p>' WHERE folder_id=$1 AND uid=1`, s.selectedFolderID, headers); err != nil {
+	if _, err := s.be.Pool.Exec(ctx, `UPDATE messages SET headers=$2 WHERE folder_id=$1 AND uid=1`, s.selectedFolderID, headers); err != nil {
 		t.Fatal(err)
 	}
-	for _, term := range []string{`a "quoted" value`, `X-Quote: a "quoted" value`, `c:\folder\file`, `X-Repeated: second`, `HTMLmarker`} {
+	for _, term := range []string{`a "quoted" value`, `X-Quote: a "quoted" value`, `c:\folder\file`, `X-Repeated: second`} {
 		if got := searchUIDs(t, s, &imap.SearchCriteria{Text: []string{term}}); !containsUID(got, 1) {
 			t.Fatalf("TEXT missed %q: %v", term, got)
 		}

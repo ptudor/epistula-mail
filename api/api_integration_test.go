@@ -73,6 +73,7 @@ func newAPIFixture(t *testing.T) *apiFixture {
 		store:                store,
 		exportSem:            make(chan struct{}, cfg.Limits.MaxExportStreams),
 		annotationsAvailable: true,
+		fullTextAvailable:    true,
 	}
 	srv.auth = newAuthenticator(srv)
 
@@ -129,6 +130,17 @@ func newAPIFixture(t *testing.T) *apiFixture {
 func (f *apiFixture) insertMessage(ctx context.Context, store *blob.Store, tenant blob.Tenant, folderID, uid int64, body string, when time.Time, seen bool) int64 {
 	f.t.Helper()
 	raw := []byte("Subject: msg " + fmt.Sprint(uid) + "\r\n\r\n" + body + "\r\n")
+	return f.insertRawMessage(ctx, store, tenant, folderID, uid, raw, body, when, seen)
+}
+
+// insertRawMessage is insertMessage for a caller that supplies the raw RFC
+// 5322 bytes itself — a multipart message, say, whose HTML part the API
+// derives from the blob on demand. textBody is what ingest would have stored
+// as the text projection; the fixture writes rows directly and does not
+// parse.
+func (f *apiFixture) insertRawMessage(ctx context.Context, store *blob.Store, tenant blob.Tenant, folderID, uid int64, raw []byte, textBody string, when time.Time, seen bool) int64 {
+	f.t.Helper()
+	body := textBody
 	sum := sha256.Sum256(raw)
 
 	w, err := store.NewWriter(blob.KindRaw, tenant, blob.BucketFromTime(when))

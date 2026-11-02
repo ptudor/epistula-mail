@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/ptudor/epistula-mail/database/auth"
 	"github.com/ptudor/epistula-mail/database/blob"
+	"github.com/ptudor/epistula-mail/database/ingest"
 )
 
 // Single-message endpoints: full document, plaintext projection, raw bytes,
@@ -274,28 +276,31 @@ func (s *server) handleMessage(w http.ResponseWriter, r *http.Request, tok *apiT
 	}
 
 	var (
-		doc       messageDoc
-		rawText   []byte
-		mailboxID int64
-		mailbox   string
-		folder    string
+		doc         messageDoc
+		rawText     []byte
+		mailboxID   int64
+		mailbox     string
+		folder      string
+		rawSHA      string
+		rawBlobDate time.Time
 	)
 	err := s.pool.QueryRow(r.Context(),
 		`SELECT m.id, m.uid, mb.id, mb.name, f.name, m.internal_date, m.sent_date, m.subject, m.from_addr,
 		        m.to_addrs, m.cc_addrs, m.message_id, m.in_reply_to, m.flags, m.raw_size,
-		        CASE WHEN $4 THEN NULL::jsonb ELSE m.headers END,
+		        CASE WHEN $3 THEN NULL::jsonb ELSE m.headers END,
                 CASE WHEN $2>0 THEN substring(convert_to(m.text_body,'UTF8') FROM 1 FOR (LEAST($2::bigint,2147483644)+3)::integer) ELSE convert_to(m.text_body,'UTF8') END,
-                CASE WHEN $3 THEN m.html_body ELSE NULL END,
-                CASE WHEN $4 THEN NULL::jsonb ELSE m.bodystructure END,
+                CASE WHEN $3 THEN NULL::jsonb ELSE m.bodystructure END,
                 octet_length(m.text_body)::bigint,
-                (SELECT count(*) FROM attachments a WHERE a.message_id=m.id)
+                (SELECT count(*) FROM attachments a WHERE a.message_id=m.id),
+                encode(m.raw_sha256, 'hex'), m.raw_blob_date
 		   FROM messages m
 		   JOIN folders f ON f.id = m.folder_id
 		   JOIN mailboxes mb ON mb.id = f.mailbox_id
-		  WHERE m.id = $1`, id, projection.textLimit, projection.includeHTML, projection.inspection,
+		  WHERE m.id = $1`, id, projection.textLimit, projection.inspection,
 	).Scan(&doc.ID, &doc.UID, &mailboxID, &mailbox, &folder, &doc.InternalDate, &doc.SentDate, &doc.Subject, &doc.From,
 		&doc.To, &doc.Cc, &doc.MessageID, &doc.InReplyTo, &doc.Flags, &doc.Size,
-		&doc.Headers, &rawText, &doc.HTMLBody, &doc.BodyStructure, &doc.TextBytes, &doc.AttachmentCount)
+		&doc.Headers, &rawText, &doc.BodyStructure, &doc.TextBytes, &doc.AttachmentCount,
+		&rawSHA, &rawBlobDate)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			problemNotFound(w, r, "No such message.")
@@ -313,6 +318,23 @@ func (s *server) handleMessage(w http.ResponseWriter, r *http.Request, tok *apiT
 	if rawText != nil {
 		body := string(rawText)
 		doc.TextBody = &body
+	}
+
+	// html_body is derived from the raw blob, not read from a column
+	// (epistula-database migration 030): one blob read and parse, paid only by
+	// a caller that asked for the HTML. After the scope check, so an
+	// out-of-scope request never touches the blob.
+	if projection.includeHTML {
+		html, err := s.renderHTML(mailbox, rawSHA, rawBlobDate)
+		if err != nil {
+			slog.Error("message html", "message_id", id,
+				"sha16", safeShortSHA(rawSHA), "err", err)
+			problemInternal(w, r)
+			return
+		}
+		if html != "" {
+			doc.HTMLBody = &html
+		}
 	}
 
 	if projection.inspection {
@@ -379,6 +401,42 @@ func (s *server) handleMessage(w http.ResponseWriter, r *http.Request, tok *apiT
 	doc.AttachmentCount = int64(len(doc.Attachments))
 	projection.apply(&doc)
 	writeJSON(w, http.StatusOK, &doc)
+}
+
+// htmlParser derives a stored message's HTML part from its raw bytes. It is
+// the salvaging parser the importers and reparse use: the message is already
+// ours, so a limit reached part-way yields what was read, not a refusal. A
+// Parser is immutable after construction and safe to share across requests.
+var htmlParser = ingest.NewSalvaging(ingest.DefaultLimits())
+
+// renderHTML returns the decoded text/html part of a message, exactly what
+// ingest computed for html_body while that column existed, from its raw
+// blob. An empty string means the message has no HTML part. A blob that is
+// missing or unparseable is store corruption, reported as an error like the
+// raw endpoint does.
+func (s *server) renderHTML(mailbox, rawSHA string, blobDate time.Time) (string, error) {
+	tenant, err := blob.ParseTenant(mailbox)
+	if err != nil {
+		return "", fmt.Errorf("blob tenant %q: %w", mailbox, err)
+	}
+	rc, err := s.store.Open(blob.KindRaw, tenant, blob.BucketFromTime(blobDate), rawSHA)
+	if err != nil {
+		return "", fmt.Errorf("open raw blob: %w", err)
+	}
+	defer rc.Close()
+	limit := ingest.DefaultLimits().MaxMessageBytes
+	raw, err := io.ReadAll(io.LimitReader(rc, limit+1))
+	if err != nil {
+		return "", fmt.Errorf("read raw blob: %w", err)
+	}
+	if int64(len(raw)) > limit {
+		return "", fmt.Errorf("raw blob exceeds the %d-byte parser limit", limit)
+	}
+	msg, err := htmlParser.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse raw blob: %w", err)
+	}
+	return msg.HTMLBody, nil
 }
 
 // ---- GET /v1/messages/{id}/text ----

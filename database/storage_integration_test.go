@@ -190,7 +190,7 @@ func TestIngestFullRoundTrip(t *testing.T) {
 	var ftsHit bool
 	if err := db.Pool().QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM messages
-		  WHERE id = $1 AND fts @@ plainto_tsquery('simple', 'searchable'))`,
+		  WHERE id = $1 AND mail_fts(subject, text_body) @@ plainto_tsquery('simple', 'searchable'))`,
 		res.MessageID,
 	).Scan(&ftsHit); err != nil || !ftsHit {
 		t.Errorf("FTS lookup failed: hit=%v err=%v", ftsHit, err)

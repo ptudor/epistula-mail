@@ -226,7 +226,7 @@ func TestPassQueueWithDocumentedGrants(t *testing.T) {
 	id := f.aliceMsgIDs[0]
 	for _, stmt := range []string{
 		`DELETE FROM annotation_pass_required`,
-		`INSERT INTO annotation_pass_required (message_id) VALUES ($1)`,
+		`INSERT INTO annotation_pass_required (message_id, mailbox_id) SELECT m.id, f.mailbox_id FROM messages m JOIN folders f ON f.id = m.folder_id WHERE m.id = $1`,
 		`INSERT INTO message_annotations (message_id, model, tags) VALUES ($1, 'm1', '{}')`,
 	} {
 		var err error

@@ -19,7 +19,7 @@ import (
 // APPEND, IMAP COPY and MOVE — inserts a new row. MoveMessages instead rewrites
 // the row in place: the message keeps its id, so its attachments, annotations,
 // classification and journal entries stay attached without being copied, and
-// PostgreSQL keeps the out-of-line (TOAST) values of text_body, html_body and
+// PostgreSQL keeps the out-of-line (TOAST) values of text_body and
 // headers instead of writing them again. That is what makes it cheap enough to
 // refile a whole archive on a nearly full pool.
 

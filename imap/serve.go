@@ -49,6 +49,7 @@ func runServe(args []string) int {
 		return EX_OSERR
 	}
 	defer pool.Close()
+	warnIfSchemaBehind(ctx, pool)
 
 	// Dedicated pool for IDLE's LISTEN connections (idle_conn_pool_size)
 	// so many simultaneous IDLE sessions can't starve query connections.
@@ -556,5 +557,35 @@ func readyHandler(pool *pgxpool.Pool, storageRoot string, startupCheck ...func(c
 		}
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "ready")
+	}
+}
+
+// requiredSchemaVersion is the epistula-database migration this binary's SQL
+// assumes: 029 added annotation_pass_required.mailbox_id, which COPY and MOVE
+// write when they carry a message's marker.
+const requiredSchemaVersion = 29
+
+// warnIfSchemaBehind logs, loudly, when the database has not had the
+// migrations this binary's statements name. It does not refuse to start: the
+// pool is lazy by contract (a Postgres that is briefly down must not kill the
+// daemon), so this is a startup courtesy for the operator who deployed the
+// binary before running `epistula-database migrate up`, not a gate. The
+// affected commands fail with the SQL error until the migration lands;
+// everything else serves.
+func warnIfSchemaBehind(ctx context.Context, pool *pgxpool.Pool) {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var version *int
+	err := pool.QueryRow(probeCtx, `SELECT max(version) FROM schema_versions`).Scan(&version)
+	switch {
+	case err != nil:
+		slog.Warn("could not read schema_versions at startup; continuing", "err", err)
+	case version == nil || *version < requiredSchemaVersion:
+		got := 0
+		if version != nil {
+			got = *version
+		}
+		slog.Error("database schema is behind this binary; COPY and MOVE will fail until epistula-database migrate up is run",
+			"schema_version", got, "required", requiredSchemaVersion)
 	}
 }

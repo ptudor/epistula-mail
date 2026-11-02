@@ -17,8 +17,10 @@ import (
 // marker. epistula-api serves the queue two ways:
 //
 //   - pass_required=true on list, search and export selects the marked
-//     messages. Date-ordered keyset batches probe the marker primary key
-//     without rebuilding an array of the full queue.
+//     messages of the mailboxes the caller may see. Date-ordered keyset
+//     batches probe the marker primary key without rebuilding an array of
+//     the full queue, and the queue's mailbox_id (migration 029) keeps a
+//     scoped reader's cost to its own markers.
 //   - POST /v1/pass-required/prune deletes the markers of messages the
 //     pipeline has finished: annotated by the caller's model and, when asked,
 //     classified into an active category of their mailbox (a mailbox with no
@@ -29,9 +31,25 @@ import (
 // category, mail stored before migration 022 -- is the worker's complete
 // round, which uses not_annotated_by and not_classified as before.
 
-// passQueueFilter lets a date-ordered keyset page probe the queue primary key
-// without materializing every marker again for each export batch.
-const passQueueFilter = `EXISTS (SELECT 1 FROM annotation_pass_required pr WHERE pr.message_id = m.id)`
+// passQueueFilter is the pass_required=true predicate: a semi-join from the
+// page's messages to the queue, so a date-ordered keyset page probes the
+// marker primary key for its own rows and never materializes the queue
+// (RM51X-114).
+//
+// queueScope is an SQL boolean over pr.mailbox_id (epistula-database
+// migration 029) that restricts the queue to the mailboxes the query may see:
+// the token's scope, or the one mailbox a folder listing is in. It is a
+// constant from the call site, never request data. Before the column
+// existed the scope was applied only after the queue was joined to messages
+// and folders, so a worker scoped to one mailbox paid for the whole queue
+// (357K markers for mailboxes nobody annotates: 1.5 s and 1.17M buffers per
+// round on a production store) to find that nothing of its own was queued.
+// With the scope inside the semi-join the planner can start from the scope's
+// own markers through idx_annotation_pass_required_mailbox when they are
+// few, and a date-ordered probe never reads a marker outside the scope.
+func passQueueFilter(queueScope string) string {
+	return `EXISTS (SELECT 1 FROM annotation_pass_required pr WHERE pr.message_id = m.id AND ` + queueScope + `)`
+}
 
 // maxPassPruneBytes bounds the prune request body; it carries a model name, a
 // mailbox name and a flag.
@@ -93,7 +111,7 @@ func (s *server) handlePassRequiredPrune(w http.ResponseWriter, r *http.Request,
 	all, scope := scopeParams(tok)
 	args := []any{all, scope, req.Model}
 	conds := []string{
-		"($1::bool OR f.mailbox_id = ANY($2::bigint[]))",
+		"($1::bool OR pr.mailbox_id = ANY($2::bigint[]))",
 	}
 	if req.Mailbox != "" {
 		mailboxID, ok := s.lookupScopedMailbox(w, r, tok, req.Mailbox)
@@ -104,17 +122,33 @@ func (s *server) handlePassRequiredPrune(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		args = append(args, mailboxID)
-		conds = append(conds, fmt.Sprintf("f.mailbox_id = $%d", len(args)))
+		conds = append(conds, fmt.Sprintf("pr.mailbox_id = $%d", len(args)))
 	}
-	done := `EXISTS (SELECT 1 FROM message_annotations an WHERE an.message_id = m.id AND an.model = $3)`
+	// Everything "finished" needs is joined in, set-wise, on keys that admit
+	// at most one row each: the annotation by (message_id, model), the
+	// classification by message_id, its category by (mailbox_id, key), and
+	// whether the mailbox has any active category at all, computed once per
+	// mailbox. The previous shape asked the same questions as correlated
+	// EXISTS subqueries evaluated per queued row; with 357K markers that was
+	// a sequential scan of archive_categories for every one of them, 78M
+	// scans reading 4.6 billion rows over a month on a production store. Hash
+	// joins read each table once per call.
+	//
+	// The scope is applied to the queue's own mailbox_id (migration 029), so
+	// a scoped caller's prune reads only its markers, and a mailbox nobody
+	// annotates never enters the join.
+	finished := `an.message_id IS NOT NULL`
+	joins := `
+			  LEFT JOIN message_annotations an
+			         ON an.message_id = pr.message_id AND an.model = $3`
 	if req.RequireClassification {
-		done += `
-		   AND (NOT EXISTS (SELECT 1 FROM archive_categories ac
-		                     WHERE ac.mailbox_id = f.mailbox_id AND ac.retired_at IS NULL)
-		        OR EXISTS (SELECT 1 FROM message_classifications mc
-		                     JOIN archive_categories mca
-		                       ON mca.key = mc.category AND mca.retired_at IS NULL
-		                    WHERE mc.message_id = m.id AND mca.mailbox_id = f.mailbox_id))`
+		finished += ` AND (am.mailbox_id IS NULL OR mca.key IS NOT NULL)`
+		joins += `
+			  LEFT JOIN (SELECT DISTINCT mailbox_id FROM archive_categories WHERE retired_at IS NULL) am
+			         ON am.mailbox_id = pr.mailbox_id
+			  LEFT JOIN message_classifications mc ON mc.message_id = pr.message_id
+			  LEFT JOIN archive_categories mca
+			         ON mca.mailbox_id = pr.mailbox_id AND mca.key = mc.category AND mca.retired_at IS NULL`
 	}
 	scoped := strings.Join(conds, " AND ")
 	// One statement: the data-modifying CTE and the count both read the
@@ -122,10 +156,8 @@ func (s *server) handlePassRequiredPrune(w http.ResponseWriter, r *http.Request,
 	// scope less what this call cleared.
 	query := fmt.Sprintf(`
 		WITH queued AS (
-			SELECT pr.message_id, %s AS finished
-			  FROM annotation_pass_required pr
-			  JOIN messages m ON m.id = pr.message_id
-			  JOIN folders f ON f.id = m.folder_id
+			SELECT pr.message_id, (%s) AS finished
+			  FROM annotation_pass_required pr%s
 			 WHERE %s
 		), cleared AS (
 			DELETE FROM annotation_pass_required p
@@ -134,7 +166,7 @@ func (s *server) handlePassRequiredPrune(w http.ResponseWriter, r *http.Request,
 			RETURNING p.message_id
 		)
 		SELECT (SELECT count(*) FROM cleared),
-		       (SELECT count(*) FROM queued) - (SELECT count(*) FROM cleared)`, done, scoped)
+		       (SELECT count(*) FROM queued) - (SELECT count(*) FROM cleared)`, finished, joins, scoped)
 
 	var res passPruneResult
 	if err := s.pool.QueryRow(r.Context(), query, args...).Scan(&res.Pruned, &res.Remaining); err != nil {

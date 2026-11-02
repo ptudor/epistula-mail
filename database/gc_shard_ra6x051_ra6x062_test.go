@@ -132,13 +132,21 @@ func TestLegacyGCCandidatesArePurged(t *testing.T) {
 		t.Fatalf("migrations: %v", err)
 	}
 	// Apply through 006, seed an eligible candidate, then let 007 give it the
-	// empty tenant exactly as a real upgrade did.
+	// empty tenant exactly as a real upgrade did. The runner applies the
+	// rest: from 023 on, some migrations run outside a transaction, which a
+	// bare Exec of their SQL cannot do.
 	for _, m := range all {
 		if m.Version > 6 {
 			break
 		}
 		if _, err := db.Pool().Exec(ctx, m.SQL); err != nil {
 			t.Fatalf("apply %d: %v", m.Version, err)
+		}
+		if _, err := db.Pool().Exec(ctx,
+			`INSERT INTO schema_versions (version, description) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+			m.Version, m.Description,
+		); err != nil {
+			t.Fatalf("record migration %d: %v", m.Version, err)
 		}
 	}
 	if _, err := db.Pool().Exec(ctx, `
@@ -148,13 +156,8 @@ func TestLegacyGCCandidatesArePurged(t *testing.T) {
 		t.Fatalf("seed legacy candidate: %v", err)
 	}
 
-	for _, m := range all {
-		if m.Version <= 6 {
-			continue
-		}
-		if _, err := db.Pool().Exec(ctx, m.SQL); err != nil {
-			t.Fatalf("apply %d: %v", m.Version, err)
-		}
+	if _, err := migrations.Apply(ctx, db.Pool()); err != nil {
+		t.Fatalf("apply the rest: %v", err)
 	}
 
 	var unscoped int64

@@ -4,6 +4,11 @@
 // transaction together with the corresponding schema_versions row insert,
 // so a half-applied migration cannot be recorded as successful.
 //
+// A migration whose first line is `-- migrate: no-transaction` runs outside a
+// transaction instead, statement by statement, so it can build and drop
+// indexes CONCURRENTLY on a live table (see statements.go for the contract
+// that puts on such a migration).
+//
 // File naming: migrations/NNN_short_description.sql where NNN is a 3-digit
 // zero-padded integer. Files are applied in ascending version order. Each
 // version is applied at most once; the schema_versions table tracks state.
@@ -26,6 +31,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -39,6 +45,10 @@ type Migration struct {
 	Version     int
 	Description string
 	SQL         string
+	// NoTransaction is set by the `-- migrate: no-transaction` directive: the
+	// script runs statement by statement outside a transaction, which is what
+	// CREATE INDEX CONCURRENTLY and DROP INDEX CONCURRENTLY require.
+	NoTransaction bool
 }
 
 // All returns every embedded migration sorted by ascending Version.
@@ -64,10 +74,15 @@ func All() ([]Migration, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", e.Name(), err)
 		}
+		noTx, err := parseDirectives(string(body))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", e.Name(), err)
+		}
 		out = append(out, Migration{
-			Version:     ver,
-			Description: strings.ReplaceAll(m[2], "_", " "),
-			SQL:         string(body),
+			Version:       ver,
+			Description:   strings.ReplaceAll(m[2], "_", " "),
+			SQL:           string(body),
+			NoTransaction: noTx,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
@@ -179,6 +194,39 @@ const migrationLockKey int64 = 0x6D61696C5F6D6967 // "mail_mig"
 // the version idempotent, which is a different thing from making the migration
 // body run once.
 func Apply(ctx context.Context, pool *pgxpool.Pool) ([]Migration, error) {
+	return ApplyUpTo(ctx, pool, 0)
+}
+
+// ErrNoSuchVersion is returned by ApplyUpTo for a bound that names no
+// embedded migration: a typo in `migrate up -to` must not silently apply
+// everything, or nothing.
+var ErrNoSuchVersion = errors.New("migrations: no migration with that version")
+
+// ApplyUpTo is Apply bounded at a version: pending migrations above `through`
+// are left for a later run. Zero means no bound.
+//
+// This is what lets a schema change roll out without a window in which either
+// the old or the new binaries fail: an additive migration first (a new
+// function, column or index the new code reads), then the binaries, then the
+// migration that removes what only the old code used.
+func ApplyUpTo(ctx context.Context, pool *pgxpool.Pool, through int) ([]Migration, error) {
+	if through > 0 {
+		all, err := All()
+		if err != nil {
+			return nil, err
+		}
+		known := false
+		for _, m := range all {
+			if m.Version == through {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return nil, fmt.Errorf("%w: %03d", ErrNoSuchVersion, through)
+		}
+	}
+
 	// A dedicated connection, because a session-level advisory lock belongs to
 	// the connection that took it and pgxpool would otherwise hand the
 	// subsequent statements to a different one.
@@ -188,7 +236,7 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) ([]Migration, error) {
 	}
 	defer conn.Release()
 
-	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
+	if err := acquireMigrationLock(ctx, conn); err != nil {
 		return nil, fmt.Errorf("acquire migration lock: %w", err)
 	}
 	defer func() {
@@ -211,7 +259,16 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) ([]Migration, error) {
 	}
 	applied := make([]Migration, 0, len(pending))
 	for _, m := range pending {
-		if err := applyOne(ctx, conn, m); err != nil {
+		if through > 0 && m.Version > through {
+			break
+		}
+		var err error
+		if m.NoTransaction {
+			err = applyOutsideTransaction(ctx, conn, m)
+		} else {
+			err = applyOne(ctx, conn, m)
+		}
+		if err != nil {
 			return applied, fmt.Errorf("migration %03d (%s): %w", m.Version, m.Description, err)
 		}
 		applied = append(applied, m)
@@ -220,10 +277,147 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) ([]Migration, error) {
 	return applied, nil
 }
 
+// migrationLockPoll is how often a runner that found the lock taken asks again.
+const migrationLockPoll = 250 * time.Millisecond
+
+// acquireMigrationLock takes the session lock, waiting from Go rather than in
+// the server.
+//
+// `SELECT pg_advisory_lock($1)` blocks inside a statement, and a blocked
+// statement holds a snapshot. CREATE INDEX CONCURRENTLY, which the
+// no-transaction migrations use, waits for every transaction whose snapshot
+// is older than its own before it can finish — so a second runner waiting
+// for the lock made the first runner's index build wait for the second
+// runner, forever, until PostgreSQL's deadlock detector cancelled one of
+// them. Polling pg_try_advisory_lock leaves a waiting runner idle between
+// attempts, holding nothing the build has to wait for.
+func acquireMigrationLock(ctx context.Context, conn rowQuerier) error {
+	for {
+		var got bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, migrationLockKey).Scan(&got); err != nil {
+			return err
+		}
+		if got {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(migrationLockPoll):
+		}
+	}
+}
+
 // txBeginner is the subset of a pool or a pinned connection applyOne needs, so
 // the run can be pinned to one connection for the advisory lock's sake.
 type txBeginner interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
+// statementRunner is what applyOutsideTransaction needs: a single connection
+// that executes one statement at a time, each in its own implicit
+// transaction, and reports whether it is sitting in an open transaction.
+type statementRunner interface {
+	rowQuerier
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Conn() *pgx.Conn
+}
+
+// applyOutsideTransaction runs a `-- migrate: no-transaction` migration:
+// every statement on its own, on the one pinned connection, with the version
+// recorded only after the last one succeeds. See statements.go for what that
+// requires of the migration.
+//
+// An interrupted CREATE INDEX CONCURRENTLY leaves an INVALID index behind
+// under the name it was building; a rerun's IF NOT EXISTS would then see the
+// name, skip the build, and record the migration as applied with an index the
+// planner never uses. So before running, any invalid index whose name this
+// migration builds is dropped. Only names this migration owns are touched:
+// the migration lock serializes runners, so such an index can only be the
+// wreckage of an earlier attempt at this very migration.
+func applyOutsideTransaction(ctx context.Context, conn statementRunner, m Migration) (err error) {
+	stmts := splitStatements(m.SQL)
+	if len(stmts) == 0 {
+		return errors.New("no statements")
+	}
+	defer func() {
+		// A failure inside an explicit BEGIN ... COMMIT group leaves the
+		// connection in an aborted transaction. Roll it back so the advisory
+		// unlock that follows can run, rather than leaving the lock to die
+		// with the connection.
+		if err != nil && conn.Conn().PgConn().TxStatus() != 'I' {
+			rbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, _ = conn.Exec(rbCtx, `ROLLBACK`)
+		}
+	}()
+
+	for _, name := range concurrentIndexNames(stmts) {
+		if err := dropInvalidIndex(ctx, conn, name); err != nil {
+			return err
+		}
+	}
+	for i, st := range stmts {
+		if _, err := conn.Exec(ctx, st); err != nil {
+			return fmt.Errorf("statement %d of %d (%s): %w (the migration runs outside a transaction; the statements before it are committed and all are idempotent, so rerun `migrate up`)",
+				i+1, len(stmts), statementLabel(st), err)
+		}
+	}
+	if _, err := conn.Exec(ctx,
+		`INSERT INTO schema_versions (version, description) VALUES ($1, $2)
+		   ON CONFLICT (version) DO NOTHING`,
+		m.Version, m.Description,
+	); err != nil {
+		return fmt.Errorf("record version: %w", err)
+	}
+	return nil
+}
+
+// dropInvalidIndex removes an index of the given name (as written in the
+// migration, quotes included) if it exists and is not valid.
+func dropInvalidIndex(ctx context.Context, conn statementRunner, name string) error {
+	var invalid bool
+	err := conn.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_index i
+			  JOIN pg_class c ON c.oid = i.indexrelid
+			  JOIN pg_namespace n ON n.oid = c.relnamespace
+			 WHERE n.nspname = current_schema()
+			   AND c.relname = $1
+			   AND NOT i.indisvalid)`,
+		strings.Trim(name, `"`)).Scan(&invalid)
+	if err != nil {
+		return fmt.Errorf("check index %s: %w", name, err)
+	}
+	if !invalid {
+		return nil
+	}
+	slog.Warn("dropping invalid index left by an interrupted concurrent build; it will be rebuilt",
+		"index", name)
+	if _, err := conn.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS `+name); err != nil {
+		return fmt.Errorf("drop invalid index %s: %w", name, err)
+	}
+	return nil
+}
+
+// statementLabel is the first few words of a statement, comments stripped,
+// for an error message an operator can match against the migration file.
+func statementLabel(st string) string {
+	var words []string
+	for _, line := range strings.Split(st, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "--") {
+			continue
+		}
+		words = append(words, strings.Fields(line)...)
+		if len(words) >= 6 {
+			break
+		}
+	}
+	if len(words) > 6 {
+		words = words[:6]
+	}
+	return strings.Join(words, " ")
 }
 
 func applyOne(ctx context.Context, pool txBeginner, m Migration) error {

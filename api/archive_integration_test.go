@@ -251,12 +251,13 @@ func TestNotClassifiedFilterPlansAsAntiJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name, mailboxCol, from string
-		args                   []any
+		name, mailboxCol, queueScope, from string
+		args                               []any
 	}{
-		{"search and export", "f.mailbox_id",
+		{"search and export", "f.mailbox_id", "TRUE",
 			"messages m JOIN folders f ON f.id = m.folder_id", nil},
 		{"folder listing", "(SELECT lf.mailbox_id FROM folders lf WHERE lf.id = $1)",
+			"pr.mailbox_id = (SELECT lf.mailbox_id FROM folders lf WHERE lf.id = $1)",
 			"messages m", []any{folderID}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -267,7 +268,7 @@ func TestNotClassifiedFilterPlansAsAntiJoin(t *testing.T) {
 			}
 			w := httptest.NewRecorder()
 			r := httptest.NewRequest(http.MethodGet, "/v1/export?not_classified=true", nil)
-			if !f.srv.addArchiveFilters(w, r, tc.mailboxCol, &conds, &args) {
+			if !f.srv.addArchiveFilters(w, r, tc.mailboxCol, tc.queueScope, &conds, &args) {
 				t.Fatalf("addArchiveFilters refused: %d %s", w.Code, w.Body)
 			}
 			rows, err := f.pool.Query(ctx, "EXPLAIN SELECT m.id FROM "+tc.from+

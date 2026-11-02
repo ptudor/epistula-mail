@@ -52,9 +52,16 @@ type server struct {
 	classificationsAvailable bool
 
 	// passQueueAvailable is probed at startup: pass_required=true and the
-	// prune endpoint need epistula-database migration 022 and this role's SELECT
-	// and DELETE on annotation_pass_required. Without them they answer 503.
+	// prune endpoint need epistula-database migration 029 (the queue with its
+	// mailbox_id, on top of 022) and this role's SELECT and DELETE on
+	// annotation_pass_required. Without them they answer 503.
 	passQueueAvailable bool
+
+	// fullTextAvailable is probed at startup: /v1/search and q= on
+	// /v1/export need the mail_fts function of epistula-database migration
+	// 027, whose expression index is what makes them a bitmap index scan.
+	// Without it they answer 503 rather than fail every query.
+	fullTextAvailable bool
 
 	// relay hands messages to the MTA's submission service; nil when no
 	// [[submission.accounts]] are configured, and the endpoint answers 503.
@@ -150,24 +157,43 @@ func runServe(args []string) int {
 		slog.Error("probe annotation_models", "err", err)
 		return EX_OSERR
 	}
-	// The annotation pass queue (migration 022), on the same terms.
+	// The annotation pass queue (migration 022), on the same terms, and with
+	// the mailbox column the scoped read needs (migration 029).
 	var passQueueUsable *bool
 	if err := srv.pool.QueryRow(probeCtx, `SELECT CASE
 	                WHEN to_regclass('annotation_pass_required') IS NULL THEN NULL
 	                ELSE has_table_privilege('annotation_pass_required', 'SELECT')
 	                 AND has_table_privilege('annotation_pass_required', 'DELETE')
+	                 AND EXISTS (SELECT 1 FROM information_schema.columns
+	                              WHERE table_schema = current_schema()
+	                                AND table_name = 'annotation_pass_required'
+	                                AND column_name = 'mailbox_id')
 	            END`).Scan(&passQueueUsable); err != nil {
 		probeCancel()
 		slog.Error("probe annotation_pass_required", "err", err)
 		return EX_OSERR
 	}
+	// Full-text search (migration 027): the function the index and the
+	// queries share.
+	var fullTextUsable bool
+	if err := srv.pool.QueryRow(probeCtx, `SELECT EXISTS (
+	                SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+	                 WHERE n.nspname = current_schema() AND p.proname = 'mail_fts')`).Scan(&fullTextUsable); err != nil {
+		probeCancel()
+		slog.Error("probe mail_fts", "err", err)
+		return EX_OSERR
+	}
 	probeCancel()
 	srv.passQueueAvailable = passQueueUsable != nil && *passQueueUsable
+	srv.fullTextAvailable = fullTextUsable
 	srv.classificationsAvailable = classificationsUsable
 	srv.annotationsAvailable = annotationsUsable
 	srv.modelPriorityAvailable = modelsSelectable != nil && *modelsSelectable
+	if !srv.fullTextAvailable {
+		slog.Warn("mail_fts function absent; /v1/search and q= on /v1/export will return 503 (apply epistula-database migration 027)")
+	}
 	if !srv.passQueueAvailable {
-		slog.Warn("annotation pass queue absent or not usable by this role; pass_required and POST /v1/pass-required/prune will return 503 (apply epistula-database migration 022; see deploy/README.md for grants)")
+		slog.Warn("annotation pass queue absent, without its mailbox column, or not usable by this role; pass_required and POST /v1/pass-required/prune will return 503 (apply epistula-database migrations 022 and 029; see deploy/README.md for grants)")
 	}
 	if srv.annotationsAvailable && !srv.modelPriorityAvailable {
 		slog.Warn("annotation_models registry absent or not SELECT-able by this role; annotations are served unranked (GRANT SELECT ON annotation_models, or apply epistula-database migration 008)")
@@ -202,6 +228,7 @@ func runServe(args []string) int {
 		"annotations", srv.annotationsAvailable,
 		"classifications", srv.classificationsAvailable,
 		"pass_queue", srv.passQueueAvailable,
+		"full_text", srv.fullTextAvailable,
 		"submission_accounts", len(cfg.Submission.Accounts),
 	)
 
