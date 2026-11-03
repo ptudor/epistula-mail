@@ -208,15 +208,17 @@ func blobsReferenced(ctx context.Context, q rowQuerier, kind blob.Kind, mailboxI
 func pruneEmptyDirs(dir, boundary string) {
 	for dir != boundary && strings.HasPrefix(dir, boundary+string(os.PathSeparator)) {
 		if err := os.Remove(dir); err != nil {
-			// A date bucket whose blobs are all gone still holds its
-			// durability marker (RA6X-036), so the rmdir fails ENOTEMPTY on a
-			// directory that is logically empty. Drop the marker and retry
-			// once: the next writer into this bucket recreates it, syncing the
-			// chain again, which is exactly the protocol.
+			// Versions before the in-memory durable-directory cache left an
+			// empty .durable marker in each date bucket (RA6X-036). Once a
+			// bucket's blobs are all gone, that marker alone makes the rmdir
+			// fail ENOTEMPTY on a directory that is logically empty, so drop
+			// the marker and retry once. Current writers never create it, so
+			// it does not come back.
 			//
-			// Only when the marker is the ONLY thing left — os.Remove of the
-			// directory succeeding after is the proof, and if it does not, the
-			// marker is restored on the next write anyway.
+			// The marker is removed only when it is the bucket's sole entry.
+			// A writer that adds an entry first, or straight after, makes the
+			// retry fail ENOTEMPTY, which ends the walk harmlessly like any
+			// other non-empty level.
 			if !blob.RemoveDurabilityMarkerIfOnlyEntry(dir) {
 				return
 			}
