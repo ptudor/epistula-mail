@@ -1114,7 +1114,15 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 		return nil
 	}
 
-	return s.visitFetchRows(ctx, uids, options, func(r fetchRow) error {
+	// A message whose blob cannot be read fails alone. Ending the command at
+	// the first one hid every later message in the range from a client that
+	// syncs by UID range: on junia on 2026-11-03 one unreadable blob kept an
+	// iPhone from ever receiving the messages that arrived after it. The
+	// unreadable message gets no response, so the client can try it again.
+	// The command still ends NO [SERVERBUG], because the store needs an
+	// operator.
+	var unreadable int
+	err = s.visitFetchRows(ctx, uids, options, func(r fetchRow) error {
 		sections := &messageSections{}
 		defer sections.close()
 		var envelope *imap.Envelope
@@ -1126,12 +1134,14 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 					return protocolErr
 				}
 				s.be.Logger.Error("FETCH envelope blob unreadable", "mailbox", s.mailboxName, "folder", s.selectedFolderName, "uid", r.uid, "sha16", safeShortSHA(r.rawSHA256Hex), "err", err)
-				return missingBlobErr()
+				unreadable++
+				return nil
 			}
 			envelope, err = buildRawEnvelope(r, header)
 			if err != nil {
 				s.be.Logger.Error("FETCH envelope header invalid", "uid", r.uid, "sha16", safeShortSHA(r.rawSHA256Hex), "err", err)
-				return missingBlobErr()
+				unreadable++
+				return nil
 			}
 		}
 		var bs imap.BodyStructure
@@ -1150,6 +1160,10 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 		}
 		for _, sec := range options.BodySection {
 			if err := sections.prepare(s, r, sec); err != nil {
+				if errors.Is(err, errMessageUnreadable) {
+					unreadable++
+					return nil
+				}
 				return err
 			}
 		}
@@ -1196,6 +1210,16 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if unreadable > 0 {
+		s.be.Logger.Error("FETCH answered without unreadable messages",
+			"mailbox", s.mailboxName, "folder", s.selectedFolderName,
+			"unreadable", unreadable, "requested", len(uids))
+		return missingBlobErr()
+	}
+	return nil
 }
 
 // fetchImpliesSeen reports whether the FETCH carries at least one body
@@ -1449,7 +1473,20 @@ func (s *Session) streamRawBody(resp *imapserver.FetchResponseWriter, r fetchRow
 	return sectionsStreamRawBody(resp, r, sec, file)
 }
 
+// openRawBody opens the raw blob for a single-message read, answering a
+// missing, unreadable or wrong-sized blob with NO [SERVERBUG].
 func (s *Session) openRawBody(r fetchRow) (*os.File, error) {
+	file, err := s.openRawBlob(r)
+	if errors.Is(err, errMessageUnreadable) {
+		return nil, missingBlobErr()
+	}
+	return file, err
+}
+
+// openRawBlob is openRawBody for FETCH, which answers the other messages of
+// its range first: blob corruption is reported, after logging, as
+// errMessageUnreadable rather than as the command's final response.
+func (s *Session) openRawBlob(r fetchRow) (*os.File, error) {
 	bucket := blob.BucketFromTime(r.rawBlobDate)
 	rc, err := s.be.BlobStore.Open(blob.KindRaw, s.tenant, bucket, r.rawSHA256Hex)
 	if err != nil {
@@ -1461,7 +1498,7 @@ func (s *Session) openRawBody(r fetchRow) (*os.File, error) {
 		s.be.Logger.Error("FETCH BODY[] open blob",
 			"mailbox", s.mailboxName, "folder", s.selectedFolderName,
 			"uid", r.uid, "sha16", safeShortSHA(r.rawSHA256Hex), "bucket", bucket, "err", err)
-		return nil, missingBlobErr()
+		return nil, errMessageUnreadable
 	}
 	file, ok := rc.(*os.File)
 	if !ok {
@@ -1480,7 +1517,7 @@ func (s *Session) openRawBody(r fetchRow) (*os.File, error) {
 		file.Close()
 		s.be.Logger.Error("FETCH BODY[] blob stat or size mismatch",
 			"uid", r.uid, "sha16", safeShortSHA(r.rawSHA256Hex), "db_size", r.rawSize, "err", statErr)
-		return nil, missingBlobErr()
+		return nil, errMessageUnreadable
 	}
 	return file, nil
 }
@@ -2857,7 +2894,7 @@ func (c *messageSections) prepare(s *Session, r fetchRow, sec *imap.FetchItemBod
 	switch {
 	case len(sec.Part) == 0 && sec.Specifier == imap.PartSpecifierNone && len(sec.HeaderFields) == 0 && len(sec.HeaderFieldsNot) == 0:
 		if c.stream == nil {
-			c.stream, err = s.openRawBody(r)
+			c.stream, err = s.openRawBlob(r)
 		}
 	case len(sec.Part) == 0 && sec.Specifier == imap.PartSpecifierHeader:
 		_, err = c.topHeader(s, r)
@@ -2867,13 +2904,21 @@ func (c *messageSections) prepare(s *Session, r fetchRow, sec *imap.FetchItemBod
 	if err == nil || errors.Is(err, errPartNotFound) {
 		return nil
 	}
+	if errors.Is(err, errMessageUnreadable) {
+		return err // openRawBlob logged it with the blob's details
+	}
 	var protocolErr *imap.Error
 	if errors.As(err, &protocolErr) {
 		return protocolErr
 	}
 	s.be.Logger.Error("FETCH section preparation failed", "uid", r.uid, "part", partIntPath(sec.Part), "err", err)
-	return missingBlobErr()
+	return errMessageUnreadable
 }
+
+// errMessageUnreadable marks a FETCH failure confined to one message: its
+// blob could not be opened or parsed. Fetch skips that message, answers the
+// rest, and ends the command with missingBlobErr.
+var errMessageUnreadable = errors.New("message blob unreadable")
 
 func (c *messageSections) close() {
 	if c.stream != nil {
