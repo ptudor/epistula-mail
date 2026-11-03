@@ -75,6 +75,12 @@ func runServe(args []string) int {
 	store := blob.NewStore(cfg.Storage.Root)
 	store.SetLogger(slog.Default())
 	store.SetGroupWritable(cfg.Storage.GroupWritable)
+	if cfg.Storage.GroupWritable {
+		// Set before any session can APPEND: mkdir then creates blob
+		// directories with the shared bits, so a crash between mkdir and
+		// chmod cannot strand one (blob.SharedGroupUmask).
+		blob.UseSharedGroupUmask()
+	}
 	if cfg.Production {
 		if err := store.CheckPermissions(); err != nil {
 			slog.Error("blob store permissions", "err", err)

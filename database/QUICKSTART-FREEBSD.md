@@ -96,8 +96,9 @@ pw useradd  -n "${SVC_USER}" -g "${SVC_GROUP}" -d /nonexistent \
 #
 # You MUST set `group_writable = true` under [storage] in BOTH the
 # epistula-database and epistula-imap TOMLs so the daemons create the setgid
-# group-writable modes (owner-only 0750/0640 is the default). If you deploy
-# single-daemon (no IMAP), leave it false.
+# group-writable modes (owner-only 0750/0640 is the default). With it, each
+# daemon sets its own umask to 007 at startup, so neither Postfix nor rc.d
+# needs a umask setting. If you deploy single-daemon (no IMAP), leave it false.
 install -d -o "${SVC_USER}" -g "${SVC_GROUP}" -m 2770 "${STORAGE_ROOT}"
 # Config dir (root-owned, group-readable so the daemon can read the TOML).
 install -d -o root -g "${SVC_GROUP}" -m 750 /usr/local/etc/epistula

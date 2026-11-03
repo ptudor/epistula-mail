@@ -77,6 +77,12 @@ func openBlobStoreMode(cfg *Config, deliverPath, initialize bool) (*blob.Store, 
 	store := blob.NewStore(cfg.Storage.Root)
 	store.SetLogger(slog.Default())
 	store.SetGroupWritable(cfg.Storage.GroupWritable)
+	if cfg.Storage.GroupWritable {
+		// Postfix runs the delivery agent with umask 077. Under it, a
+		// delivery killed between mkdir and chmod stranded a 2700 directory
+		// the IMAP server could not enter (blob.SharedGroupUmask).
+		blob.UseSharedGroupUmask()
+	}
 	if initialize {
 		if err := store.InitExisting(); err != nil {
 			fmt.Fprintf(os.Stderr, "blob store: %v\n", err)

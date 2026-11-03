@@ -258,6 +258,11 @@ func (s *Store) chmodShared(dir string) error {
 // level the peer daemon owns would fail EPERM and break every cross-daemon
 // APPEND/delivery into an existing tree (R-007). A fast path skips the walk
 // when the leaf already exists.
+//
+// The exception is a creator killed between MkdirAll and this walk: its levels
+// keep the umask-masked mode. syncAncestry repairs a level like that when the
+// level belongs to this process (repairDirMode), and SharedGroupUmask keeps
+// such a level from arising in a shared-group daemon at all.
 func (s *Store) ensureDir(dir string) error {
 	if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
 		// Present — but present is not the same as DURABLE (RA6X-036).
@@ -287,6 +292,10 @@ func (s *Store) ensureDirSlow(dir string) error {
 // synced before Writer.Close acknowledges it.
 func (s *Store) ensureTempDir(dir string) error {
 	if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+		// Staging is never synced, so it does not pass syncAncestry's repair.
+		// A tmp dir stranded without the group bits would refuse the peer
+		// daemon's CreateTemp, and with it every IMAP APPEND for the tenant.
+		s.repairDirMode(dir, fi, func(m os.FileMode) error { return osChmod(dir, m) })
 		return nil
 	}
 	return s.ensureDirSlowMode(dir, false)

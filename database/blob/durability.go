@@ -82,6 +82,13 @@ func (s *Store) syncAndRememberDurableDir(path string) error {
 		_ = f.Close()
 		return fsyncDir(path)
 	}
+	// Every write passes each level of its chain through here before its
+	// row commits, so a level left without the group bits by a writer killed
+	// between mkdir and chmod is repaired by the next write beneath it, at
+	// the latest the retry of the killed delivery. Changing the mode through
+	// the open handle changes the inode this function syncs and caches,
+	// whatever happens to the path meanwhile.
+	s.repairDirMode(path, info, f.Chmod)
 	if err := fsyncDir(path); err != nil {
 		_ = f.Close()
 		return err
