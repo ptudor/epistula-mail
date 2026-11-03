@@ -289,6 +289,88 @@ func lockMailboxRow(ctx context.Context, tx pgx.Tx, mailboxID int64) error {
 	return nil
 }
 
+// FolderResync reports what ResyncFolder found and did.
+type FolderResync struct {
+	FolderID int64
+	// Before is the folder's UIDVALIDITY when the call began; After is the new
+	// one, or 0 for a dry run.
+	Before, After int64
+	// Messages is how many messages every client reads again.
+	Messages int64
+}
+
+// ResyncFolder gives one folder a new UIDVALIDITY, so that every IMAP client
+// discards what it cached for the folder and reads it again (RFC 9051
+// §2.3.1.1). UIDs, flags and messages are unchanged. epistula-imap closes a
+// session whose selected folder changed generation, and the notification
+// sent at commit makes an IDLE session notice at once.
+//
+// This is the server's remedy for a client whose cache has gone wrong in a way
+// it will not repair itself. On junia on 2026-11-03 an iPhone kept a message
+// hidden after the blob that had blocked its fetches became readable again.
+// Short of a resync, the only fixes were moving the message out and back in
+// from another client or removing and re-adding the account on the device.
+//
+// The new value always exceeds the old, as the RFC requires. A folder created
+// before migration 018 took its UIDVALIDITY from the clock and can sit above
+// the shared sequence, so the sequence is first advanced past it. Sequences
+// only move forward, so later folders still get fresh values.
+//
+// With dryRun it reports the folder and its message count without locking or
+// writing anything.
+func (db *DB) ResyncFolder(ctx context.Context, mailboxID int64, folder string, dryRun bool) (FolderResync, error) {
+	var r FolderResync
+	err := db.runTx(ctx, func(tx pgx.Tx) error {
+		r = FolderResync{}
+		lookup := `SELECT id, uidvalidity FROM folders WHERE mailbox_id = $1 AND name = $2`
+		if !dryRun {
+			if err := lockMailboxRow(ctx, tx, mailboxID); err != nil {
+				return err
+			}
+			lookup += ` FOR UPDATE`
+		}
+		if err := tx.QueryRow(ctx, lookup, mailboxID, folder).Scan(&r.FolderID, &r.Before); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("%w: folder %q", ErrNotFound, folder)
+			}
+			return fmt.Errorf("folder lookup: %w", err)
+		}
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM messages WHERE folder_id = $1`, r.FolderID,
+		).Scan(&r.Messages); err != nil {
+			return fmt.Errorf("count messages: %w", err)
+		}
+		if dryRun {
+			return nil
+		}
+		if _, err := tx.Exec(ctx,
+			`SELECT setval('folder_uidvalidity_seq', $1)
+			  WHERE (SELECT last_value FROM folder_uidvalidity_seq) < $1`, r.Before,
+		); err != nil {
+			return fmt.Errorf("advance uidvalidity sequence: %w", err)
+		}
+		if err := tx.QueryRow(ctx, `SELECT mail_next_uidvalidity()`).Scan(&r.After); err != nil {
+			return fmt.Errorf("allocate uidvalidity: %w", err)
+		}
+		if r.After <= r.Before {
+			return fmt.Errorf("allocated UIDVALIDITY %d does not exceed the folder's %d", r.After, r.Before)
+		}
+		if err := CheckProtocolID("uidvalidity", r.After); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE folders SET uidvalidity = $1 WHERE id = $2`, r.After, r.FolderID,
+		); err != nil {
+			return fmt.Errorf("update uidvalidity: %w", err)
+		}
+		return notifyFolders(ctx, tx, []int64{r.FolderID})
+	})
+	if err != nil {
+		return FolderResync{}, err
+	}
+	return r, nil
+}
+
 // specialUseAttributes is everything folders.special_use may hold: the RFC
 // 6154 attributes plus RFC 8457's \Important, as the schema comment on the
 // column enumerates. LIST emits the column verbatim, so nothing outside this

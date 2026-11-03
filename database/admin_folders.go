@@ -249,6 +249,76 @@ func adminFolderSetSpecialUse(args []string) int {
 	return EX_OK
 }
 
+// adminFolderResync makes every IMAP client re-read one folder from the server
+// by giving it a new UIDVALIDITY (storage.ResyncFolder). It is the remedy for a
+// client whose cached view of the folder went wrong and will not repair
+// itself, such as a message that stays hidden after the server problem that
+// hid it is fixed. Nothing on the server changes besides the one number; each
+// client downloads the folder's message list again on its next sync.
+func adminFolderResync(args []string) int {
+	fs := flag.NewFlagSet("admin folder-resync", flag.ContinueOnError)
+	configPath := fs.String("config", "", "Path to TOML config file")
+	mailbox := fs.String("mailbox", "", "Mailbox name (required)")
+	folder := fs.String("folder", "", "Folder name, exactly as folder-list prints it (required)")
+	dryRun := fs.Bool("dry-run", false, "Report the folder and its message count without changing anything")
+	yes := fs.Bool("yes", false, "Apply: every client re-reads the folder on its next sync")
+	if err := fs.Parse(args); err != nil {
+		return EX_USAGE
+	}
+	*mailbox = strings.ToLower(strings.TrimSpace(*mailbox))
+	if *mailbox == "" || *folder == "" {
+		fmt.Fprintln(os.Stderr, "folder-resync: -mailbox and -folder are required")
+		return EX_USAGE
+	}
+	if *dryRun == *yes {
+		fmt.Fprintln(os.Stderr, "folder-resync: pass exactly one of -dry-run or -yes")
+		return EX_USAGE
+	}
+
+	cfg, err := LoadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		return EX_CONFIG
+	}
+	db, code := adminOpenDB(cfg)
+	if code != EX_OK {
+		return code
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	mailboxID, err := db.LookupMailboxByName(ctx, *mailbox)
+	if errors.Is(err, storage.ErrNotFound) {
+		fmt.Fprintf(os.Stderr, "mailbox %q not found\n", *mailbox)
+		return EX_USAGE
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "lookup mailbox: %v\n", err)
+		return EX_TEMPFAIL
+	}
+
+	r, err := db.ResyncFolder(ctx, mailboxID, *folder, *dryRun)
+	switch {
+	case errors.Is(err, storage.ErrNotFound):
+		fmt.Fprintf(os.Stderr, "%v (folder names are exact and case-sensitive; see folder-list -mailbox %s)\n",
+			err, *mailbox)
+		return EX_USAGE
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "folder-resync: %v\n", err)
+		return EX_TEMPFAIL
+	}
+	if *dryRun {
+		fmt.Printf("mailbox %s folder %q: UIDVALIDITY %d; a resync would make every client re-read its %d message(s)\n",
+			*mailbox, *folder, r.Before, r.Messages)
+		fmt.Println("dry run: nothing was written")
+		return EX_OK
+	}
+	fmt.Printf("mailbox %s folder %q: UIDVALIDITY %d -> %d; every client re-reads its %d message(s) on its next sync\n",
+		*mailbox, *folder, r.Before, r.After, r.Messages)
+	return EX_OK
+}
+
 // adminFolderCreate creates a folder, with its missing ancestors and an
 // optional special-use attribute, without the mailbox password IMAP CREATE
 // would need. Archive sorting needs a mailbox to have \Archive and \Trash

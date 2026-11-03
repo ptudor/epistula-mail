@@ -371,6 +371,12 @@ Folder:
                    mailbox: clear the old holder before moving an attribute.
                    With epistula-imap's Trash purge on, whatever is in the
                    \Trash folder is destroyed after the retention period.
+  folder-resync    -mailbox M -folder F (-dry-run | -yes)
+                   Give the folder a new UIDVALIDITY so every IMAP client
+                   discards its cached copy of the folder and reads it again.
+                   For a client stuck showing a wrong view, such as a
+                   message that stays hidden after a server fault is fixed.
+                   Messages, flags and UIDs are unchanged.
   folder-prune-empty -mailbox M (-dry-run | -yes)
                    Delete empty folders nothing needs (not INBOX, not
                    special-use, not an archive category folder or its parent),
@@ -421,7 +427,7 @@ Postfix policy export:
 
 All subcommands accept -config <path>.
 -yes is required to apply mailbox-delete, mailbox-rename, domain-delete,
-archive-apply, archive-undo, folder-prune-empty, folder-merge,
+archive-apply, archive-undo, folder-prune-empty, folder-merge, folder-resync,
 archive-reclassify and log-prune (where offered, -dry-run previews instead).
 alias-delete, acl-delete, api-token-revoke and annotation-model-retire apply
 immediately without -yes.
