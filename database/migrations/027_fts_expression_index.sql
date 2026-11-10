@@ -4,10 +4,12 @@
 --
 -- messages.fts was a STORED generated column: the vector was computed at
 -- INSERT, written to the heap (TOASTed), and then indexed by idx_messages_fts.
--- Nothing ever read the column itself. Every query asked `fts @@ tsquery`,
--- which the GIN index answers on its own; the stored copy was only ever
--- consulted for the recheck of a lossy bitmap page, which a plainto_tsquery
--- search never needs. On a production store of 630K messages (12 GB) the
+-- No reader selected the column itself. Every query asked `fts @@ tsquery`.
+-- The GIN index resolves plain word matches without reading the vector when
+-- the bitmap fits in work_mem. Broad searches can still exceed that budget
+-- and need lossy-page rechecks, which read the stored vector before this
+-- migration and recompute mail_fts afterwards. See DATABASE_OPERATIONS.md
+-- for measured work_mem sizing. On a store of 630K messages (12 GB) the
 -- stored vectors took 2.6 GB of TOAST, 21% of the database, duplicating what
 -- the 2.1 GB index already held.
 --

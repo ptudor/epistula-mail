@@ -16,7 +16,7 @@ migrations 027–030:
 |---|---|---|
 | heap (the row proper) | 814 MB | everything |
 | `html_body` (TOAST) | 2,946 MB | nothing in production: epistula-api's single-message document offered it, its only consumer (epistula-mcp) asked for `html=false`; IMAP SEARCH BODY LIKEd over it |
-| `fts` stored tsvector (TOAST) | 2,603 MB | nothing: every query used the GIN index; the column was consulted only for a lossy-page recheck no `plainto_tsquery` needs |
+| `fts` stored tsvector (TOAST) | 2,603 MB | no direct reader: queries used the GIN index; broad searches still consulted the column when the bitmap exceeded `work_mem` and needed lossy-page rechecks |
 | `idx_messages_fts` GIN | 2,127 MB | `/v1/search`, `q=` on `/v1/export` |
 | `headers` JSONB (TOAST) | 1,259 MB | ENVELOPE (Sender/Reply-To/Bcc), the API document, IMAP SEARCH HEADER/TEXT |
 | `text_body` (TOAST) | 1,244 MB | the LLM pipeline, `/text`, IMAP SEARCH, the search index |
@@ -155,6 +155,19 @@ rows are rewritten:
 Afterwards `ANALYZE messages` so the planner sees the new index set, and read
 `pg_stat_user_indexes` again in a month.
 
+Measured on the reference store after 030 (671,790 messages, `messages`
+12 GB in total, 8.7 GB of it TOAST): `VACUUM FULL messages` with
+`maintenance_work_mem` at 1 GB on a 16K-recordsize ZFS dataset took 24
+minutes, about 11 of them for the heap and TOAST rewrite and the rest for
+the index rebuilds, which the GIN dominates; `ANALYZE` took 24 seconds. The
+table came out at 6.1 GB (TOAST 2.8 GB) and the database halved. Six
+deliveries deferred during the lock and were retried; no daemon logged an
+error. The GIN rebuild prints a batch of `word is too long to be indexed`
+notices: the parser skipping tokens over 2047 characters, usually base64
+fragments, harmless. On ZFS the dataset's `refer` drops as soon as the old
+files are unlinked, but `used` and the pool's free space do not move until
+the snapshots that still hold those files are rotated out.
+
 ## Large reorganizations and the search index
 
 A one-time `archive-apply` over a whole mailbox rewrites every moved row and
@@ -175,6 +188,95 @@ psql -d epistula_database \
 # then confirm pg_index.indisvalid
 ```
 
+## Broad full-text counts: 62 seconds to 0.3 seconds
+
+On 2026-11-10, a database-scoped `work_mem` increase from 4 MB to 16 MB
+removed the expensive bitmap rechecks from an exact count of `unsubscribe`.
+The reference store had about 673K messages, with 224,746 matches in this
+measurement, on PostgreSQL 16.15 and a 48 GiB host. No schema change, index
+rebuild, binary deployment, or service restart was needed.
+
+| Setting | Result | Evidence |
+|---|---|---|
+| 4 MB, earlier observation | 62 s | Lossy bitmap pages required recomputing the search vector |
+| 4 MB, this verification | Canceled at the 90 s statement timeout | Same query and repeatable-read snapshot as the 16 MB test; no completed execution plan |
+| 16 MB, transaction-local test | 296.491 ms | Zero lossy heap blocks and zero rows removed by index recheck |
+| 16 MB, fresh connection after deployment | 310.489 ms | Database default applied, exact bitmap, same 224,746 matches |
+
+That is about **200 times faster** than the original 62-second observation.
+The completed measurements used a warm cache: 74,956 shared buffer hits,
+zero shared reads, and two parallel workers. They measure this count on this
+store, not a cold-cache latency guarantee or a 200-fold improvement to every
+search. The 4 MB retry followed the fast test, so simply warming the cache
+did not make the original setting sufficient.
+
+The GIN index already identifies which rows contain an unweighted word.
+However, its result bitmap must remember matching tuple locations across the
+heap. At 4 MB, a broad search can exceed the bitmap's budget; PostgreSQL then
+remembers some matching pages without their exact tuple offsets. It must
+check candidate rows on those pages again. With the expression index from
+027, each such recheck detoasts the body and recomputes `mail_fts`, including
+both `to_tsvector` calls. A `plainto_tsquery` can therefore need rechecks too.
+At 16 MB this bitmap stays exact and avoids that work. This retains the
+storage saving from removing the stored vector; restoring that column is
+unnecessary for this case.
+
+The persistent change on the reference deployment was:
+
+```sql
+ALTER DATABASE mail_database SET work_mem = '16MB';
+```
+
+Use the actual database name on another deployment; the examples elsewhere
+use `epistula_database`. This is an operational setting, not a schema
+migration. A fresh connection to `mail_database` reported `work_mem=16384`
+kB with `source=database`; a fresh connection to `postgres` still reported
+4096 kB with `source=default`. Existing sessions retain their setting until
+they reconnect; ordinary pool turnover applies the change without a restart.
+[PostgreSQL documents this per-database session behavior](https://www.postgresql.org/docs/16/sql-alterdatabase.html).
+
+`work_mem` is a budget per query operation, not a reservation per idle
+connection or a total cap for a query. Concurrent operations and parallel
+workers can multiply memory use, and hash operations also use
+`hash_mem_multiplier` (2 on this host). The 16 MB setting was chosen for this
+store and host, which had 22 mail database client connections at inspection;
+it is not a cluster-wide default for unrelated workloads.
+[PostgreSQL's memory documentation](https://www.postgresql.org/docs/16/runtime-config-resource.html#GUC-WORK-MEM)
+describes those multipliers. Recheck the plan as the store grows, rather than
+assuming 16 MB will always be sufficient.
+
+To reproduce the fast test without changing a session's lasting settings:
+
+```sql
+BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
+SET LOCAL statement_timeout = '10s';
+SET LOCAL work_mem = '16MB';
+SELECT count(*) FROM messages
+ WHERE mail_fts(subject, text_body) @@ plainto_tsquery('simple', 'unsubscribe');
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
+SELECT count(*) FROM messages
+ WHERE mail_fts(subject, text_body) @@ plainto_tsquery('simple', 'unsubscribe');
+ROLLBACK;
+```
+
+Look for no lossy heap blocks. `Recheck Cond` can still appear in the plan
+even when the bitmap is exact; its presence alone does not show that a
+recheck ran. Phrase and weight-constrained queries can still require vector
+rechecks independently of bitmap memory.
+
+The API's paginated search does not count the full result set, so this gain
+primarily concerns ad-hoc broad counts. Through the configured `mail-mcp`,
+the first two ten-message `unsubscribe` pages returned in 119 ms and 178 ms,
+with a continuation cursor and no duplicate IDs between pages. These are
+end-to-end smoke checks, not before/after API benchmarks.
+
+Rollback removes only the new database override and restores inheritance of
+the cluster's 4 MB default for new sessions:
+
+```sql
+ALTER DATABASE mail_database RESET work_mem;
+```
+
 ## Keeping it healthy
 
 - `autovacuum` is on with the defaults; the visibility map stays fresh enough
@@ -190,10 +292,12 @@ psql -d epistula_database \
   its pending list (`gin_pending_list_limit` 4 MB) and merged by autovacuum
   or by whichever statement overflows it. A bulk move flushes it between
   batches (`archive/ginflush.go`).
-- On the reference store `shared_buffers` is 6 GB, `work_mem` 4 MB (the old
-  prune's hash spilled to disk at 357K rows; the scoped one does not),
-  `maintenance_work_mem` 64 MB (raise to 1 GB for the session when building
-  the GIN), `jit` on, `random_page_cost` 4 (the spinning-disk default; set
+- On the reference store `shared_buffers` is 6 GB. Since 2026-11-10,
+  `work_mem` is 16 MB for the mail database and remains 4 MB cluster-wide
+  (see the broad-count measurement above). The old prune's hash spilled to
+  disk at 357K rows under 4 MB; the scoped one does not.
+  `maintenance_work_mem` is 64 MB (raise to 1 GB for the session when building
+  the GIN), `jit` is on, and `random_page_cost` is 4 (the spinning-disk default; set
   1.1 if the pool is on SSD, though every plan measured here was already an
   index plan).
 - `pg_stat_statements` is not loaded there. It would have answered "which
