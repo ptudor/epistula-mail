@@ -63,7 +63,7 @@ gh attestation verify checksums.txt --repo ptudor/epistula-mail --signer-workflo
 
 ## Development snapshots
 
-Install GoReleaser OSS 2.19.0 and GPG, then run `make release-check` and
+Install GoReleaser OSS 2.20.0 and GPG, then run `make release-check` and
 `make snapshot`. Snapshots generate a temporary RSA signing key and delete its
 secret material on exit. Its public half is written to
 `dist/snapshot-signing-key.asc` for signature and package checks. Development

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Build all five services with Go 1.27.4, which includes the November 2026
+  toolchain and HTTP security fixes. Update pgx to 5.12.0, its connection
+  pool, Prometheus support modules, the Go text/system libraries, and MCP's
+  indirect dependencies. Pin `golang.org/x/crypto` to the upstream revision
+  that removes the obsolete OpenPGP packages flagged by GO-2026-5932;
+  Epistula did not import those packages. Release builds now use GoReleaser
+  2.20.0, including its publishing-key metadata security fix.
 - The `messages` table no longer stores two projections nothing read, and its
   indexes follow the readers. epistula-database migrations 027–030: the
   full-text vector is the expression of the new IMMUTABLE `mail_fts(subject,
