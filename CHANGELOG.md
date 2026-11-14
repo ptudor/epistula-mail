@@ -1,6 +1,6 @@
 # Epistula changelog
 
-## Unreleased
+## 1.0.1 — 2026-11-13
 
 - Build all five services with Go 1.27.4, which includes the November 2026
   toolchain and HTTP security fixes. Update pgx to 5.12.0, its connection
@@ -9,6 +9,16 @@
   that removes the obsolete OpenPGP packages flagged by GO-2026-5932;
   Epistula did not import those packages. Release builds now use GoReleaser
   2.20.0, including its publishing-key metadata security fix.
+- Release automation includes the checked-in release notes and verifies that
+  the draft contains them before publication.
+- `admin folder-resync` gives a repaired folder a new UIDVALIDITY so IMAP
+  clients discard stale cached state and read it again. It supports a dry run
+  and requires `-yes` to apply; sessions with that folder selected close so
+  their clients reconnect.
+- IMAP FETCH continues answering readable messages after an unreadable blob
+  in the requested range, then reports the failed command. Blob directory
+  creation also preserves reader access if a writer exits before completing
+  its permission setup.
 - The `messages` table no longer stores two projections nothing read, and its
   indexes follow the readers. epistula-database migrations 027–030: the
   full-text vector is the expression of the new IMMUTABLE `mail_fts(subject,
@@ -97,15 +107,17 @@
   and `/etc/epistula/<service>.toml`, where `<service>` is `epistula-database`,
   `epistula-imap`, `epistula-api`, `epistula-llm-worker` or `epistula-mcp`.
   Use `-config` for other locations; the working directory is no longer searched.
-- Security: build with Go 1.27.3 and `golang.org/x/net` v0.62.0, which fix
-  advisories in `net/http`, HTTP/2, `crypto/tls`, `net/textproto`, `os` and
+- Also incorporates the security fixes from Go 1.27.3 and
+  `golang.org/x/net` v0.62.0 for advisories in `net/http`, HTTP/2, `crypto/tls`,
+  `net/textproto`, `os`, and
   `crypto/x509` (GO-2026-6603 through GO-2026-6617, GO-2026-6809) and in
   `golang.org/x/net/html` (GO-2026-6860, GO-2026-6866). Rebuild and redeploy
   every component.
-- Dependencies: `pgx` v5.11.0, `prometheus/client_golang` v1.25.0, `go-toml`
-  v2.4.3, the MCP Go SDK v1.8.0, and current `golang.org/x` modules. `pgx` now
-  parses PostgreSQL connection strings exactly as libpq does: a raw `=` inside a
-  URI query value is a parse error (percent-encode it as `%3D`), a backslash in
+- Includes `prometheus/client_golang` v1.25.0, `go-toml` v2.4.3, the MCP Go
+  SDK v1.8.0, and the PostgreSQL DSN parsing changes introduced in `pgx`
+  v5.11.0. `pgx` now parses PostgreSQL connection strings as libpq does:
+  a raw `=` inside a URI query value is a parse error (percent-encode it as
+  `%3D`), a backslash in
   a keyword/value string escapes the next character, and a repeated URI
   parameter takes its last value instead of its first. Run `check-config`
   against each existing configuration before restarting on the new build.

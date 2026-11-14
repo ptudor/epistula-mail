@@ -335,7 +335,8 @@ signs:
       - --detach-sign
       - ${artifact}
 changelog:
-  disable: true
+  # Disabling this also skips loading the workflow's --release-notes file.
+  disable: false
 release:
   github:
     owner: ptudor

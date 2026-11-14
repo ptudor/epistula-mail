@@ -62,6 +62,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NFPM_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
+      - name: Verify draft release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$RELEASE_TAG" --json body --jq .body > "$RUNNER_TEMP/release-body.md"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          notes = Path("docs/release-notes") / (os.environ["RELEASE_TAG"] + ".md")
+          body = Path(os.environ["RUNNER_TEMP"]) / "release-body.md"
+          if notes.read_text().strip() not in body.read_text():
+              raise SystemExit("Draft release is missing the checked-in release notes")
+          PY
       - name: Verify signatures and dependency notices
         run: |
           sh scripts/verify-signatures.sh packaging/release-signing-key.asc

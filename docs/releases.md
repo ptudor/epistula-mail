@@ -2,8 +2,9 @@
 
 Epistula releases are published on GitHub. Repository tags use `vMAJOR.MINOR.PATCH`
 and build all five components together. Release notes are checked in at
-`docs/release-notes/<tag>.md`; the 1.0 notes are
-[v1.0.0.md](release-notes/v1.0.0.md).
+`docs/release-notes/<tag>.md`; see [v1.0.1.md](release-notes/v1.0.1.md) for
+the current release and its upgrade steps, and
+[v1.0.0.md](release-notes/v1.0.0.md) for the initial release.
 
 Each Linux, FreeBSD, and macOS archive for amd64 or arm64 contains all five
 executables and the configuration/deployment documentation. Linux also has five
@@ -30,9 +31,10 @@ a separate personal token is unnecessary.
 Enable private vulnerability reporting in the repository settings if desired.
 Check in the release notes, update the changelog, and let CI pass on `main`,
 then create and push the release tag on the intended commit. CI and security
-checks gate the release. The workflow builds a draft, signs packages and the
-checksum manifest, verifies them, tests package lifecycles, attests assets, and
-finally publishes the draft. A failed verification leaves it unpublished. Do not
+checks gate the release. The workflow builds a draft with signed packages and
+a signed checksum manifest, checks its release notes and signatures, tests
+package lifecycles, attests assets, and finally publishes the draft. A failed
+verification leaves it unpublished. Do not
 treat an unverified draft as a release.
 
 ## Verify a download
