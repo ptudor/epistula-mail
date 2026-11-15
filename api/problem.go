@@ -9,7 +9,10 @@ import (
 // RFC 7807 problem+json error writer — the single error shape every
 // handler uses, per the project's convention for its HTTP APIs.
 
-const problemTypeBase = "https://api.ptudor.invalid/errors/"
+// Keep problem types root-relative so the public reverse proxy's selected
+// authority owns the URL. The API serves more than one virtual host and must
+// not reflect an untrusted Host header into JSON responses.
+const problemTypeBase = "/mail/api/errors/"
 
 type problem struct {
 	Type     string `json:"type"`

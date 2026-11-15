@@ -332,11 +332,16 @@ func (c *MailAPIClient) PrunePassQueue(ctx context.Context, p PassPrune) (PassPr
 // down) is an outage, not a missing feature.
 func isPassQueueUnavailable(err error) bool {
 	var statusErr *HTTPStatusError
+	const (
+		passQueueProblemType       = "/mail/api/errors/unavailable-pass-queue"
+		legacyPassQueueProblemType = "https://api.ptudor.invalid/errors/unavailable-pass-queue"
+	)
 	return errors.As(err, &statusErr) &&
 		statusErr.Service == ServiceMailAPI &&
 		statusErr.StatusCode == http.StatusServiceUnavailable &&
 		strings.HasPrefix(statusErr.ContentType, "application/problem+json") &&
-		statusErr.ProblemType == "https://api.ptudor.invalid/errors/unavailable-pass-queue"
+		(statusErr.ProblemType == passQueueProblemType ||
+			statusErr.ProblemType == legacyPassQueueProblemType)
 }
 
 // ArchiveCategories returns the mailbox's active archive categories. An empty

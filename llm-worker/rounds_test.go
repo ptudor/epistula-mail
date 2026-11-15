@@ -19,7 +19,7 @@ func TestFastRoundBackend503DoesNotMeanMissingQueue(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		fmt.Fprint(w, `{"type":"https://api.ptudor.invalid/errors/unavailable","detail":"Authentication backend unavailable."}`)
+		fmt.Fprint(w, `{"type":"/mail/api/errors/unavailable","detail":"Authentication backend unavailable."}`)
 	}))
 	defer api.Close()
 	cfg := DefaultConfig()

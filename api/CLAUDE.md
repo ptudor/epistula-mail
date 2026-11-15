@@ -280,7 +280,7 @@ the record.
 All errors are `application/problem+json`, the error convention the root CLAUDE.md sets for the project's HTTP APIs:
 
 ```
-{ "type": "https://api.ptudor.invalid/errors/forbidden",
+{ "type": "/mail/api/errors/forbidden",
   "title": "Forbidden",
   "status": 403,
   "detail": "Token is not scoped to mailbox 'jdoe'.",
