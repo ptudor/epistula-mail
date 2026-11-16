@@ -1,5 +1,16 @@
 # Epistula changelog
 
+## 1.0.2 — 2026-11-15
+
+- epistula-api problem documents now use root-relative
+  `/mail/api/errors/<type>` identifiers. A deployment that publishes one API
+  through multiple reverse-proxy virtual hosts therefore resolves each type
+  under the public host that handled the request, without reflecting an
+  untrusted `Host` header or exposing the old placeholder authority.
+- epistula-llm-worker recognizes the relative annotation-queue problem type.
+  The old placeholder type is no longer accepted. No schema or configuration
+  changes are required.
+
 ## 1.0.1 — 2026-11-13
 
 - Build all five services with Go 1.27.4, which includes the November 2026

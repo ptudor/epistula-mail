@@ -2,7 +2,7 @@
 
 Epistula releases are published on GitHub. Repository tags use `vMAJOR.MINOR.PATCH`
 and build all five components together. Release notes are checked in at
-`docs/release-notes/<tag>.md`; see [v1.0.1.md](release-notes/v1.0.1.md) for
+`docs/release-notes/<tag>.md`; see [v1.0.2.md](release-notes/v1.0.2.md) for
 the current release and its upgrade steps, and
 [v1.0.0.md](release-notes/v1.0.0.md) for the initial release.
 
