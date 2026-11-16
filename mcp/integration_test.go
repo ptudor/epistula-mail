@@ -61,7 +61,7 @@ func newMockAPI(t *testing.T) *mockAPI {
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"type": "https://api.ptudor.invalid/errors/forbidden", "title": "Forbidden",
+			"type": "/mail/api/errors/forbidden", "title": "Forbidden",
 			"status": 403, "detail": "Token is not scoped to mailbox 'secret'.",
 		})
 	})
@@ -154,7 +154,7 @@ func newMockAPI(t *testing.T) *mockAPI {
 			w.Header().Set("Content-Type", "application/problem+json")
 			w.WriteHeader(http.StatusGatewayTimeout)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"type": "https://api.ptudor.invalid/errors/submission-outcome-unknown", "title": "Submission Outcome Unknown",
+				"type": "/mail/api/errors/submission-outcome-unknown", "title": "Submission Outcome Unknown",
 				"status": 504, "detail": "The message may have been sent: the whole message was sent but the submission service's reply was not received.",
 			})
 			return

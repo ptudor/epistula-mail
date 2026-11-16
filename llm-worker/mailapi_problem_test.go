@@ -5,19 +5,14 @@ import (
 	"testing"
 )
 
-func TestPassQueueUnavailableProblemTypesDuringRollout(t *testing.T) {
-	for _, problemType := range []string{
-		"/mail/api/errors/unavailable-pass-queue",
-		"https://api.ptudor.invalid/errors/unavailable-pass-queue",
-	} {
-		err := &HTTPStatusError{
-			Service:     ServiceMailAPI,
-			StatusCode:  http.StatusServiceUnavailable,
-			ContentType: "application/problem+json",
-			ProblemType: problemType,
-		}
-		if !isPassQueueUnavailable(err) {
-			t.Errorf("problem type %q was not recognized", problemType)
-		}
+func TestPassQueueUnavailableProblemType(t *testing.T) {
+	err := &HTTPStatusError{
+		Service:     ServiceMailAPI,
+		StatusCode:  http.StatusServiceUnavailable,
+		ContentType: "application/problem+json",
+		ProblemType: "/mail/api/errors/unavailable-pass-queue",
+	}
+	if !isPassQueueUnavailable(err) {
+		t.Error("relative pass-queue problem type was not recognized")
 	}
 }

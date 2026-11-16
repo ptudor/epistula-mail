@@ -69,7 +69,7 @@ func serveMockAttachment(w http.ResponseWriter, part string) {
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"type": "https://api.ptudor.invalid/errors/not-found", "title": "Not Found",
+			"type": "/mail/api/errors/not-found", "title": "Not Found",
 			"status": 404, "detail": "No such attachment.",
 		})
 	}
